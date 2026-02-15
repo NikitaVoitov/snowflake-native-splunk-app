@@ -1,0 +1,90 @@
+# ─────────────────────────────────────────────────────────────────
+# manifest.yml — Splunk Observability Native App
+# Reference: https://docs.snowflake.com/en/developer-guide/native-apps/manifest-reference
+# ─────────────────────────────────────────────────────────────────
+
+# --- Required: manifest file format version ---
+# Version 2 enables automated privilege granting — Snowflake grants declared
+# privileges to the app automatically at install time without consumer SQL.
+manifest_version: 2
+
+# --- Optional: app version metadata ---
+version:
+  name: V1_0
+  label: "Splunk Observability for Snowflake — MVP"
+  comment: "Initial release: Event Table telemetry + ACCOUNT_USAGE metrics export to Splunk via OTLP/HEC"
+
+# --- Required: artifacts block ---
+artifacts:
+  # Path to the SQL setup script run on install/upgrade (relative to manifest.yml)
+  setup_script: setup.sql
+  # Consumer-facing README displayed in Snowsight
+  readme: README.md
+  # Default Streamlit app shown to consumers (schema-qualified name created in setup.sql)
+  default_streamlit: app_public.main
+  # Enable Python/Java/Scala extension code in stored procedures and UDFs
+  extension_code: true
+
+# --- Optional: configuration block ---
+configuration:
+  log_level: INFO
+  trace_level: ALWAYS
+  metric_level: ALL
+
+# --- Required for our app: privileges block ---
+# These are account-level privileges the app requests from the consumer.
+# With manifest_version: 2, they are granted automatically at install time.
+privileges:
+  - IMPORTED PRIVILEGES ON SNOWFLAKE DB:
+      description: "Required to read ACCOUNT_USAGE views for cost, performance, and security monitoring"
+  - EXECUTE TASK:
+      description: "Required for the app's task owner role to run scheduled and triggered tasks"
+  - EXECUTE MANAGED TASK:
+      description: "Required to provision serverless compute resources for tasks (no consumer warehouse needed)"
+  - CREATE DATABASE:
+      description: "Required to create internal state database for watermarks and configuration"
+  - CREATE EXTERNAL ACCESS INTEGRATION:
+      description: "Required to create EAI for egress to Splunk endpoints (OTLP gRPC and HEC HTTP)"
+
+# --- Required for our app: references block ---
+# References are consumer-side objects the app needs bound at install or post-install.
+references:
+  - CONSUMER_EVENT_TABLE:
+      label: "Event Table"
+      description: "Consumer's Event Table (e.g. SNOWFLAKE.TELEMETRY.EVENTS or custom) for reading telemetry data"
+      privileges:
+        - SELECT
+      object_type: TABLE
+      multi_valued: false
+      register_callback: app_public.register_single_callback
+      required_at_setup: true
+
+  - SPLUNK_OTLP_SECRET:
+      label: "Splunk OTLP Token Secret"
+      description: "Snowflake Secret storing the Splunk Observability access token for OTLP export"
+      privileges:
+        - USAGE
+      object_type: SECRET
+      register_callback: app_public.register_single_callback
+      configuration_callback: app_public.get_secret_configuration
+      required_at_setup: false
+
+  - SPLUNK_HEC_SECRET:
+      label: "Splunk HEC Token Secret"
+      description: "Snowflake Secret storing the Splunk HEC token for metrics/logs export"
+      privileges:
+        - USAGE
+      object_type: SECRET
+      register_callback: app_public.register_single_callback
+      configuration_callback: app_public.get_secret_configuration
+      required_at_setup: false
+
+  - SPLUNK_EAI:
+      label: "Splunk External Access Integration"
+      description: "EAI allowing egress traffic from the app to Splunk endpoints (OTLP gRPC + HEC HTTPS)"
+      privileges:
+        - USAGE
+      object_type: EXTERNAL_ACCESS_INTEGRATION
+      register_callback: app_public.register_single_callback
+      configuration_callback: app_public.get_eai_configuration
+      required_at_setup: false

@@ -1,0 +1,21 @@
+[general]
+# Enable Conventional Commits validation
+contrib=contrib-title-conventional-commits
+verbosity=2
+ignore-merge-commits=true
+
+[contrib-title-conventional-commits]
+# Customize allowed types to match your needs
+types=feat,fix,docs,style,refactor,perf,test,build,ci,chore,revert
+
+[title-max-length]
+line-length=100
+
+[title-min-length]
+min-length=5
+
+[body-max-line-length]
+line-length=100
+
+[body-min-length]
+min-length=10

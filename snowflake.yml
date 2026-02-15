@@ -1,0 +1,36 @@
+# ─────────────────────────────────────────────────────────────────
+# snowflake.yml — Snowflake CLI project definition
+# Must be at the project root. All paths are relative to this file.
+#
+# This file defines the DEV package and app for local iterative development.
+# For the full multi-package strategy (dev → scan → test → prod), see the
+# vision doc: "Multi-Package Strategy for Development, Testing & Publishing".
+# ─────────────────────────────────────────────────────────────────
+
+definition_version: 2
+
+entities:
+  # --- Application Package (dev — per-developer iterative development) ---
+  # Uses DISTRIBUTION=INTERNAL (default) — no security scan overhead.
+  splunk_observability_dev_pkg:
+    type: application package
+    identifier: splunk_observability_dev_pkg
+    stage: stage_content.app_stage
+    manifest: app/manifest.yml
+    artifacts:
+      - src: app/*
+        dest: ./
+      - src: app/python/*
+        dest: python/
+      - src: app/streamlit/*
+        dest: streamlit/
+    meta:
+      post_deploy:
+        - sql_script: scripts/shared_content.sql
+
+  # --- Application Object (dev — installs from dev package for local testing) ---
+  splunk_observability_dev_app:
+    type: application
+    from:
+      target: splunk_observability_dev_pkg
+    debug: true   # Enable debug mode during development

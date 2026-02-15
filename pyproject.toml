@@ -1,0 +1,174 @@
+# ─────────────────────────────────────────────────────────────────
+# pyproject.toml — Local dev environment for Splunk Observability Native App
+#
+# This manages LOCAL dev dependencies only (via uv).
+# The app's RUNTIME dependencies are in app/environment.yml (Snowflake Anaconda).
+# We mirror runtime packages here so Cursor/IDE provides autocompletion and
+# linters can validate imports.
+# ─────────────────────────────────────────────────────────────────
+
+[project]
+name = "splunk-observability-snowflake-app"
+version = "1.0.0"
+description = "Snowflake Native App — Splunk Observability-as-a-Service"
+requires-python = ">=3.13"
+readme = "README.md"
+license = { file = "LICENSE" }
+
+# Runtime deps mirrored for IDE autocompletion (not used at runtime — Snowflake resolves from Anaconda)
+dependencies = [
+    # Core Snowflake (IDE autocompletion only)
+    "snowflake-snowpark-python>=1.9.0",
+    # snowflake-native-apps-permission — Anaconda-only, not on PyPI (stays in app/environment.yml)
+    # snowflake-telemetry-python — NOT needed: it emits traces INTO Event Table; our app READS from it
+
+    # Streamlit & Visualization
+    "streamlit>=1.52.0",
+    "plotly>=6.5.0",
+
+    # Telemetry Export (OTLP/gRPC) — our app uses these directly to send spans to Splunk
+    # Anaconda latest: opentelemetry-sdk==1.38.0, grpcio==1.74.1, protobuf==6.33.0
+    "opentelemetry-sdk>=1.38.0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.38.0",
+    "grpcio>=1.74.1",
+    "protobuf>=6.33.0",
+
+    # HTTP Client & Retry
+    "httpx>=0.28.1",
+    "tenacity>=9.1.2",
+
+    # Data Serialization
+    "orjson>=3.9.15",
+
+]
+
+[dependency-groups]
+dev = [
+    # Snowflake CLI — installed globally (/opt/homebrew/bin/snow), NOT needed in venv
+
+    # Linting & Formatting
+    "ruff>=0.9.0",
+
+    # Type Checking
+    "mypy>=1.14.0",
+    "pandas-stubs>=2.0.0",
+
+    # Testing
+    "pytest>=8.0.0",
+    "pytest-cov>=6.0.0",
+
+    # Git hooks & commit linting
+    "pre-commit>=4.0.0",
+    "gitlint>=0.19.0",
+]
+
+# ── Ruff Configuration ──────────────────────────────────────────
+
+[tool.ruff]
+line-length = 88
+target-version = "py313"
+
+exclude = [
+    ".bzr",
+    ".direnv",
+    ".eggs",
+    ".git",
+    ".git-rewrite",
+    ".hg",
+    ".mypy_cache",
+    ".nox",
+    ".pants.d",
+    ".pytype",
+    ".ruff_cache",
+    ".svn",
+    ".tox",
+    ".venv",
+    "__pypackages__",
+    "_build",
+    "buck-out",
+    "build",
+    "dist",
+    "node_modules",
+    "venv",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # Pyflakes
+    "UP",     # pyupgrade
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "I",      # isort
+    "N",      # pep8-naming
+    "S",      # flake8-bandit (security)
+    "T20",    # flake8-print
+    "PT",     # flake8-pytest-style
+    "RET",    # flake8-return
+    "SIM",    # flake8-simplify
+    "ARG",    # flake8-unused-arguments
+    "PTH",    # flake8-use-pathlib
+    "PL",     # Pylint
+    "RUF",    # Ruff-specific rules
+]
+
+ignore = [
+    "E501",    # line-too-long (handled by formatter)
+    "S101",    # assert-used (allowed in tests via per-file-ignores)
+    "PLR0913", # too-many-arguments (too pedantic for some APIs)
+]
+
+fixable = ["ALL"]
+unfixable = []
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = [
+    "S101",    # assert statements OK in tests
+    "ARG",     # unused fixtures OK
+    "PLR2004", # magic values OK in tests
+]
+"__init__.py" = [
+    "F401",    # unused imports OK (re-exports)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+force-single-line = false
+lines-after-imports = 2
+section-order = [
+    "future",
+    "standard-library",
+    "third-party",
+    "first-party",
+    "local-folder",
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+docstring-code-format = true
+docstring-code-line-length = "dynamic"
+
+# ── Mypy Configuration ──────────────────────────────────────────
+
+[tool.mypy]
+python_version = "3.13"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false    # relaxed for MVP; tighten later
+ignore_missing_imports = true    # many Snowflake packages lack stubs
+
+# ── Pytest Configuration ────────────────────────────────────────
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"

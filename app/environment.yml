@@ -1,0 +1,32 @@
+# ─────────────────────────────────────────────────────────────────
+# environment.yml — Snowflake Anaconda Channel runtime dependencies
+# All packages must be available on the Snowflake Anaconda Channel.
+# Versions pinned to latest available as of 2026-02-11.
+# Reference: https://repo.anaconda.com/pkgs/snowflake/
+# ─────────────────────────────────────────────────────────────────
+
+name: sf_env
+channel:
+  - snowflake
+dependencies:
+  # Core Application Framework
+  - streamlit==1.52.2
+  - snowflake-snowpark-python==1.9.0
+  - snowflake-native-apps-permission==0.1.9
+  # snowflake-telemetry-python — NOT needed: it emits traces INTO Event Table; our app READS from it
+
+  # Visualization & Dashboard
+  - plotly==6.5.0
+
+  # Telemetry Export (OTLP/gRPC)
+  - opentelemetry-sdk==1.38.0
+  - opentelemetry-exporter-otlp-proto-grpc==1.38.0
+  - grpcio==1.74.1
+  - protobuf==6.33.0    # latest on Anaconda channel as of 2026-02-13
+
+  # HTTP Client & Retry
+  - httpx==0.28.1
+  - tenacity==9.1.2
+
+  # Data Serialization
+  - orjson==3.9.15

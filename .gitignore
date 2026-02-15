@@ -1,0 +1,63 @@
+# ─────────────────────────────────────────────────────────────────
+# .gitignore — Snowflake Native App (Splunk Observability)
+# ─────────────────────────────────────────────────────────────────
+
+# ── Python ──────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+
+# ── Virtual Environment ────────────────────────────────────────
+.venv/
+venv/
+ENV/
+.env
+
+# ── uv package manager ─────────────────────────────────────────
+# Lock file SHOULD be committed for reproducible dev environments
+# uv.lock   ← intentionally NOT ignored
+
+# ── IDE / Editor ────────────────────────────────────────────────
+.cursor/
+.mcp
+mcp.json
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ── Environment & Secrets ──────────────────────────────────────
+# NEVER commit credentials, tokens, or connection configs
+.env
+.env.*
+!.env.example
+
+# ── Snowflake CLI ───────────────────────────────────────────────
+# Local Snowflake CLI connection config (contains account URLs, roles)
+# This lives in ~/.snowflake/ globally, but if copied locally:
+snowflake-cli/
+.snowflake/
+
+# ── Testing ─────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# ── BMAD Framework (planning tooling, not app source) ──────────
+_bmad/
+_bmad-output/*
+!_bmad-output/*-artifacts/
+
+# ── OS Files ────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
