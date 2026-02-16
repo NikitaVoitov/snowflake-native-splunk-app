@@ -1,0 +1,48 @@
+# ─────────────────────────────────────────────────────────────────
+# pyproject.toml — Local Streamlit UI preview runner (Python 3.11)
+#
+# This is NOT used at Snowflake runtime (Snowflake reads environment.yml).
+# It exists solely to provide a Python 3.11 venv for visually testing
+# the Streamlit UI locally with mock data.
+#
+# ALL real code (Snowpark, backend, OTel, etc.) is developed and
+# linted against Python 3.13 in the root .venv.  This venv contains
+# ONLY the bare minimum to run `streamlit run`.
+#
+# Workflow:
+#   cd app && uv sync                            # creates .venv (3.11)
+#   uv run streamlit run streamlit/main.py       # preview UI locally
+# ─────────────────────────────────────────────────────────────────
+
+[project]
+name = "splunk-observability-snowflake-ui"
+version = "1.0.0"
+description = "Streamlit UI preview runner — bare-minimum 3.11 env"
+requires-python = ">=3.11,<3.13"
+
+dependencies = [
+    # Streamlit framework (matches environment.yml pin)
+    "streamlit==1.52.2",
+
+    # Charting (matches environment.yml pin)
+    "plotly==6.5.0",
+]
+
+# ── Ruff (Streamlit code targets 3.11) ────────────────────────────
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E", "W", "F", "UP", "B", "C4", "I", "N",
+    "S", "T20", "RET", "SIM", "ARG", "PTH", "RUF",
+]
+ignore = [
+    "E501",    # line-too-long (handled by formatter)
+    "S101",    # assert-used (OK in tests)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]

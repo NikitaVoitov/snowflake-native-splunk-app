@@ -1,0 +1,74 @@
+Category,Component,Min Version,Status,Notes
+Advanced,st.html,1.33.0+,⚠️,Inline HTML renderer. CSP restrictions apply: no external JS/CSS/fonts. unsafe_allow_javascript added in 1.52.0.
+Buttons,st.button,1.0.0+,✅,Fully supported. Core button component.
+Buttons,st.download_button,1.0.0+,✅,Fully supported. Core button component.
+Buttons,st.file_uploader,1.0.0+,✅,File upload widget. Max 200MB in Native Apps.
+Buttons,st.form_submit_button,1.0.0+,✅,Fully supported. Core form component.
+Buttons,st.link_button,1.26.0+,✅,Button-styled link. Introduced in 1.26.0. Available in Snowflake Anaconda 1.52.2.
+Buttons,st.page_link,1.30.0+,✅,Navigation link for multipage apps. Introduced in 1.30.0. Available in Snowflake Anaconda 1.52.2.
+Chart Elements,st.altair_chart,1.0.0+,✅,Altair/Vega-Lite chart renderer. Available in Snowflake Anaconda.
+Chart Elements,st.area_chart,1.0.0+,✅,Fully supported. Built-in chart component.
+Chart Elements,st.bar_chart,1.0.0+,✅,Fully supported. Built-in chart component.
+Chart Elements,st.graphviz_chart,1.0.0+,✅,Graphviz graph renderer. Available in Snowflake Anaconda.
+Chart Elements,st.line_chart,1.0.0+,✅,Fully supported. Built-in chart component.
+Chart Elements,st.map,1.0.0+,⚠️,"Supported, but requires Mapbox terms acknowledgement. May not work in all contexts."
+Chart Elements,st.plotly_chart,1.0.0+,✅,Plotly chart renderer. Plotly 6.5.0 available in Snowflake Anaconda.
+Chart Elements,st.pyplot,1.0.0+,✅,Matplotlib chart renderer. Available in Snowflake Anaconda.
+Chart Elements,st.scatter_chart,1.0.0+,✅,Fully supported. Built-in chart component.
+Chart Elements,st.vega_lite_chart,1.0.0+,✅,Vega-Lite chart renderer. Available in Snowflake Anaconda.
+Containers & Layouts,st.columns,1.0.0+,✅,Fully supported. Core layout component.
+Containers & Layouts,st.container,1.0.0+,✅,Fully supported. Core layout component.
+Containers & Layouts,st.dialog,1.35.0+,✅,Modal dialogs (decorator-based). Introduced in 1.35.0. Available in Snowflake Anaconda 1.52.2.
+Containers & Layouts,st.expander,1.0.0+,✅,Fully supported. Core layout component.
+Containers & Layouts,st.form,1.0.0+,✅,Fully supported. Core layout component.
+Containers & Layouts,st.popover,1.33.0+,✅,Introduced in 1.33.0. Available in Snowflake Anaconda 1.52.2.
+Containers & Layouts,st.sidebar,1.0.0+,✅,Fully supported. Core layout component.
+Containers & Layouts,st.space,1.51.0+,✅,Adds vertical/horizontal spacing. Introduced in 1.51.0. Available in Snowflake Anaconda 1.52.2.
+Containers & Layouts,st.tabs,1.22.0+,✅,Fully supported. Introduced in 1.22.0.
+Data Elements,st.badge,1.44.0+,✅,Badge element for colored labels. Introduced in 1.44.0. Available in Snowflake Anaconda 1.52.2.
+Data Elements,st.data_editor,1.29.0+,✅,Editable data table. Introduced in 1.29.0. Available in Snowflake Anaconda 1.52.2.
+Data Elements,st.dataframe,1.0.0+,✅,Fully supported. Use column_config for styling. Max 32MB per call.
+Data Elements,st.json,1.0.0+,✅,JSON viewer with collapsible tree structure.
+Data Elements,st.metric,1.0.0+,✅,Fully supported. Core data display component.
+Data Elements,st.table,1.0.0+,⚠️,"Supported, but Pandas styling CSS is stripped in Native Apps."
+Date & Time,st.date_input,1.0.0+,✅,Fully supported. Core input widget.
+Date & Time,st.datetime_input,1.52.0+,✅,Combined date and time picker. Introduced in 1.52.0. Available in Snowflake Anaconda 1.52.2.
+Date & Time,st.time_input,1.0.0+,✅,Fully supported. Core input widget.
+Media,st.audio,1.0.0+,⚠️,"Audio player. In Native Apps, must use stage-stored audio, NOT external URLs."
+Media,st.audio_input,1.45.0+,✅,Audio recording input widget. Introduced in 1.45.0. Available in Snowflake Anaconda 1.52.2.
+Media,st.camera_input,1.45.0+,✅,Camera photo capture widget. Available in Snowflake Anaconda 1.52.2.
+Media,st.image,1.0.0+,⚠️,"Image display. In Native Apps, must use stage-stored images or presigned URLs, NOT external URLs."
+Media,st.pdf,1.49.0+,✅,PDF document viewer. Introduced in 1.49.0. Available in Snowflake Anaconda 1.52.2.
+Media,st.video,1.0.0+,⚠️,"Video player. In Native Apps, must use stage-stored video, NOT external URLs."
+Numeric,st.number_input,1.0.0+,✅,Fully supported. Core input widget.
+Numeric,st.slider,1.0.0+,✅,Fully supported. Core input widget. (duplicate from Selections)
+Selections,st.checkbox,1.0.0+,✅,Fully supported. Core input widget.
+Selections,st.color_picker,1.0.0+,✅,Fully supported. Core input widget.
+Selections,st.feedback,1.38.0+,✅,Star/thumbs rating widget. Introduced in 1.38.0. Available in Snowflake Anaconda 1.52.2.
+Selections,st.multiselect,1.0.0+,✅,Fully supported. Core input widget.
+Selections,st.pills,1.40.0+,✅,Single/multi-select pill buttons. Introduced in 1.40.0. Available in Snowflake Anaconda 1.52.2.
+Selections,st.radio,1.0.0+,✅,Fully supported. Core input widget.
+Selections,st.segmented_control,1.40.0+,✅,iOS-style segmented button group. Introduced in 1.40.0. Available in Snowflake Anaconda 1.52.2.
+Selections,st.select_slider,1.0.0+,✅,Fully supported. Core input widget.
+Selections,st.selectbox,1.0.0+,✅,Fully supported. Core input widget.
+Selections,st.toggle,1.31.0+,✅,Switch/toggle button. Introduced in 1.31.0. Available in Snowflake Anaconda 1.52.2.
+Status - Callouts,st.error,1.0.0+,✅,Fully supported. Core status component.
+Status - Callouts,st.info,1.0.0+,✅,Fully supported. Core status component.
+Status - Callouts,st.success,1.0.0+,✅,Fully supported. Core status component.
+Status - Callouts,st.warning,1.0.0+,✅,Fully supported. Core status component.
+Status - Other,st.balloons,1.0.0+,✅,Fully supported. Celebration effect.
+Status - Other,st.progress,1.0.0+,✅,Fully supported. Core status component.
+Status - Other,st.snow,1.0.0+,✅,Celebration effect (snowfall animation).
+Status - Other,st.spinner,1.0.0+,✅,Fully supported. Core status component.
+Status - Other,st.toast,1.26.0+,✅,Toast notification. Introduced in 1.26.0. Available in Snowflake Anaconda 1.52.2.
+Text Elements,st.caption,1.10.0+,✅,Fully supported. Introduced in 1.10.0.
+Text Elements,st.code,1.0.0+,✅,Fully supported. Core text component.
+Text Elements,st.divider,1.0.0+,✅,Horizontal divider line.
+Text Elements,st.header,1.0.0+,✅,Fully supported. Core text component.
+Text Elements,st.latex,1.0.0+,✅,LaTeX math expression renderer.
+Text Elements,st.markdown,1.0.0+,⚠️,"Supported, but unsafe_allow_html is restricted by CSP in Native Apps."
+Text Elements,st.subheader,1.0.0+,✅,Fully supported. Core text component.
+Text Elements,st.text,1.0.0+,✅,Fully supported. Core text component.
+Text Elements,st.title,1.0.0+,✅,Fully supported. Core text component.
+Text Input,st.text_area,1.0.0+,✅,Fully supported. Core input widget.
+Text Input,st.text_input,1.0.0+,✅,Fully supported. Core input widget.

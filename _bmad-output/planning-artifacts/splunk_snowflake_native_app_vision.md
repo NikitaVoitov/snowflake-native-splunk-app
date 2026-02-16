@@ -2362,11 +2362,13 @@ snowflake-native-splunk-app/              # Project root (git repo)
 │   ├── setup.sql                         # Primary setup script (DDL: schemas, procs, tasks, grants)
 │   ├── README.md                         # Consumer-facing documentation (shown in Snowsight)
 │   ├── environment.yml                   # Runtime Python deps (Snowflake Anaconda channel, pinned)
-│   ├── streamlit/                        # Streamlit UI files
+│   ├── pyproject.toml                    # LOCAL ONLY — Streamlit 3.11 preview runner (not staged)
+│   ├── .venv/                            # LOCAL ONLY — Python 3.11 venv for `streamlit run` (not staged)
+│   ├── streamlit/                        # Streamlit UI files (Python 3.11 at runtime in SiS)
 │   │   ├── main.py
 │   │   └── pages/
 │   │       └── ...
-│   └── python/                           # Python handler modules (referenced via IMPORTS in DDL)
+│   └── python/                           # Python handler modules (Python 3.13 at runtime in procs)
 │       ├── event_table_collector.py
 │       ├── account_usage_source_collector.py
 │       ├── otlp_export.py
@@ -2379,9 +2381,9 @@ snowflake-native-splunk-app/              # Project root (git repo)
 │
 │── ── Local Development Only (never uploaded to Snowflake) ──────────────────────
 │
-├── .venv/                                # Local Python venv (uv-managed, Python 3.13)
-│                                         #   - Snowflake CLI, linters, test frameworks
-│                                         #   - Mirrors runtime deps for IDE autocompletion
+├── .venv/                                # Primary dev venv (uv-managed, Python 3.13)
+│                                         #   - ALL code: backend + Streamlit (IDE, linting, tests)
+│                                         #   - Mirrors runtime deps for autocompletion
 ├── pyproject.toml                        # Local dev dependency spec (managed by uv)
 ├── uv.lock                              # Locked dev dependencies (deterministic installs)
 ├── .env                                  # Local env vars: PRIVATE_KEY_PASSPHRASE, connection config
@@ -2400,9 +2402,11 @@ snowflake-native-splunk-app/              # Project root (git repo)
 ```
 
 **Key distinctions:**
-- **`app/environment.yml`** (Conda format) — runtime dependencies resolved by Snowflake's Anaconda channel. Pinned to exact versions. This is what runs inside Snowflake.
-- **`pyproject.toml`** + **`uv.lock`** — local dev dependencies managed by `uv`. Mirrors runtime packages for IDE autocompletion + adds linters (`ruff`), type checkers (`mypy`/`pyright`), test frameworks (`pytest`), and Snowflake CLI. These never leave the developer's machine.
-- **`.venv/`** — local Python 3.13 virtual environment. Created with `uv venv --python 3.13`, populated with `uv sync`. Never committed.
+- **`app/environment.yml`** (Conda format) — runtime dependencies resolved by Snowflake's Anaconda channel. Pinned to exact versions. This is what runs inside Snowflake. Covers both stored procedures (Python 3.13) and Streamlit (Python 3.11).
+- **`pyproject.toml`** (root) + **`uv.lock`** — primary local dev dependencies managed by `uv` (Python 3.13). Mirrors runtime packages for IDE autocompletion + adds linters (`ruff`), type checkers (`mypy`/`pyright`), test frameworks (`pytest`). These never leave the developer's machine.
+- **`app/pyproject.toml`** + **`app/uv.lock`** — lightweight Streamlit preview runner managed by `uv` (Python 3.11). Contains only `streamlit` + `plotly`. Not staged to Snowflake.
+- **`.venv/`** — primary dev venv (Python 3.13). Created with `uv sync` at root. Used for ALL code development, linting, testing, IDE autocompletion. Never committed.
+- **`app/.venv/`** — Streamlit preview runner (Python 3.11). Created with `cd app && uv sync`. Used only for `uv run streamlit run streamlit/main.py` to visually test UI layouts locally with mock data. Never committed.
 - **`.env`** — Snowflake connection secrets (`PRIVATE_KEY_PASSPHRASE`). Never committed. Use `.env.example` with placeholder values as documentation.
 
 ### Schema Strategy: Versioned vs. Stateful
@@ -2679,11 +2683,17 @@ Configure [event definitions](https://docs.snowflake.com/en/developer-guide/nati
 
 ### Python Runtime Version
 
-**Python 3.13** (latest GA) — all stored procedures and the Streamlit UI run on Python 3.13.
+The app uses **two different Python runtimes** in Snowflake due to a platform limitation:
 
-- Python 3.13 requires `snowflake-snowpark-python >= 1.9.0` ([setup docs](https://docs.snowflake.com/en/developer-guide/snowpark/python/setup#prerequisites)).
-- Supported GA versions: 3.9 (deprecated), 3.10, 3.11, 3.12, **3.13**. We target the latest for security patches, performance, and language features.
+- **Stored procedures** (`app/python/`): **Python 3.13** (latest GA). Requires `snowflake-snowpark-python >= 1.9.0` ([setup docs](https://docs.snowflake.com/en/developer-guide/snowpark/python/setup#prerequisites)). Stored procedure `RUNTIME_VERSION = '3.13'`.
+- **Streamlit in Snowflake** (`app/streamlit/`): **Python 3.11** (max supported). SiS warehouse runtime only supports Python 3.9, 3.10, 3.11 ([SiS limitations](https://docs.snowflake.com/en/developer-guide/streamlit/limitations)).
+
+Stored procedure supported GA versions: 3.9 (deprecated), 3.10, 3.11, 3.12, **3.13**. We target the latest for security patches, performance, and language features.
 - Verify consumer account compatibility: `SELECT * FROM INFORMATION_SCHEMA.PACKAGES WHERE LANGUAGE = 'python';` ([CREATE PROCEDURE docs](https://docs.snowflake.com/en/sql-reference/sql/create-procedure#python)).
+
+**Local development environments:**
+- **`.venv/`** (Python 3.13) — primary development venv for ALL code (backend + Streamlit), IDE autocompletion, linting, and tests.
+- **`app/.venv/`** (Python 3.11) — lightweight Streamlit preview runner for visually testing the UI locally with mock data. Contains only `streamlit` + `plotly`.
 
 ### Dependencies (`environment.yml`)
 
@@ -2692,7 +2702,7 @@ All packages must be available on the [Snowflake Anaconda Channel](https://repo.
 ### Direct Dependencies
 
 **Core Application Framework:**
-- `streamlit==1.52.2` — Native app UI framework
+- `streamlit==1.52.2` — Native app UI framework (latest on Snowflake Anaconda channel as of Feb 2026)
 - `snowflake-snowpark-python==1.9.0` — Snowflake native data processing, stored procedure runtime, and chart data preparation
 - `snowflake-native-apps-permission==0.1.9` — [Python Permission SDK](https://docs.snowflake.com/en/developer-guide/native-apps/requesting-privs-permissions-sdk) for requesting consumer privileges and binding references via Streamlit UI
 - `snowflake-telemetry-python==0.6.0` — Snowflake telemetry library for [event sharing](https://docs.snowflake.com/en/developer-guide/native-apps/event-sharing-about) (provider-side observability of installed app)

@@ -19,6 +19,12 @@ venv/
 ENV/
 .env
 
+# ── uv lock files (per-project) ──────────────────────────────
+# Root uv.lock is committed (reproducible backend dev env).
+# app/uv.lock is committed (reproducible Streamlit 3.11 dev env).
+# If you don't want to commit them, uncomment the line below:
+# uv.lock
+
 # ── uv package manager ─────────────────────────────────────────
 # Lock file SHOULD be committed for reproducible dev environments
 # uv.lock   ← intentionally NOT ignored
