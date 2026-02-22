@@ -4,7 +4,9 @@ status: complete
 inputDocuments:
   - _bmad-output/planning-artifacts/splunk_snowflake_native_app_vision.md
 date: 2026-02-15
+lastUpdated: 2026-02-22
 author: Nik
+updateNote: "Aligned with PRD decisions: governed view architecture, entity discrimination (SQL/Snowpark compute scope), simplified Governance Awareness panel, app operational logging via Native App event definitions, stream auto-recovery, per-source schedule configuration, independent scheduled tasks, volume estimator deferred to post-MVP"
 ---
 
 # Product Brief: snowflake-native-splunk-app
@@ -13,14 +15,14 @@ author: Nik
 
 Splunk Observability for Snowflake is a turnkey Snowflake Native App distributed via the Snowflake Marketplace that captures and exports Snowflake-native telemetry to Splunk backends. The app delivers a frictionless three-step experience: install from the Marketplace, configure destinations and monitoring packs via a guided Streamlit UI, and observe Snowflake telemetry in Splunk immediately.
 
-The app targets the full breadth of Snowflake observability — Stored Procedures, UDFs, Snowpark Container Services, Native Apps, Tables, Views, Stages, Cortex AI Functions, Cortex Agents, Warehouses, Users & Roles, Tasks, Streams, and Openflow pipelines — by collecting telemetry from two complementary Snowflake-native sources:
+**MVP Scope:** The app targets **SQL/Snowpark compute telemetry** — Stored Procedures, UDFs/UDTFs, and SQL queries — by collecting telemetry from two complementary Snowflake-native sources:
 
-- **Event Tables** (real-time application telemetry): Spans, metrics, and logs emitted by UDFs, stored procedures, and Snowpark workloads — exported via OTLP/gRPC to Splunk Observability Cloud (traces, metrics) and via HEC HTTP to Splunk Enterprise/Cloud (logs).
-- **ACCOUNT_USAGE views** (operational telemetry): Query performance, task execution, warehouse metering, login history, and more — exported via HEC HTTP to Splunk Enterprise/Cloud as structured events.
+- **Event Tables** (real-time application telemetry): Spans, metrics, and logs emitted by stored procedures, UDFs/UDTFs, and SQL queries — scoped via entity discrimination filter (`snow.executable.type IN ('procedure','function','query','sql')`) — exported via OTLP/gRPC to Splunk Observability Cloud (traces, metrics) and via HEC HTTP to Splunk Enterprise/Cloud (logs).
+- **ACCOUNT_USAGE views** (operational telemetry): Query performance (QUERY_HISTORY), task execution (TASK_HISTORY, COMPLETE_TASK_GRAPHS), and lock contention (LOCK_WAIT_HISTORY) — exported via HEC HTTP to Splunk Enterprise/Cloud as CIM-normalized structured events.
 
-The architecture employs a dual-pipeline design: an event-driven pipeline (Streams + Triggered Tasks) for near-real-time Event Table export, and a poll-based pipeline (Scheduled Task Graph with watermark-based incremental reads) for ACCOUNT_USAGE data. Both pipelines run entirely within Snowflake using serverless compute — no consumer warehouse management, no external infrastructure, no additional dependencies.
+The architecture employs a dual-pipeline design: an event-driven pipeline (Governed View → Stream → Serverless Triggered Task) for near-real-time Event Table export, and a poll-based pipeline (Governed View → Independent Serverless Scheduled Tasks with watermark-based incremental reads) for ACCOUNT_USAGE data. Every data source flows through a **custom governed view** created by the app — the universal data contract that enables Snowflake-native governance policy enforcement (masking, row access, projection) at the platform layer. Both pipelines run entirely within Snowflake using serverless compute — no consumer warehouse management, no external infrastructure, no additional dependencies.
 
-MVP ships with the **Distributed Tracing Pack** (Event Table spans, metrics, logs → Splunk) and the **Performance Pack** (QUERY_HISTORY, TASK_HISTORY, COMPLETE_TASK_GRAPHS, LOCK_WAIT_HISTORY → Splunk). Additional packs (Cost, Security, Data Pipeline) are delivered iteratively post-MVP.
+MVP ships with the **Distributed Tracing Pack** (Event Table spans, metrics, logs → Splunk with OTel DB Client semantic conventions) and the **Performance Pack** (QUERY_HISTORY, TASK_HISTORY, COMPLETE_TASK_GRAPHS, LOCK_WAIT_HISTORY → Splunk with CIM normalization). The governed view architecture ensures all exported data respects Snowflake-native governance policies (masking, row access, projection) applied by the consumer. Additional packs (Cost, Security, Data Pipeline) and full governance UI features are delivered iteratively post-MVP.
 
 ---
 
@@ -66,7 +68,8 @@ The app runs entirely within Snowflake using serverless compute. No consumer war
 
 - **Snowflake Marketplace distribution** — Single-click install for any Snowflake customer worldwide. Positions Splunk as the verified, vendor-recommended observability solution for the Snowflake ecosystem. Drives GTM partnership with Snowflake and official Marketplace partner status.
 - **Zero external dependencies** — The entire app — pipelines, configuration UI, health dashboard — runs inside Snowflake as a Native App. No external collectors, no additional infrastructure, no driver configurations.
-- **Dual-pipeline architecture** — Event-driven (Streams + Triggered Tasks) for near-real-time Event Table telemetry, plus poll-based (Task Graph + Watermarks) for ACCOUNT_USAGE views. Covers both real-time application traces and operational/cost telemetry.
+- **Governed view architecture** — Every data source (Event Tables AND ACCOUNT_USAGE views) flows through a custom governed view created by the app. Governed views are the universal data contract that enables Snowflake-native governance policy enforcement (masking, row access, projection) at the platform layer. Consumers attach policies to governed views; the app never bypasses them.
+- **Dual-pipeline architecture** — Event-driven (Governed View → Stream → Serverless Triggered Task) for near-real-time Event Table telemetry, plus poll-based (Governed View → Independent Serverless Scheduled Tasks + Watermarks) for ACCOUNT_USAGE views. Each ACCOUNT_USAGE source gets its own independent task with source-specific schedule. Covers both real-time application traces and operational telemetry.
 - **Monitoring Pack model** — Pre-built, domain-specific packs (Distributed Tracing, Performance, Cost, Security, Data Pipeline) that customers enable with toggle switches. No Snowflake expertise required to select the right telemetry sources. Enables iterative product delivery — each pack developed, tested, and released independently.
 - **Frictionless first value** — The "aha" moment: SREs see their first Snowflake distributed trace in Splunk Observability Cloud and their first UDF/stored procedure logs in Splunk Enterprise within minutes of setup — not days of configuration.
 
@@ -131,13 +134,13 @@ The Snowflake ACCOUNTADMIN or IT/Platform Engineering leader who has the privile
 1. **Install** — ACCOUNTADMIN clicks "Get" on the Marketplace listing. The app installs in the customer's Snowflake account regardless of region.
 2. **Grant privileges** — The Streamlit UI guides the admin through granting required privileges (EXECUTE TASK, IMPORTED PRIVILEGES ON SNOWFLAKE DB, etc.) using the Python Permission SDK — native Snowsight prompts, no manual SQL.
 3. **Configure destinations** — Enter Splunk Observability Cloud realm + access token (for OTLP/gRPC) and/or Splunk Enterprise HEC endpoint + token (for HEC HTTP). Tokens stored as Snowflake Secrets.
-4. **Select Monitoring Packs** — Toggle on Distributed Tracing Pack and/or Performance Pack. Advanced users can expand packs to deselect individual sources.
-5. **Bind Event Table** — For the Distributed Tracing Pack, bind the consumer's Event Table (e.g., SNOWFLAKE.TELEMETRY.EVENTS) via the reference mechanism.
-6. **Activate** — The app provisions streams, tasks, and networking (EAI) automatically. Pipelines start flowing.
+4. **Select Monitoring Packs** — Toggle on Distributed Tracing Pack and/or Performance Pack. Each selected ACCOUNT_USAGE source displays its default schedule interval (e.g., QUERY_HISTORY: 30 min) — admin can modify any interval inline before activation. Advanced users can expand packs to deselect individual sources.
+5. **Bind Event Table** — For the Distributed Tracing Pack, bind the consumer's Event Table (e.g., SNOWFLAKE.TELEMETRY.EVENTS) via the reference mechanism. The Event Table source displays its default stream polling interval (e.g., 30 seconds) — admin can modify it inline before activation.
+6. **Activate** — The app provisions networking (EAI + Network Rule), creates **governed views** over each enabled source (Event Tables AND ACCOUNT_USAGE), applies default masking on high-risk fields (QUERY_TEXT → REDACT), creates streams (Event Table) and independent serverless scheduled tasks (ACCOUNT_USAGE — one task per source). Pipelines start flowing. The **Governance Awareness** panel displays all governed views and their default masking state.
 
 #### Core Usage (Day-to-Day)
-- **Maya (Admin):** Monitors Snowflake operational health via Splunk Enterprise dashboards built on Performance Pack data. Receives proactive alerts on slow queries, task failures, and cost anomalies. Reviews the app's built-in Pipeline Health dashboard in Streamlit for export status.
-- **Ravi (SRE):** Traces application requests end-to-end through Snowflake in Splunk APM. Investigates stored procedure / UDF performance using Event Table spans and logs in Splunk. Correlates Snowflake-side latency with application-level SLOs.
+- **Maya (Admin):** Monitors Snowflake operational health via Splunk Enterprise dashboards built on Performance Pack data (CIM-normalized QUERY_HISTORY, TASK_HISTORY). Receives proactive alerts on slow queries, task failures. Reviews the app's Pipeline Health Overview tab in Streamlit for export status. Queries the app's operational logs via Snowsight for detailed error diagnostics when needed.
+- **Ravi (SRE):** Traces application requests end-to-end through Snowflake in Splunk APM — spans enriched with OTel DB Client semantic conventions (`db.system.name = "snowflake"`, `db.namespace`, `db.operation.name`, `db.stored_procedure.name`) and custom Snowflake attributes (`snowflake.warehouse.name`, `snowflake.query.id`). Investigates stored procedure / UDF performance using Event Table spans and logs in Splunk. Correlates Snowflake-side latency with application-level SLOs.
 
 #### Success Moment ("Aha!")
 - **Ravi** sees a Snowflake stored procedure span appear in his Splunk APM trace waterfall for the first time — stitched seamlessly into the same trace as the upstream API call and downstream database query. The Snowflake black box is gone.
@@ -227,18 +230,19 @@ The Snowflake ACCOUNTADMIN or IT/Platform Engineering leader who has the privile
 
 #### Monitoring Packs (MVP)
 
-| Pack | Sources | Pipeline | Export Destination |
-|---|---|---|---|
-| **Distributed Tracing Pack** | User-selected Event Tables (spans, metrics, logs) | Event-driven (Streams + Triggered Tasks) | OTLP/gRPC → Splunk Observability Cloud (spans & metrics); HEC HTTP → Splunk Enterprise/Cloud (logs) |
-| **Performance Pack** | QUERY_HISTORY, TASK_HISTORY, COMPLETE_TASK_GRAPHS, LOCK_WAIT_HISTORY | Poll-based (Task Graph + Watermarks) | HEC HTTP → Splunk Enterprise/Cloud |
+| Pack | Sources | Entity Scope | Pipeline | Export Destination |
+|---|---|---|---|---|
+| **Distributed Tracing Pack** | User-selected Event Tables (spans, metrics, logs) | SQL/Snowpark compute only — stored procedures, UDFs/UDTFs, SQL queries (entity discrimination: `snow.executable.type IN ('procedure','function','query','sql')`) | Event-driven (Governed View → Stream → Serverless Triggered Task) | OTLP/gRPC → Splunk Observability Cloud (spans & metrics with OTel DB Client conventions); HEC HTTP → Splunk Enterprise/Cloud (logs) |
+| **Performance Pack** | QUERY_HISTORY, TASK_HISTORY, COMPLETE_TASK_GRAPHS, LOCK_WAIT_HISTORY | N/A | Poll-based (Governed View → Independent Serverless Scheduled Tasks + Watermarks — one task per source) | HEC HTTP → Splunk Enterprise/Cloud (CIM-normalized) |
 
 #### Streamlit Configuration UI
 
 - **Privilege & Reference Binding** — Python Permission SDK (`snowflake-native-apps-permission`) guides the consumer through granting required privileges and binding references via native Snowsight prompts. No manual SQL required.
 - **Telemetry Enablement** — Guides user to enable account-level telemetry collection.
-- **Observability Target Selection** — Allows the customer to discover and select Event Tables and ACCOUNT_USAGE views available in their environment as observability targets for the app. Supports both default Snowflake telemetry tables (e.g., `SNOWFLAKE.TELEMETRY.EVENTS`) and custom Event Tables.
-- **Monitoring Pack Selection** — Toggle switches for each pack. Advanced users can expand packs to deselect individual sources.
+- **Observability Target Selection** — Allows the customer to discover and select Event Tables and ACCOUNT_USAGE views available in their environment as observability targets for the app. Supports both default Snowflake telemetry tables (e.g., `SNOWFLAKE.TELEMETRY.EVENTS`) and custom Event Tables. Each selected source displays its **default schedule interval** (e.g., QUERY_HISTORY: 30 min, Event Table stream: 30 sec) with inline modification capability.
+- **Monitoring Pack Selection** — Toggle switches for each pack. Advanced users can expand packs to deselect individual sources. Informational banner explains MVP scope: "This release processes **SQL/Snowpark compute telemetry** (SQL queries, stored procedures, UDFs, UDTFs). Telemetry from other Snowflake services (SPCS, Streamlit, Cortex AI) is filtered out. Future releases will add support for additional telemetry categories."
 - **Destination Setup** — Splunk Observability Cloud (realm + access token) and Splunk Enterprise/Cloud (HEC endpoint + HEC token). Tokens stored as Snowflake Secrets.
+- **Governance Awareness Panel** — Simplified informational panel that highlights the importance of Snowflake-native governance, lists all governed views created by the app and their default masking state (e.g., `governed_query_history` — QUERY_TEXT: REDACT). Includes QUERY_TEXT privacy toggle (REDACT/FULL/CUSTOM). Displays schema change notifications when source Event Table schemas are modified (columns added/removed/renamed) — alerts consumer to re-apply governance policies after automatic view recreation. *(Post-MVP: Full Governance Compliance tab with classification awareness, policy detection, consumer policy enumeration.)*
 - **Settings Panel** — All configuration stored in `_internal.config`, adjustable via the Streamlit UI. Performance tuning parameters (`export_batch_size`, `max_batches_per_run`) use hardcoded defaults and are not exposed in the MVP UI.
 
 #### Pipeline Health Dashboard (Streamlit)
@@ -248,14 +252,17 @@ The Snowflake ACCOUNTADMIN or IT/Platform Engineering leader who has the privile
   - Current failed batches awaiting retry (transport-level failures within the current run)
   - Pipeline up/down status per source (based on last successful run timestamp)
 - **Internal metrics table** (`_metrics.pipeline_health`) — Records per-run operational metrics for all pipeline executions.
-- **Volume Estimator** (`_internal.volume_estimator`) — Projects expected daily/monthly throughput during initial setup. Re-runnable on demand from the Streamlit UI.
 - **Stream Staleness Alert** — Prominent warning when `STALE_AFTER` is less than 2 days in the future.
+- *(Post-MVP: Volume Estimator, Throughput Tab, Errors & Failures Tab, Volume Estimation Tab, Rate Limits Tab, Streamlit Logging tab with verbosity selector and keyword search.)*
 
 #### Pipelines
 
-- **Event-driven pipeline**: Append-only Streams on user-selected Event Tables → Triggered Tasks → `event_table_collector` stored procedure → OTLP/gRPC (spans & metrics) + HEC HTTP (logs).
-- **Poll-based pipeline**: Serverless Task Graph (root + parallel child tasks per source + finalizer) → `account_usage_source_collector` stored procedure → HEC HTTP. High-watermark state table (`_internal.export_watermarks`) for incremental reads.
-- **Stream checkpointing**: Zero-row INSERT offset advancement pattern within explicit transactions (Section 8.0 of vision doc).
+- **Governed View Architecture**: Every data source (Event Tables AND ACCOUNT_USAGE views) flows through a custom governed view created by the app. Governed views are the universal data contract — consumers attach Snowflake-native governance policies (masking, row access, projection) to any governed view, and the app automatically honors them at the platform layer.
+- **Event-driven pipeline**: Governed Event Table View → Append-only Stream → Serverless Triggered Task → `event_table_collector` stored procedure (entity discrimination filter: SQL/Snowpark compute only) → OTLP/gRPC (spans & metrics with OTel DB Client conventions) + HEC HTTP (logs).
+- **Poll-based pipeline**: Governed ACCOUNT_USAGE View → Independent Serverless Scheduled Task (one per enabled source, each with source-specific schedule) → `account_usage_source_collector` stored procedure → HEC HTTP (CIM-normalized). High-watermark state table (`_internal.export_watermarks`) for incremental reads.
+- **Stream checkpointing**: Zero-row INSERT offset advancement pattern within explicit transactions.
+- **Automatic stream recovery**: Stale Event Table streams are auto-recovered by the app (drop/recreate stream on governed view — data gap recorded in `_metrics.pipeline_health` and app event table).
+- **Governed view auto-refresh**: Hourly serverless alert detects Event Table schema changes (columns added/removed/renamed) via MD5 hash fingerprinting. When detected, governed views are recreated (`CREATE OR REPLACE VIEW` — drops policies, breaks streams). Streamlit UI notifies consumer to re-apply governance policies. Stream auto-recovery handles broken streams automatically.
 
 #### Design Decisions Implemented in MVP
 
@@ -263,22 +270,75 @@ The Snowflake ACCOUNTADMIN or IT/Platform Engineering leader who has the privile
 |---|---|
 | **Batching Strategy** (7.1) | Chunked exports with configurable batch sizes via `to_pandas_batches()` |
 | **Retry Strategy** (7.2) | Transport-level retries only — OTel SDK built-in retry for gRPC (~6 retries over ~63s); `httpx` + `tenacity` exponential backoff for HEC HTTP on 429/5xx. No application-level failure tracking. |
-| **Parallel Processing** (7.6) | Task Graph DAG with parallel child tasks per source, plus a finalizer task for health metrics aggregation |
-| **Source Prioritization** (7.7) | Priority ordering within the task graph |
-| **Adaptive Polling** (7.8) | 30-minute root task interval with early-exit pattern per source based on ACCOUNT_USAGE view latencies |
-| **OTLP Transport** (7.9) | OTLP/gRPC exclusively for spans & metrics to Splunk Observability Cloud; HEC HTTP for logs and ACCOUNT_USAGE data |
+| **Independent Scheduled Tasks** (7.6) | One standalone serverless task per ACCOUNT_USAGE source with source-specific schedule; inline health metrics recording |
+| **Source Prioritization** (7.7) | Priority ordering for Event Table streams; ACCOUNT_USAGE sources prioritized by schedule frequency |
+| **Per-Source Polling** (7.8) | Each source task runs at an interval aligned with its Snowflake latency (e.g., 30 min for QUERY_HISTORY, 90 min for ACCESS_HISTORY) |
+| **OTLP Transport** (7.9) | OTLP/gRPC exclusively for spans & metrics to Splunk Observability Cloud with OTel DB Client semantic conventions (`db.*`) and custom Snowflake conventions (`snowflake.*`); HEC HTTP for logs and ACCOUNT_USAGE data with CIM normalization |
 | **Vectorized Transformations** (7.11) | Snowpark DataFrame filtering + `to_pandas_batches()` chunked processing |
 | **Snowpark Best Practices** (7.12) | Push relational work to Snowflake engine; Python for export logic only |
-| **Event Table Optimization** (7.13) | Per-signal-type Snowpark projections for efficient Event Table processing |
+| **Event Table Optimization** (7.13) | Per-signal-type Snowpark projections for efficient Event Table processing; entity discrimination filter applied as first DataFrame operation (pushdown optimization) |
+| **Governed View Pattern** (Pattern C) | Custom governed view per source as universal data contract; consumer-attached policies enforced at platform layer |
+| **Stream Auto-Recovery** | Automatic stale stream detection and recovery (drop/recreate stream on governed view); data gap recorded in pipeline_health and app event table |
+| **Governed View Auto-Refresh** | Hourly serverless alert detects Event Table schema changes via MD5 fingerprinting; automatic recreation when columns added/removed/renamed; Streamlit UI notification for policy re-application |
+
+---
+
+#### Governed View Auto-Refresh Design
+
+**Overview:** The app automatically recreates governed views when their source Event Table schemas change (columns added/removed/renamed). Consumers are notified via Streamlit UI to re-apply governance policies if needed.
+
+**Detection Mechanism:**
+- Schema fingerprinting: `hash = MD5(concatenate(column_names ordered by position))`
+- Hourly serverless alert compares current hash vs stored hash
+- If hashes differ → mark for recreation, call stored procedure
+
+**Metadata Storage (Governed View Registry Table):**
+```
+- governed_view_name          VARCHAR
+- source_event_table_name     VARCHAR  
+- source_event_table_database VARCHAR
+- source_event_table_schema   VARCHAR
+- source_schema_hash          VARCHAR(32)
+- schema_changed              BOOLEAN
+```
+
+**Recreation Process:**
+```
+FOR each governed_view WHERE schema_changed = true:
+  CREATE OR REPLACE VIEW governed_view AS SELECT * FROM source_table
+  UPDATE registry SET:
+    source_schema_hash = new_hash
+    schema_changed = true
+```
+
+**Impact of Recreation:**
+- Masking policies → DROPPED
+- Row access policies → DROPPED  
+- Tags → DROPPED
+- Streams → BROKEN (existing stream auto-recovery recreates them)
+
+**Consumer Notification (Streamlit UI Governance Awareness Panel):**
+```
+View: GOVERNED_SNOWFLAKE_TELEMETRY_EVENT_TABLE
+Status: ⚠️ Schema changed - view recreated
+Action: Re-apply governance policies if needed
+```
+
+Status displays only when `schema_changed = true`. Consumer acknowledges notification, which resets flag to false.
+
+**Schema Changes Detected:** Column added, column removed, column renamed. DML operations (data inserts) do NOT trigger recreation.
+
+---
 
 #### App Deployment & Packaging
 
-- Full `manifest.yml` (`manifest_version: 2`) — declares all privileges, references, event definitions, and default Streamlit app.
+- Full `manifest.yml` (`manifest_version: 2`) — declares all privileges, references, event definitions (`ERRORS_AND_WARNINGS` mandatory, `DEBUG_LOGS` optional), `log_level: INFO`, `trace_level: ALWAYS`, and default Streamlit app.
 - `marketplace.yml` — declares resource requirements for Snowsight consumer readiness validation.
-- `setup.sql` — DDL for all internal schemas, procedures, tasks, and EAI host port specification.
-- `README.md` — Consumer-facing documentation with setup steps, procedures used, required privileges, and example SQL.
-- `environment.yml` — Pinned Python dependencies from the Snowflake Anaconda Channel.
-- Automated infrastructure provisioning: networking/EAI, streams, task graph, internal tables — all created programmatically on first setup.
+- `setup.sql` — DDL for all internal schemas, procedures, tasks, governed views, and EAI host port specification. Idempotent design: `CREATE TABLE IF NOT EXISTS`, `ALTER TABLE ADD COLUMN IF NOT EXISTS`, `CREATE OR ALTER VERSIONED SCHEMA`, `CREATE OR REPLACE TASK`. Event Table governed view uses `ALTER VIEW` only (never `CREATE OR REPLACE VIEW` to protect streams).
+- `README.md` — Consumer-facing documentation with setup steps, procedures used, required privileges, governed view architecture, and example SQL.
+- `environment.yml` — Pinned Python dependencies from the Snowflake Anaconda Channel (dual runtime: Python 3.11 for Streamlit, Python 3.13 for backend procedures).
+- Automated infrastructure provisioning: networking/EAI, governed views, streams, independent scheduled tasks, internal tables — all created programmatically on first setup.
+- **App Operational Logging**: Structured logs written to consumer's account-level event table via Native App event definitions. Queryable via Snowsight for pipeline debugging and error analysis.
 
 ### Out of Scope for MVP
 
@@ -286,13 +346,16 @@ The Snowflake ACCOUNTADMIN or IT/Platform Engineering leader who has the privile
 - **Cost Pack** — METERING_HISTORY, WAREHOUSE_METERING_HISTORY, PIPE_USAGE_HISTORY, SERVERLESS_TASK_HISTORY, AUTOMATIC_CLUSTERING_HISTORY, STORAGE_USAGE, DATABASE_STORAGE_USAGE_HISTORY, DATA_TRANSFER_HISTORY, REPLICATION_USAGE_HISTORY, SNOWPARK_CONTAINER_SERVICES_HISTORY, EVENT_USAGE_HISTORY.
 - **Security Pack** — LOGIN_HISTORY, ACCESS_HISTORY, SESSIONS, GRANTS_TO_USERS, GRANTS_TO_ROLES, NETWORK_POLICIES.
 - **Data Pipeline Pack** — COPY_HISTORY, LOAD_HISTORY, PIPE_USAGE_HISTORY.
+- **Cortex AI Pack** — Telemetry from Cortex Services (Cortex AI Functions, Cortex Agents, Cortex Search) via `AI_OBSERVABILITY_EVENTS` table accessed through `GET_AI_OBSERVABILITY_EVENTS()` function. Enriched with OTel `gen_ai.*` semantic conventions for generative AI observability. Aligns with Snowflake's strategic priority areas and Marketplace Partner Milestone 2 content requirements.
+- **Openflow Pack** — Event Table telemetry from Openflow pipelines (entity discrimination: `RESOURCE_ATTRIBUTES:"application" = 'openflow'`). Covers Openflow pipeline execution traces, task orchestration, and data flow monitoring.
 
-#### Failure Tracking & Recovery (Deferred)
-- Zero-copy reference-based failure tracking (`_staging.failed_event_batches`, `_staging.failed_account_usage_refs`). In MVP, if transport-level retries exhaust, the batch is dropped and the pipeline advances.
+#### Failure Tracking & Recovery (Deferred to Post-MVP)
+- Zero-copy reference-based failure tracking (`_staging.failed_event_batches`, `_staging.failed_account_usage_refs`). **MVP trade-off:** If transport-level retries exhaust, the batch is dropped and the pipeline advances (watermark/stream offset advances). Data gaps occur during sustained Splunk outages.
 - Dedicated retry task (`_internal.failed_batch_retrier`).
 - Lazy hash computation / natural key extraction — only needed when failure tracking is enabled.
 - Automatic cleanup task for failed batch references.
 - Configuration settings: `max_retry_attempts`, `failed_batch_retention_days`.
+- **MVP mitigation:** Transport-level retries handle transient blips (seconds). Pipeline Health dashboard is early warning system. Failures logged to `_metrics.pipeline_health` and app event table.
 
 #### Rate Limit Handling (Deferred)
 - In-app rate limiting — request pacing, adaptive throttling, 429 backoff with Retry-After.
@@ -301,8 +364,9 @@ The Snowflake ACCOUNTADMIN or IT/Platform Engineering leader who has the privile
 #### Exporter Features (Deferred)
 - PII redaction / field masking, sampling, attribute/label normalization, content-based routing, advanced load-shedding, complex processor chains.
 
-#### Pipeline Health Dashboard Tabs (Deferred)
+#### Pipeline Health Dashboard Tabs (Deferred to Post-MVP)
 - Throughput Tab, Errors & Failures Tab, Volume Estimation Tab, Rate Limits Tab, Stream health status per Event Table stream.
+- **Streamlit Logging Tab** (deferred) — Verbosity selector (`st.pills`: ERROR/WARN/INFO/DEBUG), scrollable log display with keyword search, filters by source/task name and time range. **MVP:** Ops engineer queries app's event table directly via Snowsight for error diagnostics.
 
 #### Advanced Optimizations (Deferred)
 - `ThreadPoolExecutor` + `httpx.Client` connection pooling for concurrent HEC exports.
@@ -316,9 +380,13 @@ The following gates must all be satisfied before the app is published on the Sno
 
 #### Functional Gates
 - [ ] **E2E user workflows verified** — Install → Configure → Observe cycle works end-to-end in a cross-account test install (via `splunk_observability_test_pkg` internal listing).
-- [ ] **Distributed Tracing Pack operational** — Event Table spans appear in Splunk Observability Cloud APM; Event Table logs appear in Splunk Enterprise/Cloud via HEC.
-- [ ] **Performance Pack operational** — QUERY_HISTORY, TASK_HISTORY, COMPLETE_TASK_GRAPHS, LOCK_WAIT_HISTORY data flowing to Splunk Enterprise/Cloud via HEC.
-- [ ] **Streamlit UI complete** — Privilege binding, observability target selection, pack configuration, destination setup, and Pipeline Health Overview Tab all functional.
+- [ ] **Governed view architecture operational** — All sources (Event Tables AND ACCOUNT_USAGE) flow through custom governed views; consumer-attached policies are honored.
+- [ ] **Distributed Tracing Pack operational** — Event Table spans (OTel DB Client conventions) appear in Splunk Observability Cloud APM; Event Table logs appear in Splunk Enterprise/Cloud via HEC. Entity discrimination filter (SQL/Snowpark compute only) verified.
+- [ ] **Performance Pack operational** — QUERY_HISTORY, TASK_HISTORY, COMPLETE_TASK_GRAPHS, LOCK_WAIT_HISTORY data (CIM-normalized) flowing to Splunk Enterprise/Cloud via HEC. QUERY_TEXT masked by default (REDACT mode).
+- [ ] **Streamlit UI complete** — Privilege binding, observability target selection with per-source schedule interval display/modification, pack configuration, destination setup, Governance Awareness panel with schema change notifications, and Pipeline Health Overview Tab all functional.
+- [ ] **App operational logging functional** — Structured logs written to consumer's event table; queryable via Snowsight for error diagnostics.
+- [ ] **Stream auto-recovery verified** — Stale Event Table stream detection and automatic recovery (drop/recreate stream on governed view) works; data gap recorded.
+- [ ] **Governed view auto-refresh operational** — Event Table schema change detection (MD5 fingerprinting) works; governed views recreate automatically when source schema changes; Streamlit UI displays schema change notifications; stream auto-recovery handles broken streams.
 
 #### Performance Gates
 - [ ] **Export latency parity with OTel Collector** — Event Table export latency is similar to or less than equivalent OTel Collector-based pipelines (target: < 60 seconds from Event Table write to data visible in Splunk).
@@ -341,18 +409,22 @@ The following gates must all be satisfied before the app is published on the Sno
 ### Future Vision
 
 #### Post-MVP Pack Roadmap
-1. **Cost Pack** (v1.1) — Credit consumption, storage growth, data egress cost tracking. Enables the FinOps persona and unlocks Snowflake Marketplace Partner Milestone content on quantifiable business outcomes.
-2. **Security Pack** (v1.2) — Failed login alerting, access auditing, privilege drift detection. Serves the Security/SOC Analyst persona and strengthens the Splunk-as-SIEM narrative for Snowflake environments.
-3. **Data Pipeline Pack** (v1.3) — Ingestion failure detection, pipeline throughput monitoring. Completes the operational observability picture.
+1. **Cost Pack** (v1.1) — METERING_HISTORY, WAREHOUSE_METERING_HISTORY, PIPE_USAGE_HISTORY, SERVERLESS_TASK_HISTORY, AUTOMATIC_CLUSTERING_HISTORY, STORAGE_USAGE, DATABASE_STORAGE_USAGE_HISTORY, DATA_TRANSFER_HISTORY, REPLICATION_USAGE_HISTORY, SNOWPARK_CONTAINER_SERVICES_HISTORY, EVENT_USAGE_HISTORY. Enables the FinOps persona and unlocks Snowflake Marketplace Partner Milestone content on quantifiable business outcomes.
+2. **Security Pack** (v1.2) — LOGIN_HISTORY, ACCESS_HISTORY, SESSIONS, GRANTS_TO_USERS, GRANTS_TO_ROLES, NETWORK_POLICIES. Failed login alerting, access auditing, privilege drift detection. Serves the Security/SOC Analyst persona and strengthens the Splunk-as-SIEM narrative for Snowflake environments.
+3. **Data Pipeline Pack** (v1.3) — COPY_HISTORY, LOAD_HISTORY, PIPE_USAGE_HISTORY. Ingestion failure detection, pipeline throughput monitoring. Completes the operational observability picture.
 
 #### Platform Evolution (6-12 Months)
-- **Zero-copy failure tracking** — Reference-based architecture for persistent failure recovery with dedicated retry task and automatic cleanup. Elevates pipeline reliability from 99.5% to 99.99%+ for sustained Splunk outages.
+- **Zero-copy failure tracking** — Reference-based architecture for persistent failure recovery with dedicated retry task and automatic cleanup. Elevates pipeline reliability from 99.5% to 99.99%+ for sustained Splunk outages. Closes the MVP data gap trade-off.
+- **Full Governance Compliance tab** — Classification awareness (queries `TAG_REFERENCES`, `DATA_CLASSIFICATION_LATEST`), policy detection (queries `POLICY_REFERENCES`), consumer policy enumeration. Replaces the simplified Governance Awareness panel.
+- **Streamlit Logging tab** — Verbosity selector, scrollable log display with keyword search, filters by source/task name and time range. Replaces Snowsight-based log queries.
+- **Volume estimator** — Projects expected daily/monthly throughput during initial setup. Re-runnable on demand from the Streamlit UI.
 - **Advanced Pipeline Health Dashboard** — Throughput Tab, Errors & Failures Tab, Volume Estimation Tab, Rate Limits Tab, and per-stream health monitoring.
 - **In-app rate limiting** — Token-bucket rate limiter, Retry-After header parsing, adaptive throttling.
 - **Performance optimizations** — `ThreadPoolExecutor` for concurrent HEC exports, vectorized UDFs for hash computation.
 
 #### Long-Term Vision (12-24 Months)
-- **Full Snowflake observability coverage** — Every Snowflake service and resource type represented as a Monitoring Pack, making Splunk the definitive observability platform for Snowflake environments.
+- **Additional Event Table service categories** — SPCS (`snow.executable.type = 'spcs'`), Streamlit (`snow.executable.type = 'streamlit'`), Openflow (`RESOURCE_ATTRIBUTES:"application" = 'openflow'`) telemetry via service category registry and convention-specific enrichers. Expands beyond SQL/Snowpark compute scope.
+- **Cortex AI Pack** — Dedicated pack for Cortex Services telemetry via `AI_OBSERVABILITY_EVENTS` table (accessed through `GET_AI_OBSERVABILITY_EVENTS()` function), enriched with OTel `gen_ai.*` semantic conventions. Purpose-built observability for Cortex AI Functions, Cortex Agents, and Cortex Search — aligns with Snowflake's strategic priority areas and Marketplace Partner Milestone 2 content requirements.
+- **Openflow Pack** — Dedicated pack for Openflow pipeline telemetry from Event Tables (entity discrimination: `RESOURCE_ATTRIBUTES:"application" = 'openflow'`). Covers Openflow pipeline execution traces, task orchestration, and data flow monitoring.
 - **Bi-directional integration** — Splunk alerting triggers Snowflake actions (warehouse scaling, task restarts) via reverse integration.
-- **Cortex AI-specific packs** — Purpose-built observability for Cortex AI Functions, Cortex Agents, and Cortex Search — aligns with Snowflake's strategic priority areas and Marketplace Partner Milestone 2 content requirements.
 - **Multi-tenant scale** — Proven at 100+ concurrent installs with diverse warehouse topologies and telemetry volumes.

@@ -4,11 +4,11 @@ The objective is to provide a turnkey Splunk Observability-as-a-Service Native A
 - **OTLP/gRPC** → Splunk Observability Cloud — for OTel-native telemetry (spans, metrics) originating from Event Tables.
 - **Splunk HEC (HTTP)** → Splunk Enterprise/Cloud — for logs (including Event Table logs) and structured operational data originating from ACCOUNT_USAGE views.
 
-The architecture employs a **dual-pipeline design**:
-1. **Event-driven pipeline**: Snowflake Streams + Serverless Triggered Tasks export Event Table telemetry in near real-time (~20–30s latency).
-2. **Poll-based pipeline**: Scheduled Serverless Tasks with watermark-based incremental reads export ACCOUNT_USAGE operational telemetry at configurable intervals.
+The architecture employs a **dual-pipeline design** with a **uniform governed view layer** for data governance:
+1. **Event-driven pipeline**: Custom governed views on Event Tables → Snowflake Streams → Serverless Triggered Tasks export telemetry in near real-time (~20–30s latency).
+2. **Poll-based pipeline**: Custom governed views on ACCOUNT_USAGE → Scheduled Serverless Tasks with watermark-based incremental reads export operational telemetry at configurable intervals.
 
-Both pipelines export telemetry directly to Splunk destinations without intermediate data staging. Retry handling in MVP relies on transport-level retries built into the OTLP SDK and `httpx`/`tenacity`. A **zero-copy failure tracking layer** (post-MVP) will record lightweight references (hashes or natural keys) for persistently failed batches, enabling dedicated retry logic while eliminating 99%+ of staging storage overhead.
+Both pipelines read from **governed views** — not raw source objects — giving consumers full control over what data leaves their Snowflake account via Snowflake-native governance tools (masking policies, row access policies, projection policies). All pipelines export telemetry directly to Splunk destinations without intermediate data staging. Retry handling in MVP relies on transport-level retries built into the OTLP SDK and `httpx`/`tenacity`. A **zero-copy failure tracking layer** (post-MVP) will record lightweight references (hashes or natural keys) for persistently failed batches, enabling dedicated retry logic while eliminating 99%+ of staging storage overhead.
 
 The app is distributed via the Snowflake Marketplace and designed for iterative delivery through pre-built **Monitoring Packs**. MVP ships with the **Distributed Tracing Pack** and **Performance Pack**; additional packs (Cost, Security, Data Pipeline) are delivered iteratively post-MVP.
 
@@ -23,18 +23,25 @@ This section defines the boundary of the first shipped version. Everything descr
 ### Monitoring Packs
 | Pack | Sources | Pipeline |
 |---|---|---|
-| **Distributed Tracing Pack** | User-selected Event Tables (spans, metrics, logs) | Event-driven (Streams + Triggered Tasks) → OTLP/gRPC (spans & metrics) + HEC HTTP (logs) |
-| **Performance Pack** | QUERY_HISTORY, TASK_HISTORY, COMPLETE_TASK_GRAPHS, LOCK_WAIT_HISTORY | Poll-based (Task Graph + Watermarks) → HEC HTTP |
+| **Distributed Tracing Pack** | User-selected Event Tables — MVP scope: SQL/Snowpark compute telemetry (spans, metrics, logs) | Event-driven (Governed View → Stream → Triggered Tasks) → OTLP/gRPC (spans & metrics) + HEC HTTP (logs) |
+| **Performance Pack** | QUERY_HISTORY, TASK_HISTORY, COMPLETE_TASK_GRAPHS, LOCK_WAIT_HISTORY | Poll-based (Independent Scheduled Tasks + Watermarks) → HEC HTTP |
 
 ### App Deployment & Configuration
 - Full `manifest.yml` v2 with privileges, references, and event sharing (Section 1).
 - Streamlit UI for privilege binding (Python Permission SDK), pack selection, destination setup, and retry settings (Section 2).
-- Automated infrastructure provisioning: networking/EAI, streams, task graph, internal tables (Section 3).
+- Automated infrastructure provisioning: networking/EAI, streams, scheduled tasks, internal tables (Section 3).
 
 ### Pipelines
-- **Event-driven pipeline**: Streams on Event Tables → Triggered Tasks → `event_table_collector` → OTLP/gRPC + HEC.
-- **Poll-based pipeline**: Task Graph (root + child tasks per Performance Pack source + finalizer) → `account_usage_source_collector` → HEC.
+- **Event-driven pipeline**: Governed Event Table view → Stream → Triggered Tasks → `event_table_collector` → OTLP/gRPC + HEC.
+- **Poll-based pipeline**: Governed ACCOUNT_USAGE views → Independent Scheduled Tasks (one per enabled source, each with its own schedule) → `account_usage_source_collector` → HEC.
 - Stream checkpointing with zero-row INSERT offset advancement (Section 8).
+
+### Data Governance & Privacy (MVP)
+- **Governed view layer** — custom views over Event Tables and ACCOUNT_USAGE sources; all pipelines read from governed views only (Section 7A).
+- **Consumer-managed policies** — consumers attach Snowflake-native dynamic data masking, row access policies, and projection policies to governed views; the app honours them transparently.
+- **Governance posture visibility** — Streamlit tab showing attached policies and tags via `ACCOUNT_USAGE` governance views.
+- **Entity discrimination** — MVP-scope filtering of Event Table telemetry to SQL/Snowpark compute via `RESOURCE_ATTRIBUTES:"snow.executable.type"` (Section 7B).
+- **OTel semantic convention mapping** — layered convention approach (`db.*`, `snowflake.*` custom namespace) for Event Table telemetry; CIM mapping for ACCOUNT_USAGE (Section 7B).
 
 ### Design Decisions (Implemented in MVP)
 - **7.1 Batching Strategy** — chunked exports with configurable batch sizes.
@@ -42,13 +49,15 @@ This section defines the boundary of the first shipped version. Everything descr
   - OTLP/gRPC: Built-in OTel SDK application-level retry with exponential backoff (~6 retries over ~63s) for transient gRPC errors (UNAVAILABLE, DEADLINE_EXCEEDED, RESOURCE_EXHAUSTED).
   - HEC HTTP: `httpx` with `tenacity` for exponential backoff retries on 429/5xx status codes.
   - **No application-level failure tracking** — if all transport retries exhaust, the batch is lost and the pipeline advances. This is acceptable for MVP because transport-level retries handle the vast majority of transient failures.
-- **7.6 Parallel Processing via Task Graph** — DAG with parallel child tasks per source.
-- **7.7 Source Prioritization** — priority ordering within the task graph.
-- **7.8 Latency-Aware Adaptive Polling Schedule** — 30-minute root interval with early-exit pattern per source.
+- **7.6 Independent Scheduled Tasks** — one standalone serverless task per ACCOUNT_USAGE source with source-specific schedule.
+- **7.7 Source Prioritization** — priority ordering for Event Table streams (ACCOUNT_USAGE sources run independently on their own schedules).
+- **7.8 Per-Source Polling Schedule** — each source task runs at an interval aligned with its Snowflake latency.
 - **7.9 OTLP Transport Selection** — OTLP/gRPC for spans & metrics, HEC HTTP for logs and ACCOUNT_USAGE.
 - **7.11 Vectorized Transformations** — Snowpark DataFrame filtering + `to_pandas_batches()` chunked processing.
 - **7.12 Snowpark Best Practices** — push relational work to Snowflake engine.
 - **7.13 Data Transformation Optimization for Event Tables** — per-signal-type Snowpark projections.
+- **7A Data Governance & Governed View Architecture** — governed view layer, consumer-managed policies, governance posture visibility.
+- **7B Event Table Telemetry: Entity Discrimination & OTel Semantic Conventions** — entity discrimination filter, OTel convention mapping.
 
 ### Pipeline Health Observability (MVP)
 - **Internal metrics table** (`_metrics.pipeline_health`) — records per-run operational metrics.
@@ -77,7 +86,6 @@ This section defines the boundary of the first shipped version. Everything descr
 - **Rate Limits Dashboard Tab** (Section 9.3) — HEC/OTLP rate limit metrics visualization.
 
 ### Exporter Features (Deferred)
-- PII redaction / field masking.
 - Sampling.
 - Attribute/label normalization or renaming.
 - Content-based routing beyond basic source-type split.
@@ -142,7 +150,7 @@ The consumer is explicitly prompted (via the Streamlit UI, using the [Python Per
 
 | Pack | Included Telemetry Sources | Use Case |
 |---|---|---|
-| **Distributed Tracing Pack** | User-selected Event Tables (SNOWFLAKE.TELEMETRY.EVENTS or custom) | Distributed traces (→ OTLP/gRPC), custom metrics (→ OTLP/gRPC), application logs (→ HEC), error tracking |
+| **Distributed Tracing Pack** | User-selected Event Tables (SNOWFLAKE.TELEMETRY.EVENTS or custom); MVP scope: **SQL/Snowpark compute telemetry** (queries, stored procedures, UDFs, UDTFs) | Distributed traces (→ OTLP/gRPC), custom metrics (→ OTLP/gRPC), application logs (→ HEC), error tracking |
 | **Performance Pack** | QUERY_HISTORY, TASK_HISTORY, COMPLETE_TASK_GRAPHS, LOCK_WAIT_HISTORY | Slow query detection, task failure alerting, concurrency bottlenecks |
 | **Cost Pack** | METERING_HISTORY, WAREHOUSE_METERING_HISTORY, PIPE_USAGE_HISTORY, SERVERLESS_TASK_HISTORY, AUTOMATIC_CLUSTERING_HISTORY, STORAGE_USAGE, DATABASE_STORAGE_USAGE_HISTORY, DATA_TRANSFER_HISTORY, REPLICATION_USAGE_HISTORY, SNOWPARK_CONTAINER_SERVICES_HISTORY, EVENT_USAGE_HISTORY | Credit consumption, storage growth, data egress cost tracking |
 | **Security Pack** | LOGIN_HISTORY, ACCESS_HISTORY, SESSIONS, GRANTS_TO_USERS, GRANTS_TO_ROLES, NETWORK_POLICIES | Failed login alerting, access auditing, privilege drift detection |
@@ -150,6 +158,12 @@ The consumer is explicitly prompted (via the Streamlit UI, using the [Python Per
 
 
 The user enables packs via toggle switches. Advanced users can expand each pack to deselect individual sources. This approach enables iterative development — each pack can be built, tested, and released independently.
+
+**Event Table Telemetry Scope Notice**: When the consumer selects an Event Table for the Distributed Tracing Pack, the UI displays an informational banner explaining:
+
+> **Telemetry scope:** This release processes **SQL/Snowpark compute telemetry** (SQL queries, stored procedures, UDFs, UDTFs). The selected Event Table may contain telemetry from other Snowflake services (Snowpark Container Services, Streamlit apps, Cortex AI, etc.) — these are **filtered out** by the export pipeline and are not sent to Splunk. Future releases will add support for additional telemetry categories.
+
+This banner is displayed at Event Table selection time (not buried in docs) so the consumer understands exactly what telemetry the app will process. If the consumer's Event Table is dedicated to SQL/Snowpark compute (recommended), the banner is purely informational. If the Event Table is shared across multiple service categories, the banner clarifies that non-compute telemetry is excluded. See [Section 7B](#7b-event-table-telemetry-entity-discrimination--otel-semantic-conventions) for the entity discrimination design.
 
 **Destination Setup**: The user inputs backend credentials:
 - Splunk Observability Cloud Connection Settings:
@@ -162,6 +176,15 @@ The user enables packs via toggle switches. Advanced users can expand each pack 
 Tokens/secrets are securely stored using Snowflake Secrets. The OTLP exporter sends Event Table spans and metrics via OTLP/gRPC exclusively to Splunk Observability Cloud (see Section 7.9 for transport rationale). Event Table logs and all ACCOUNT_USAGE data are sent as structured JSON events through HTTP to the configured HEC endpoint.
 
 **Performance Tuning**: Parameters (`export_batch_size`, `max_batches_per_run`) use hardcoded defaults optimized for typical workloads and are not exposed in the MVP UI to reduce configuration complexity. Retry behavior relies entirely on transport-level retries built into the OTLP SDK and `httpx`/`tenacity` (see MVP Scope and Section 7.2) — no user-configurable retry settings in MVP.
+
+**Data Governance Configuration**: After initial setup, the Streamlit UI presents a **Governance Compliance** panel (read-only tab) that shows the consumer their current governance posture across all governed views the app has created. The panel does not configure policies — consumers attach masking, row access, and projection policies to the governed views via Snowflake SQL or Snowsight, outside the app. The panel's role is to:
+
+- Confirm which governed views exist and which policies are attached to each.
+- Show high-risk sources (e.g., `governed_query_history`) with their current masking mode and whether a default masking policy is active.
+- Surface an actionable callout: _"To control what data this app exports to Splunk, attach masking or row access policies to the governed views listed below."_
+- Provide a link to Snowsight Trust Center for full governance management.
+
+For consumers who have not yet configured any governance policies, the panel still renders — showing zero policies attached — so the consumer is aware the governance hook exists and can act on it at any time. See [Section 7A — Governance Compliance Panel](#governance-compliance-panel-streamlit) for the full description and [Data Governance & Privacy Features — §8.5](snowflake_data_governance_privacy_features.md) for the panel wireframe and implementation.
 
 All settings are stored in the app's configuration table (`_internal.config`) and can be adjusted via the Streamlit UI Settings panel.
 
@@ -222,17 +245,17 @@ CREATE TABLE _metrics.pipeline_health (
 
 **Event-Driven Pipeline (Event Table Pack)**:
 - Python Stored Procedure (`_internal.event_table_collector`): Based on the `opentelemetry-sdk` to read Event Table streams and export directly to Splunk via OTLP. Advances the stream offset via a zero-row INSERT pattern within an explicit transaction (see Section 8.0). In MVP, relies on transport-level retries only (OTel SDK built-in retry for gRPC, `httpx`/`tenacity` for HEC); if all retries exhaust, the batch is logged as failed in `_metrics.pipeline_health` and the pipeline advances.
-- Change Tracking (Stream): An `APPEND_ONLY` stream created on each selected Event Table to capture new telemetry records without duplicates ([Streams docs](https://docs.snowflake.com/en/user-guide/streams-intro): append-only streams are "notably more performant" for insert-only sources like Event Tables). Streams use a namespaced naming convention (`_splunk_obs_stream_<event_table_name>`) to avoid conflicts if the consumer has their own streams on the same Event Table. The setup script should also set `MAX_DATA_EXTENSION_TIME_IN_DAYS = 90` on tracked Event Tables to maximize the staleness prevention window (see Section 8.1).
+- Change Tracking (Stream): An `APPEND_ONLY` stream created on the **governed Event Table view** (not the raw Event Table) to capture new telemetry records without duplicates ([Streams docs](https://docs.snowflake.com/en/user-guide/streams-intro): append-only streams are "notably more performant" for insert-only sources like Event Tables). This ensures consumer governance policies are applied to the change data. Streams use a namespaced naming convention (`_splunk_obs_stream_<event_table_name>`) to avoid conflicts if the consumer has their own streams on the same Event Table. The setup script should also set `MAX_DATA_EXTENSION_TIME_IN_DAYS = 90` on tracked Event Tables to maximize the staleness prevention window (see Section 8.1).
 - Serverless Triggered Task: Configured with `WHEN SYSTEM$STREAM_HAS_DATA('stream_name')` — the `SCHEDULE` parameter is **not** set (triggered and scheduled are mutually exclusive for triggered tasks). `TARGET_COMPLETION_INTERVAL` is **required** for serverless triggered tasks ([triggered tasks docs](https://docs.snowflake.com/en/user-guide/tasks-triggered)). Executes the collector procedure as soon as new telemetry data is available. Minimum trigger interval is 30 seconds by default (`USER_TASK_MINIMUM_TRIGGER_INTERVAL_IN_SECONDS`). If the task hasn't run for 12 hours, Snowflake schedules an automatic health check to prevent stream staleness. Note: `SYSTEM$STREAM_HAS_DATA()` calls on an empty stream also prevent staleness by resetting the staleness clock. See Tasks Architecture section for full DDL pattern and parameter reference.
 
 **Poll-Based Pipeline (MVP: Performance Pack only; post-MVP: Cost / Security / Data Pipeline Packs)**:
 - Python Stored Procedure (`_internal.account_usage_source_collector`): A shared, parameterized procedure that queries a single ACCOUNT_USAGE view using watermark-based incremental reads and exports directly to Splunk via HEC. Accepts source name as parameter. In MVP, relies on transport-level retries only (`httpx`/`tenacity`); if all retries exhaust, the batch is logged as failed in `_metrics.pipeline_health` and the watermark advances.
 - High-Watermark State Table (`_internal.export_watermarks`): Tracks the last exported timestamp per source to avoid duplicates and missed records.
   - Schema: `(source_name VARCHAR PRIMARY KEY, last_exported_timestamp TIMESTAMP_LTZ, last_run_at TIMESTAMP_LTZ, rows_collected NUMBER, poll_interval_seconds NUMBER, last_poll_time TIMESTAMP_LTZ)`
-- Serverless [Task Graph](https://docs.snowflake.com/en/user-guide/tasks-graphs) (DAG): A root task (`_internal.account_usage_root`) scheduled at configurable intervals (default: every 30 minutes, aligned with the fastest source cadence — see Section 7.8) with one child task per enabled ACCOUNT_USAGE source. Child tasks of the same parent run in parallel, each calling `account_usage_source_collector` for its designated source. A **finalizer task** (`_internal.pipeline_health_recorder_task`) is attached to the DAG and runs after all child tasks complete (regardless of success/failure) — it aggregates per-source metrics and writes them to `_metrics.pipeline_health` (see Section 7.6 for detailed architecture). All tasks in the graph must reside in the same schema (`_internal`) and share the same owner role ([task graph ownership](https://docs.snowflake.com/en/user-guide/tasks-graphs#manage-task-graph-ownership)). The task graph is managed programmatically via the [Snowflake Python API DAG classes](https://docs.snowflake.com/en/developer-guide/snowflake-python-api/snowflake-python-managing-tasks), allowing the Streamlit UI to dynamically add/remove child tasks when monitoring packs are enabled/disabled. `ALLOW_OVERLAPPING_EXECUTION` is `FALSE` (default) — only one graph run at a time. See Tasks Architecture section for full DDL patterns, parameter reference, and lifecycle management.
+- Independent Serverless Scheduled Tasks: One standalone serverless task per enabled ACCOUNT_USAGE source, each with its own schedule aligned to the source's Snowflake latency (see Section 7.8). Each task calls `account_usage_source_collector` for its designated source and records its own health metrics inline to `_metrics.pipeline_health` at the end of each run (see Section 7.6). Tasks are fully independent — each has its own error handling, retry (`TASK_AUTO_RETRY_ATTEMPTS`), and auto-suspend (`SUSPEND_TASK_AFTER_NUM_FAILURES`). `ALLOW_OVERLAPPING_EXECUTION` is `FALSE` (default) per task — each task won't overlap with itself, but different sources run concurrently without blocking each other. Adding/removing sources via the Streamlit UI simply creates/drops individual tasks without affecting other running sources. See Tasks Architecture section for full DDL patterns, parameter reference, and lifecycle management.
 
 **Export Pipeline (Shared)**:
-- Note: The `event_table_collector` and `account_usage_source_collector` procedures above each handle their own data reading AND export within a single procedure call. The "exporter" logic is embedded within each collector — there is no separate standalone exporter process. For the Event Table pipeline, transactional atomicity is achieved via explicit BEGIN/COMMIT wrapping a zero-row INSERT that consumes the stream (see Section 8.0). For the ACCOUNT_USAGE pipeline, each source runs as a parallel child task in a task graph (see Section 7.6), with each child calling the shared `account_usage_source_collector` procedure for its designated source.
+- Note: The `event_table_collector` and `account_usage_source_collector` procedures above each handle their own data reading AND export within a single procedure call. The "exporter" logic is embedded within each collector — there is no separate standalone exporter process. For the Event Table pipeline, transactional atomicity is achieved via explicit BEGIN/COMMIT wrapping a zero-row INSERT that consumes the stream (see Section 8.0). For the ACCOUNT_USAGE pipeline, each source runs as an independent standalone scheduled task (see Section 7.6), calling the shared `account_usage_source_collector` procedure for its designated source.
 
 > **Note (Post-MVP):** A dedicated retry task (`_internal.failed_batch_retrier`) will be added to periodically re-export persistently failed batches using the zero-copy failure tracking references. See MVP Scope for details.
 
@@ -251,9 +274,15 @@ Scope: Any Snowflake-supported code (UDFs, UDTFs, Stored Procedures, or Snowpark
 
 Ingestion: Snowflake automatically captures OTel-compatible events (Metrics, Logs, Traces) and writes them asynchronously to the designated Event Table. The Event Table is the only Snowflake telemetry source that supports Streams (change tracking), enabling the near-real-time event-driven pipeline.
 
+**Governed view layer:** The app creates a custom governed view over the Event Table. Export pipelines and streams operate against this view — not the raw table — so that consumer-applied governance policies (masking, row access, projection) are honoured transparently. Masking policies cannot be applied directly to Event Tables; the governed view pattern is the validated workaround (see [Event Table Streams & Governance Research](event_table_streams_governance_research.md) for live-tested confirmation).
+
+**Entity discrimination:** The Event Table is a shared, multi-service telemetry store. MVP targets SQL/Snowpark compute telemetry by filtering on `RESOURCE_ATTRIBUTES:"snow.executable.type"` (positive include-list applied in Snowpark downstream of the governed view). The full entity discrimination strategy and OTel semantic convention mapping are documented in [Event Table Entity Discrimination Strategy](event_table_entity_discrimination_strategy.md) and [OTel Semantic Conventions Research](otel_semantic_conventions_snowflake_research.md).
+
 ### 4.2 ACCOUNT_USAGE Producer
 
 Beyond the Event Table, Snowflake stores extensive operational telemetry in the `SNOWFLAKE.ACCOUNT_USAGE` schema. These are secure shared views with inherent latency (45 minutes to 3 hours depending on the view) and 1-year retention. They do not support Streams, so the app uses scheduled polling with watermark-based incremental reads.
+
+**Governed view layer:** The app creates custom governed views over each ACCOUNT_USAGE source view. These governed views serve the same purpose as for Event Tables: consumers can attach Snowflake-native governance policies (dynamic data masking, row access, projection) and the export pipeline reads exclusively from the governed views. See [Data Governance & Privacy Features](snowflake_data_governance_privacy_features.md) for the "Pattern C: Custom Governed Views" design rationale.
 
 The complete catalog of all telemetry sources is documented in **Appendix A: Comprehensive Snowflake Telemetry Source Catalog**.
 
@@ -398,7 +427,7 @@ The zero-copy approach eliminates 99.9%+ of staging storage overhead while maint
 
 ## 6. Near-Real-Time Export (The Exporter)
 
-Each collector stored procedure (`event_table_collector` and `account_usage_source_collector`) embeds export logic within its own execution, handling routing, batching, export, and failure tracking. The Event Table pipeline uses triggered tasks (fires when stream has data), while the ACCOUNT_USAGE pipeline uses a task graph with parallel child tasks — one per enabled source — with latency-aware adaptive polling (see Sections 7.6 and 7.8).
+Each collector stored procedure (`event_table_collector` and `account_usage_source_collector`) embeds export logic within its own execution, handling routing, batching, export, and failure tracking. The Event Table pipeline uses triggered tasks (fires when stream has data), while the ACCOUNT_USAGE pipeline uses independent standalone scheduled tasks — one per enabled source, each with its own schedule aligned to the source's Snowflake latency (see Sections 7.6 and 7.8).
 
 ### 6.1 Exporter Features (MVP Scope)
 
@@ -443,7 +472,7 @@ The exporter implements only a minimal set of features that are commonly availab
 
 The following exporter features are deferred post-MVP (see also the consolidated **MVP Scope** section at the top of this document):
 
-- PII redaction / field masking.
+- ~~PII redaction / field masking~~ — **Moved to MVP** via the governed view architecture. Consumers apply Snowflake-native data protection policies (dynamic data masking, row access, projection) on the governed views that the app creates over Event Tables and ACCOUNT_USAGE views. The app's export pipelines read exclusively from these governed views, so any policy the consumer attaches is honoured transparently. See [Data Governance & Governed View Architecture](#data-governance--governed-view-architecture).
 - Sampling.
 - Attribute/label normalization or renaming.
 - Content-based routing beyond basic source-type split.
@@ -455,7 +484,7 @@ The following exporter features are deferred post-MVP (see also the consolidated
 
 ### 6.2 Export Routing
 
-The exporter reads batches directly from data sources (**Streams for Event Tables**, **watermark queries for ACCOUNT_USAGE**) and routes them based on source type and signal type:
+The exporter reads batches from **governed views** — never from raw source objects — and routes them based on source type and signal type. Streams are created on the Event Table governed views; watermark queries run against the ACCOUNT_USAGE governed views. This ensures all consumer-applied governance policies are enforced before data leaves Snowflake.
 
 **Event Table Streams → Split Routing by Signal Type**
 
@@ -1004,73 +1033,78 @@ Per-Source Configuration:
 | ACCESS_HISTORY   | 3 hours | 4.5 hours      | QUERY_ID + QUERY_START_TIME              |
 | METERING_HISTORY | 3 hours | 4.5 hours      | START_TIME + SERVICE_TYPE (no unique ID) |
 
-### 7.6 Parallel Processing via Task Graph
+### 7.6 Independent Scheduled Tasks for ACCOUNT_USAGE Sources
 
-Approach: Use a Snowflake [task graph](https://docs.snowflake.com/en/user-guide/tasks-graphs) (DAG) to parallelize ACCOUNT_USAGE source collection. Each enabled source gets its own serverless child task that runs in parallel, with session isolation and independent error handling.
+Approach: Each enabled ACCOUNT_USAGE source gets its own standalone serverless scheduled task with a source-specific schedule aligned to its Snowflake latency. Tasks run independently — no root task, no child dependencies, no finalizer. Each task calls the shared `account_usage_source_collector` procedure and records its own health metrics inline.
 
-**Architecture: ACCOUNT_USAGE Collector Task Graph**
+**Architecture: ACCOUNT_USAGE Collector Tasks**
 
 ```
-Root Scheduled Task (_internal.account_usage_root)
-  │  schedule: every 30 minutes (serverless, matches fastest source cadence)
-  │  body: determines which sources are due for polling (latency-aware schedule from Section 7.8)
-  │
-  ├── Child Task: query_history_collector       ── runs in parallel ──┐
-  ├── Child Task: login_history_collector        ── runs in parallel ──┤
-  ├── Child Task: metering_history_collector     ── runs in parallel ──┤
-  ├── Child Task: task_history_collector         ── runs in parallel ──┤
-  ├── Child Task: ... (one per enabled source)   ── runs in parallel ──┤
-  │                                                                    │
-  └── Finalizer Task: pipeline_health_recorder_task  ◄── runs after all ─┘
-        body: CALL _internal.pipeline_health_recorder()
-              records pipeline health metrics for all sources
+Independent Scheduled Task: query_history_collector
+  schedule: every 30 minutes (serverless)
+  body: CALL _internal.account_usage_source_collector('QUERY_HISTORY')
+
+Independent Scheduled Task: task_history_collector
+  schedule: every 30 minutes (serverless)
+  body: CALL _internal.account_usage_source_collector('TASK_HISTORY')
+
+Independent Scheduled Task: complete_task_graphs_collector
+  schedule: every 30 minutes (serverless)
+  body: CALL _internal.account_usage_source_collector('COMPLETE_TASK_GRAPHS')
+
+Independent Scheduled Task: lock_wait_history_collector
+  schedule: every 30 minutes (serverless)
+  body: CALL _internal.account_usage_source_collector('LOCK_WAIT_HISTORY')
+
+(Post-MVP: additional tasks per enabled source, each with its own schedule)
 ```
 
-Each child task calls a shared stored procedure (`_internal.account_usage_source_collector`) parameterized by source name. The root task uses `SYSTEM$SET_RETURN_VALUE` to pass the list of sources due for polling, and child tasks read it via `SYSTEM$GET_PREDECESSOR_RETURN_VALUE` ([task graph runtime values](https://docs.snowflake.com/en/user-guide/tasks-graphs#pass-return-values-between-tasks)). Alternatively, each child task independently checks the watermark table to determine if polling is due.
+Each task calls the shared stored procedure (`_internal.account_usage_source_collector`) parameterized by source name. The procedure handles watermark-based incremental reads, data transformation, HEC export, and inline health metric recording — writing a summary row to `_metrics.pipeline_health` at the end of each run (regardless of success or failure).
 
-**Why task graphs over the alternatives:**
+**Why independent scheduled tasks over the alternatives:**
 
-| Factor | Task graph (chosen) | UNION ALL (previously considered) | Thread-safe sessions |
-|---|---|---|---|
-| Parallelism | Native — child tasks of same parent [run in parallel](https://docs.snowflake.com/en/user-guide/tasks-graphs) | Single query, Snowflake engine parallelizes internally | Requires account-level flag `FEATURE_THREAD_SAFE_PYTHON_SESSION` ([blog](https://medium.com/snowflake/snowpark-python-supports-thread-safe-session-objects-d66043f36115)) |
-| Session isolation | Yes — each task gets its own session | N/A (single query) | No — shared session, [no concurrent transactions](https://medium.com/snowflake/snowpark-python-supports-thread-safe-session-objects-d66043f36115) |
-| Error isolation | Each task fails independently; `TASK_AUTO_RETRY_ATTEMPTS` for automatic retry | Single query — one source failure fails entire query | One thread crash can affect others |
-| Consumer compatibility | Works in all accounts, no feature flags | Works in all accounts | Cannot guarantee flag enabled in consumer accounts |
-| Watermark management | Each child manages its own watermark atomically | Complex — all sources in one transaction | Manual per-thread watermark coordination |
-| Observability | Built-in `TASK_HISTORY`, `COMPLETE_TASK_GRAPHS` views | Single query — no per-source visibility | Manual metrics |
-| Serverless scaling | Each task auto-scales independently | Single warehouse | Single procedure resources |
-| Schema alignment | Not needed — each source queried independently | Required — different column sets need projection alignment | Not needed |
+| Factor | Independent scheduled tasks (chosen) | Task graph (DAG) | UNION ALL | Thread-safe sessions |
+|---|---|---|---|---|
+| Parallelism | Natural — tasks run concurrently on their own schedules | Native — child tasks of same parent run in parallel | Single query, Snowflake engine parallelizes internally | Requires account-level flag `FEATURE_THREAD_SAFE_PYTHON_SESSION` |
+| Schedule flexibility | Each task has its own schedule matching its source latency | Single root schedule drives all; requires early-exit pattern for varied cadences | Single schedule | Single schedule |
+| Error isolation | Each task fails/retries/auto-suspends independently; one source failure never affects others | Child failures don't block siblings, but root suspension (for modifications) stops all sources | Single query — one source failure fails entire query | One thread crash can affect others |
+| Operational flexibility | Add/remove/modify any task without affecting others | Must suspend root task (stopping all sources) before any modification | N/A | N/A |
+| Cost efficiency | No overhead tasks (no root, no finalizer); each task fires only at its own cadence | Root + finalizer run every cycle; early-exit tasks still incur startup overhead | Single query | Single procedure |
+| Consumer compatibility | Works in all accounts, no feature flags | Works in all accounts | Works in all accounts | Cannot guarantee flag enabled in consumer accounts |
+| Watermark management | Each task manages its own watermark atomically | Each child manages its own watermark atomically | Complex — all sources in one transaction | Manual per-thread watermark coordination |
+| Observability | Built-in `TASK_HISTORY` per task; dashboard aggregates on-read | `TASK_HISTORY` + `COMPLETE_TASK_GRAPHS` for graph-level view | Single query — no per-source visibility | Manual metrics |
+| Serverless scaling | Each task auto-scales independently | Each task auto-scales independently | Single warehouse | Single procedure resources |
+| Upgrade safety | Replace tasks one at a time; other sources keep running | `CREATE OR REPLACE TASK` on any task requires root suspend → all sources stop | N/A | N/A |
 
 **Rationale:**
 
-- **No feature flags**: Task graphs work in every consumer account. Thread-safe sessions require `FEATURE_THREAD_SAFE_PYTHON_SESSION` ([Snowpark docs](https://docs.snowflake.com/en/developer-guide/snowpark/python/working-with-dataframes#submit-snowpark-queries-concurrently)), which we cannot guarantee. The [Reddit community](https://www.reddit.com/r/snowflake/comments/1m8o304/async_stored_procedure_calls_vs_dynamically/) also confirms that ASYNC calls within a stored procedure share the same session, causing conflicts.
-- **Session isolation**: Each child task runs as an independent stored procedure call with its own session. No shared state issues, no temp table conflicts ([task graph docs](https://docs.snowflake.com/en/user-guide/tasks-graphs)).
-- **Native retry**: `TASK_AUTO_RETRY_ATTEMPTS` on the root task provides automatic retry for the entire graph. Individual child task failures don't block other sources. Additionally, `SUSPEND_TASK_AFTER_NUM_FAILURES` (default 10) auto-suspends after consecutive failures to prevent runaway costs ([docs](https://docs.snowflake.com/en/user-guide/tasks-intro#automatically-suspend-tasks-after-failed-runs)).
-- **Native monitoring**: `COMPLETE_TASK_GRAPHS` view gives end-to-end DAG execution visibility that feeds directly into our Pipeline Health Dashboard (Section 9).
-- **Finalizer task**: Runs after all child tasks complete (or fail), recording pipeline health metrics and performing cleanup — a perfect fit for our observability requirements. Each root task can have exactly one finalizer; the finalizer cannot have child tasks.
-- **No overlapping execution**: `ALLOW_OVERLAPPING_EXECUTION` defaults to `FALSE` — if a graph run exceeds the schedule interval, the next run is skipped rather than overlapping. This is critical for watermark-based pipeline correctness.
-- **Per-task timeouts**: `USER_TASK_TIMEOUT_MS` on the root task applies to the entire graph; the same parameter on child tasks overrides the root timeout for that specific child ([graph timeouts docs](https://docs.snowflake.com/en/user-guide/tasks-graphs#task-graph-timeouts)).
+- **No coordination overhead**: ACCOUNT_USAGE sources are fully independent data streams with independent watermarks, independent HEC exports, and no inter-source dependencies. A DAG adds root/finalizer tasks that exist only as coordination scaffolding for sources that don't need coordinating.
+- **Source-specific schedules**: Each task's `SCHEDULE` is set to the optimal polling interval for its source (e.g., 30 min for QUERY_HISTORY, 90 min for ACCESS_HISTORY post-MVP). No early-exit pattern needed — the scheduler IS the cadence. This eliminates wasted task invocations for sources with slower latencies.
+- **True error isolation**: A slow or failing source (e.g., QUERY_HISTORY backfilling after a gap) only blocks its own next run (`ALLOW_OVERLAPPING_EXECUTION = FALSE` per task). All other sources continue on schedule. With a DAG, overlap prevention on the root task would block ALL sources if ANY source is slow.
+- **Operational simplicity**: Adding a new source = `CREATE TASK` + `ALTER TASK RESUME`. Removing a source = `DROP TASK`. No root suspend/resume ceremony. No risk of a modification window causing a polling gap for all sources.
+- **Cost savings**: No root task or finalizer invocations. For MVP with 4 sources at 30-min cadence: 4 task invocations per cycle vs. 6 with a DAG (root + 4 children + finalizer). Over 48 daily cycles: 192 vs. 288 serverless task invocations per day. The savings grow further post-MVP as sources with different cadences avoid unnecessary early-exit invocations.
+- **Inline health recording**: Each `account_usage_source_collector` call records its own operational metrics (rows collected, exported, failed, duration) to `_metrics.pipeline_health` at the end of execution. The Streamlit Pipeline Health Dashboard aggregates per-source health on-read — no finalizer needed for aggregation.
+- **Native retry per task**: `TASK_AUTO_RETRY_ATTEMPTS` on each task retries only the failed source. `SUSPEND_TASK_AFTER_NUM_FAILURES` (default 10) auto-suspends only the failing source to prevent runaway costs ([docs](https://docs.snowflake.com/en/user-guide/tasks-intro#automatically-suspend-tasks-after-failed-runs)).
+- **No feature flags**: Independent scheduled tasks work in every consumer account. Thread-safe sessions require `FEATURE_THREAD_SAFE_PYTHON_SESSION` ([Snowpark docs](https://docs.snowflake.com/en/developer-guide/snowpark/python/working-with-dataframes#submit-snowpark-queries-concurrently)), which we cannot guarantee.
 
-**Task graph management via Python API:**
+**Task management via Streamlit UI:**
 
-Task graphs can be managed programmatically using the [Snowflake Python API `DAG` and `DAGTask` classes](https://docs.snowflake.com/en/developer-guide/snowflake-python-api/snowflake-python-managing-tasks), enabling the Streamlit UI to dynamically add/remove child tasks when the consumer enables/disables monitoring packs. See the Tasks Architecture section for full DDL patterns, lifecycle management, and the complete task inventory.
+The Streamlit UI dynamically creates/drops individual tasks when the consumer enables/disables monitoring packs or individual sources — see the Tasks Architecture section for full DDL patterns and lifecycle management.
 
 **Post-MVP optimization** (thread-safe sessions):
 
-For consumer accounts with `FEATURE_THREAD_SAFE_PYTHON_SESSION` enabled and Snowpark >= 1.24, a single stored procedure could use `threading.Thread` + `ThreadPoolExecutor` to submit concurrent DataFrame queries for multiple sources within one task. This reduces task management overhead for high-source-count deployments. However, the task graph approach remains the default for maximum compatibility.
+For consumer accounts with `FEATURE_THREAD_SAFE_PYTHON_SESSION` enabled and Snowpark >= 1.24, a single stored procedure could use `threading.Thread` + `ThreadPoolExecutor` to submit concurrent DataFrame queries for multiple sources within one task. This could consolidate tasks for high-source-count deployments. However, the independent task approach remains the default for maximum compatibility and operational simplicity.
 
 ### 7.7 Source Prioritization
-Approach: Process Event Table streams and ACCOUNT_USAGE sources in priority order to ensure critical telemetry exports first.
+Approach: Process Event Table streams in priority order within the Event Table collector to ensure critical telemetry exports first. ACCOUNT_USAGE sources run as independent scheduled tasks (Section 7.6) and do not require runtime prioritization — their relative importance is expressed through schedule frequency.
 
-Priority Ranking:
+Priority Ranking (Event Table streams):
 - Active distributed traces (Event Tables with recent SPANs) — Real-time debugging dependency
-- QUERY_HISTORY — High-volume performance monitoring (slow query detection)
-- LOGIN_HISTORY, ACCESS_HISTORY — Security-sensitive data
-- Cost sources (METERING_HISTORY, WAREHOUSE_METERING_HISTORY) — Financial tracking
-- Low-volume sources (STORAGE_USAGE, REPLICATION_USAGE) — Daily granularity data
+- High-volume backlog streams — Prevent growing lag
+- Stale data — Lower priority
 
 ```
-FUNCTION prioritize_sources():
+FUNCTION prioritize_streams():
     sources = empty list
     FOR each stream IN event_table_streams:
         latest_timestamp = GET latest timestamp from stream
@@ -1092,58 +1126,33 @@ FUNCTION prioritize_sources():
 
 Rationale:
 - Active traces need continuity: Exporting parent-child spans together improves backend correlation
-- Prevent head-of-line blocking: Low-priority sources don't starve high-priority sources
+- Prevent head-of-line blocking: Low-priority streams don't starve high-priority streams
 - Better user experience: Recent errors/failures visible faster in Splunk
+- ACCOUNT_USAGE sources are naturally prioritized by schedule frequency — high-priority sources (QUERY_HISTORY: 30 min) poll more frequently than low-priority ones (STORAGE_USAGE: 6 hours post-MVP)
 
-### 7.8 Latency-Aware Adaptive Polling Schedule
-Problem: Polling all ACCOUNT_USAGE sources on every root task invocation wastes queries on sources whose data hasn't changed yet (due to inherent Snowflake latency).
+### 7.8 Per-Source Polling Schedule
+Problem: ACCOUNT_USAGE views have inherent Snowflake latency (45 minutes to 3+ hours depending on the view). Polling faster than the latency period is wasteful.
 
-Approach: The root task runs every **30 minutes** (matching the fastest source cadence — QUERY_HISTORY at 45 min latency). Each child task checks its own `should_poll_source()` watermark before doing any work. If a source is not yet due, the child exits immediately (**early-exit pattern**) with minimal serverless compute overhead. This aligns the task graph schedule (Section 7.6) with per-source polling cadences below.
+Approach: Each source's standalone scheduled task (Section 7.6) runs at an interval aligned with its Snowflake latency — typically ~2/3 of the documented latency period to ensure data is available when the query runs. The task `SCHEDULE` parameter directly encodes the polling cadence; no early-exit logic or shared root schedule is needed.
 
 Per-Source Poll Intervals:
-| Source           | Snowflake Latency    | Poll Interval | Polls per day | Early-exit ratio* |
-| ---------------- | -------------------- | ------------- | ------------- | ----------------- |
-| QUERY_HISTORY    | 45 min               | 30 min        | 48            | 0% (polls every cycle) |
-| TASK_HISTORY     | 45 min               | 30 min        | 48            | 0% (polls every cycle) |
-| LOGIN_HISTORY    | 2 hours              | 60 min        | 24            | 50% (skips every other) |
-| ACCESS_HISTORY   | 3 hours              | 90 min        | 16            | 67% (skips 2 of 3)     |
-| METERING_HISTORY | 3 hours              | 90 min        | 16            | 67% (skips 2 of 3)     |
-| STORAGE_USAGE    | 2 hours (daily data) | 6 hours       | 4             | 92% (skips 11 of 12)   |
+| Source           | Snowflake Latency    | Task Schedule   | Polls per day |
+| ---------------- | -------------------- | --------------- | ------------- |
+| QUERY_HISTORY    | 45 min               | `30 MINUTES`    | 48            |
+| TASK_HISTORY     | 45 min               | `30 MINUTES`    | 48            |
+| COMPLETE_TASK_GRAPHS | 45 min           | `30 MINUTES`    | 48            |
+| LOCK_WAIT_HISTORY| 1 hour               | `30 MINUTES`    | 48            |
+| LOGIN_HISTORY    | 2 hours              | `60 MINUTES`    | 24            |
+| ACCESS_HISTORY   | 3 hours              | `90 MINUTES`    | 16            |
+| METERING_HISTORY | 3 hours              | `90 MINUTES`    | 16            |
+| STORAGE_USAGE    | 2 hours (daily data) | `360 MINUTES`   | 4             |
 
-*Early-exit ratio: fraction of root invocations where this child task starts, checks watermark, and exits without querying. Minimal compute cost (~1–2 seconds per early exit).
-
-**Early-exit pattern (child task):**
-```
-FUNCTION child_task_body(source_name):
-    # Step 1: Check if this source is due for polling
-    IF NOT should_poll_source(source_name):
-        RETURN  # Early exit — no compute, no query
-    
-    # Step 2: Source is due — proceed with collection
-    CALL account_usage_source_collector(source_name)
-```
-
-```
-FUNCTION should_poll_source(source_name):
-    latency_seconds = LOOKUP source latency (e.g., 45*60 for QUERY_HISTORY)
-    poll_interval = latency_seconds * 0.66  # Poll at ~2/3 of latency period
-    last_poll_time = GET last poll time for source_name
-    
-    RETURN (NOW() - last_poll_time) >= poll_interval
-```
-
-Storage (extend export_watermarks table):
-```sql
-ALTER TABLE _internal.export_watermarks 
-ADD COLUMN poll_interval_seconds NUMBER,
-ADD COLUMN last_poll_time TIMESTAMP_LTZ;
-```
 Rationale:
-- **Root interval = fastest source cadence (30 min):** Ensures QUERY_HISTORY and TASK_HISTORY (45 min latency) are polled optimally while slower sources skip most cycles via early exit
-- ACCOUNT_USAGE views have documented latency windows — polling faster than latency is wasteful
-- Polling at ~2/3 of latency period ensures data is available when query runs
-- Early-exit child tasks consume negligible serverless compute (~1–2 sec each), far less than a full source query
-- Finalizer task still runs every cycle to record pipeline health, including which sources were polled vs. skipped
+- **Schedule IS the cadence**: each task fires only when its source is expected to have new data. No wasted invocations, no early-exit overhead.
+- ACCOUNT_USAGE views have documented latency windows — polling faster than latency is wasteful.
+- Polling at ~2/3 of latency period ensures data is available when query runs.
+- Post-MVP sources with longer latencies (e.g., STORAGE_USAGE at 6 hours) run only 4 times/day instead of 48 times/day with early-exit skips — significant cost savings.
+- Each task's `ALLOW_OVERLAPPING_EXECUTION = FALSE` (default) ensures a slow run only blocks its own next invocation, not other sources.
 
 ### 7.9 OTLP Transport Selection
 Decision: Use OTLP/gRPC exclusively for Event Table exports to Splunk Observability Cloud. No HTTP fallback in MVP.
@@ -1243,12 +1252,14 @@ Problem: Transforming millions of Event Table rows into OTLP protobuf objects in
 
 Approach: Use Snowpark for all heavy relational work (filtering, projection, deduplication) and perform OTLP/HEC conversion in vectorized, chunked batches in Python using [`DataFrame.to_pandas_batches()`](https://docs.snowflake.com/en/developer-guide/snowpark/reference/python/latest/snowpark/api/snowflake.snowpark.DataFrame.to_pandas_batches) — avoiding global `collect()` and per-row loops over entire datasets.
 
+> **Governed views:** All Snowpark DataFrames read from **governed views**, not raw source objects. For Event Tables, entity discrimination (filtering by `RESOURCE_ATTRIBUTES:"snow.executable.type"`) is applied as an additional Snowpark filter downstream of the governed view. See [Event Table Entity Discrimination Strategy](event_table_entity_discrimination_strategy.md) for the full filter logic.
+
 **Concrete API — `to_pandas_batches()`:**
 
 [`DataFrame.to_pandas_batches()`](https://docs.snowflake.com/en/developer-guide/snowpark/reference/python/latest/snowpark/api/snowflake.snowpark.DataFrame.to_pandas_batches) executes the query and returns an **iterator of Pandas DataFrames** (each containing a subset of rows). This is the Snowpark-native mechanism for memory-bounded chunked processing — always available, no feature flags, no threading.
 
 ```python
-# Within each collector stored procedure (per-source child task):
+# Within each collector stored procedure (per-source scheduled task):
 df = session.table("SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY").filter(
     (col("START_TIME") > watermark - overlap_window) &
     (col("START_TIME") <= current_timestamp() - source_latency)
@@ -1264,7 +1275,7 @@ For the Event Table pipeline (OTLP/HEC export), filtering and VARIANT extraction
 
 ```python
 # Step 1: Snowpark — filter by RECORD_TYPE and project/extract per signal
-stream_df = session.table("stream_on_event_table")
+stream_df = session.table("stream_on_governed_event_table_view")
 
 spans_projected = stream_df.filter(col("RECORD_TYPE") == "SPAN").select(
     col("TIMESTAMP"), col("START_TIMESTAMP"),
@@ -1383,12 +1394,16 @@ The following checklist maps Snowpark best practices (sourced from Snowflake eng
 
 Event Table rows contain VARIANT/OBJECT columns (`RECORD`, `RECORD_ATTRIBUTES`, `RESOURCE_ATTRIBUTES`, `SCOPE`, `TRACE`) that require field extraction before export. The following optimizations push transformation work into Snowflake's columnar engine rather than performing it in Python, based on Snowflake transformation best practices ([Well-Architected Framework](https://www.snowflake.com/en/developers/guides/well-architected-framework-performance/), [Coalesce guide](https://coalesce.io/data-insights/the-complete-guide-to-snowflake-data-transformation/)).
 
+> **Note:** All operations below read from the **stream on the governed view**, not the raw Event Table. This ensures consumer governance policies (masking, row access, projection) are applied before any data processing.
+
 **1. Filter by `RECORD_TYPE` first** — Before any projection or extraction, filter the stream by signal type (`SPAN`, `LOG`, `METRIC`, `SPAN_EVENT`) as the first Snowpark DataFrame operation. This enables Snowflake's partition pruning and ensures each signal-specific code path only processes relevant rows:
 
 > **Note:** `RECORD_TYPE` can also be `EVENT` (used for Iceberg automated refresh events). The app filters to `LOG`, `SPAN`, `SPAN_EVENT`, `METRIC` only; `EVENT` rows are excluded unless Iceberg event export is added in a future release.
 
+**1a. Entity discrimination filter** — After `RECORD_TYPE` filtering, apply the entity discrimination filter to target MVP-scope service types (SQL/Snowpark compute). This uses a positive include-list on `RESOURCE_ATTRIBUTES:"snow.executable.type"` — see [Event Table Entity Discrimination Strategy](event_table_entity_discrimination_strategy.md) for the complete filter specification.
+
 ```python
-stream_df = session.table("stream_on_event_table")
+stream_df = session.table("stream_on_governed_event_table_view")
 spans_df  = stream_df.filter(col("RECORD_TYPE") == "SPAN")
 logs_df   = stream_df.filter(col("RECORD_TYPE") == "LOG")
 metrics_df = stream_df.filter(col("RECORD_TYPE") == "METRIC")
@@ -1454,7 +1469,96 @@ SELECT * EXCLUDE rn FROM deduped LIMIT :batch_size
 
 ---
 
+## 7A. Data Governance & Governed View Architecture
+
+### Design Principle: "Leverage, Don't Replicate"
+
+The app does **not** build its own masking, redaction, or access-control logic. Instead, it creates a thin **governed view layer** over every telemetry source and reads exclusively from those views. Consumers use Snowflake's native governance capabilities — dynamic data masking, row access policies, projection policies, and object tagging — to control what data the export pipelines can see. Because the app never bypasses the views, any policy the consumer attaches is honoured automatically.
+
+### Governed View Pattern (Pattern C)
+
+For each telemetry source the app exposes a `SELECT *`-style view:
+
+| Source Type | Raw Object | Governed View |
+|---|---|---|
+| Event Table | `<consumer_event_table>` | `_views.governed_event_table` |
+| ACCOUNT_USAGE view | `SNOWFLAKE.ACCOUNT_USAGE.<VIEW>` | `_views.governed_<view_name>` |
+
+Consumers attach governance policies to the governed views (not the raw objects). Streams (for Event Tables) and watermark queries (for ACCOUNT_USAGE) operate against the governed views.
+
+**Why views, not raw objects?**
+- Snowflake blocks masking policies directly on Event Tables and system-managed ACCOUNT_USAGE views.
+- Custom views are fully policy-eligible and support streams.
+- The view acts as a **governed data contract**: the app owns the view DDL; the consumer owns the policies.
+
+> **Operational risk:** `CREATE OR REPLACE VIEW` invalidates any stream attached to it. View DDL changes require careful stream migration. See [Event Table Streams & Governance Research](event_table_streams_governance_research.md) for tested limitations and mitigations.
+
+### Governance Capabilities Available to Consumers
+
+Consumers can apply any combination of the following on governed views:
+
+- **Dynamic Data Masking** — redact or hash sensitive fields (e.g., `db.user`, query text).
+- **Row Access Policies** — restrict which rows the app can read (e.g., exclude certain databases, roles).
+- **Projection Policies** — prevent specific columns from being selected by the export pipeline.
+- **Object Tagging** — classify governed view columns with `SEMANTIC_CATEGORY` / `PRIVACY_CATEGORY` tags for audit and automated policy assignment.
+
+### Consumer Governance Workflow
+
+The governed view layer is transparent to the export pipeline but requires deliberate consumer action to realise its full value. The Streamlit UI guides consumers through this process:
+
+1. **Governed views are created automatically** during infrastructure provisioning (Section 3). The consumer does not create them manually.
+2. **The consumer attaches policies outside the app** — using standard Snowflake SQL, Snowsight, or Trust Center — to the governed views the app exposes (listed in `_views` schema). For example:
+   - `ALTER VIEW _views.governed_query_history MODIFY COLUMN QUERY_TEXT SET MASKING POLICY my_schema.redact_query_text;`
+   - `ALTER VIEW _views.governed_event_table ADD ROW ACCESS POLICY my_schema.role_filter ON (RESOURCE_ATTRIBUTES);`
+3. **The consumer verifies their posture in the app's Governance Compliance panel** — a dedicated Streamlit tab that surfaces which policies and tags are currently attached to each governed view, and whether the consumer's classification profiles are active.
+
+### Governance Compliance Panel (Streamlit)
+
+The Governance Compliance panel is **not** a configuration screen — consumers do not attach policies through it. It is a **read-only posture dashboard** that builds trust by showing the consumer exactly how the app respects their governance decisions. The panel queries `ACCOUNT_USAGE` governance views (`TAG_REFERENCES`, `POLICY_REFERENCES`, `DATA_CLASSIFICATION_LATEST`, `ACCESS_HISTORY`) and the `SYSTEM$SHOW_SENSITIVE_DATA_MONITORED_ENTITIES()` function.
+
+The panel displays:
+
+- **Classification awareness** — number of databases with active auto-classification, classification profiles detected, semantic categories in use (e.g., `EMAIL`, `SSN`, `IP_ADDRESS`).
+- **Active protection honoured by this app** — count and type of masking policies, row access policies, and projection policies currently attached to the app's governed views.
+- **Per-view governance detail** — for each governed view: attached policies, current masking mode (e.g., `QUERY_TEXT` mode for `governed_query_history`), row access policy status, and (for Event Table views) stream health / `STALE_AFTER` date.
+- **Actionable guidance** — a callout informing the consumer that attaching policies to the listed governed views controls what data the export pipeline can see, with a link to Snowsight Trust Center for full governance management.
+
+For the complete panel wireframe, data source mapping, and `collect_governance_posture()` implementation, see [Data Governance & Privacy Features — §8.5 Governance Compliance Panel](snowflake_data_governance_privacy_features.md#85-governance-compliance-panel) and [§8.7 Implementation](snowflake_data_governance_privacy_features.md#87-implementation--querying-governance-posture).
+
+### Detailed References
+
+- Architecture rationale, pattern evaluation, and Snowflake feature catalogue: [Data Governance & Privacy Features](snowflake_data_governance_privacy_features.md)
+- Live-tested confirmation of policy support on views/streams and operational limitations: [Event Table Streams & Governance Research](event_table_streams_governance_research.md)
+
+---
+
+## 7B. Event Table Telemetry: Entity Discrimination & OTel Semantic Conventions
+
+### Entity Discrimination
+
+The Snowflake Event Table is a shared, multi-service telemetry store that captures events from SQL/Snowpark compute, Snowpark Container Services, Streamlit, Cortex AI, and other service categories. MVP targets **SQL/Snowpark compute telemetry only**, using a positive include-list filter on `RESOURCE_ATTRIBUTES:"snow.executable.type"` (values: `FUNCTION`, `PROCEDURE`). Future releases can extend the include-list to additional service categories without architectural changes.
+
+**User awareness (Streamlit UI):** When the consumer selects an Event Table during Distributed Tracing Pack configuration, the UI displays an informational banner stating the current telemetry scope (SQL/Snowpark compute workloads: SQL queries, stored procedures, UDFs, UDTFs) and that telemetry from other service categories present in the same Event Table is filtered out and not exported. This is important because Snowflake does not enforce a one-Event-Table-per-service-type model — a single Event Table can (and often does) contain telemetry from multiple service categories. The banner ensures the consumer is not surprised by the scope of what is exported. See [Section 2 — Event Table Telemetry Scope Notice](#event-table-telemetry-scope-notice) for the exact wording.
+
+### OTel Semantic Convention Mapping
+
+Snowflake Event Table telemetry maps to standard OpenTelemetry semantic conventions with a layered approach:
+
+- **`db.*`** — Database client semantics for SQL/Snowpark compute (MVP primary).
+- **`gen_ai.*`** — Generative AI conventions for Cortex AI telemetry (separate `AI_OBSERVABILITY_EVENTS` table; post-MVP).
+- **`k8s.*` / `container.*`** — Container orchestration conventions for SPCS workloads (post-MVP).
+- **`snowflake.*`** — Custom namespace for Snowflake-specific resource attributes with no standard OTel mapping.
+
+### Detailed References
+
+- Entity discrimination filter logic, service type taxonomy, and extensibility: [Event Table Entity Discrimination Strategy](event_table_entity_discrimination_strategy.md)
+- Full OTel convention mapping, multi-convention handling, and CIM mapping for ACCOUNT_USAGE: [OTel Semantic Conventions Research](otel_semantic_conventions_snowflake_research.md)
+
+---
+
 ## 8. Stream Checkpointing (Event-Driven Pipeline Safety)
+
+> **Governed view note:** Streams in this architecture are created on the **governed Event Table view** (`_views.governed_event_table`), not the raw Event Table. This ensures all consumer governance policies are applied to the change data captured by the stream. See [Section 7A](#7a-data-governance--governed-view-architecture) for the rationale and [Event Table Streams & Governance Research](event_table_streams_governance_research.md) for tested confirmation that streams on views correctly propagate masking and row access policies.
 
 The most critical advantage of using a Stored Procedure for the Event Table collector is transaction control. However, a key Snowflake constraint governs how stream offsets advance:
 
@@ -1678,7 +1782,7 @@ These views track financial/resource consumption. None support Streams — the a
 |---|---|---|---|---|---|
 | **QUERY_HISTORY** | 45 min | 1 year | `QUERY_ID`, `QUERY_TEXT`, `USER_NAME`, `WAREHOUSE_NAME`, `EXECUTION_STATUS`, `TOTAL_ELAPSED_TIME`, `EXECUTION_TIME`, `COMPILATION_TIME`, `QUEUED_OVERLOAD_TIME`, `BYTES_SCANNED`, `BYTES_SPILLED_TO_LOCAL_STORAGE`, `BYTES_SPILLED_TO_REMOTE_STORAGE`, `ROWS_PRODUCED`, `CREDITS_USED_CLOUD_SERVICES`, `QUERY_TAG`, `START_TIME`, `END_TIME` | Slow query detection, warehouse sizing, spill analysis, cost-per-query attribution | 1 row/query; millions/day for active accounts |
 | **TASK_HISTORY** | 45 min | 1 year | `NAME`, `QUERY_TEXT`, `STATE` (SUCCEEDED/FAILED/CANCELLED/SKIPPED), `SCHEDULED_TIME`, `COMPLETED_TIME`, `ERROR_CODE`, `ERROR_MESSAGE`, `QUERY_ID` | Task failure alerting, task SLA monitoring, pipeline health | 1 row/task execution |
-| **COMPLETE_TASK_GRAPHS** | 45 min | 1 year | `ROOT_TASK_NAME`, `STATE`, `FIRST_ERROR_TASK_NAME`, `FIRST_ERROR_MESSAGE`, `SCHEDULED_TIME`, `COMPLETED_TIME`, `GRAPH_VERSION` | End-to-end pipeline (DAG) health, failure root cause in task chains | 1 row/graph execution |
+| **COMPLETE_TASK_GRAPHS** | 45 min | 1 year | `ROOT_TASK_NAME`, `STATE`, `FIRST_ERROR_TASK_NAME`, `FIRST_ERROR_MESSAGE`, `SCHEDULED_TIME`, `COMPLETED_TIME`, `GRAPH_VERSION` | End-to-end task graph health, failure root cause in task chains (useful for consumer's own DAGs) | 1 row/graph execution |
 | **COPY_HISTORY** | 2 hours (up to 2 days*) | 1 year | `FILE_NAME`, `STAGE_LOCATION`, `TABLE_NAME`, `STATUS`, `ROW_COUNT`, `ROW_PARSED`, `FILE_SIZE`, `ERROR_COUNT`, `FIRST_ERROR_MESSAGE` | Data ingestion monitoring, COPY INTO failure detection | 1 row/file/load operation |
 | **LOAD_HISTORY** | 90 min (up to 2 days*) | 1 year | `TABLE_NAME`, `FILE_NAME`, `STATUS`, `ROW_COUNT`, `ROW_PARSED`, `FIRST_ERROR_MESSAGE`, `LAST_LOAD_TIME` | Historical data load tracking | 1 row/file/load |
 | **LOCK_WAIT_HISTORY** | 1 hour | 1 year | `QUERY_ID`, `TABLE_NAME`, `LOCK_TYPE`, `LOCK_WAIT_STARTED`, `LOCK_WAIT_ENDED` | Concurrency bottleneck detection, DML contention alerting | 1 row/lock wait event |
@@ -1851,7 +1955,7 @@ However, this approach is fragile: if the handler crashes or an exception is not
 
 [Python stored procedure limitations](https://docs.snowflake.com/en/developer-guide/stored-procedure/python/procedure-python-limitations): **"Creating processes is not supported in stored procedures."** This prohibits `subprocess`, `multiprocessing`, and `os.fork()`. Our app does not use any of these — all work is done via `threading` (allowed) and synchronous gRPC/HTTP calls.
 
-#### 3. Concurrent queries — constrained by default, mitigated by task graph architecture
+#### 3. Concurrent queries — constrained by default, mitigated by independent task architecture
 
 [Python stored procedure limitations](https://docs.snowflake.com/en/developer-guide/stored-procedure/python/procedure-python-limitations): **"Running concurrent queries is not supported in stored procedures."** By default, a single stored procedure cannot issue multiple Snowpark queries in parallel.
 
@@ -1861,9 +1965,9 @@ However, this approach is fragile: if the handler crashes or an exception is not
 
 - **Async jobs** (`DataFrame.collect_nowait()`) can submit queries non-blocking, but [fire-and-forget is not supported](https://docs.snowflake.com/en/developer-guide/stored-procedure/python/procedure-python-writing) — child queries are canceled when the handler returns. Additionally, async jobs ["do not allow multiple queries to be submitted at the same time"](https://medium.com/snowflake/snowpark-python-supports-thread-safe-session-objects-d66043f36115) — they are non-blocking but still serialized.
 
-**Our mitigation — task graph parallelism (Section 7.6):**
+**Our mitigation — independent scheduled tasks (Section 7.6):**
 
-Instead of trying to parallelize within a single stored procedure, we use a [task graph](https://docs.snowflake.com/en/user-guide/tasks-graphs) where each ACCOUNT_USAGE source runs as an independent child task. Child tasks of the same parent [run in parallel](https://docs.snowflake.com/en/user-guide/tasks-graphs), each with its own session — no feature flags, no shared state, no concurrent query limitations. This architecture sidesteps the stored procedure concurrency constraint entirely.
+Instead of trying to parallelize within a single stored procedure, each ACCOUNT_USAGE source runs as an independent standalone scheduled task. Each task invokes its own stored procedure call with its own session — no feature flags, no shared state, no concurrent query limitations. Tasks run concurrently on their own schedules, naturally achieving parallelism across sources while each individual procedure executes sequentially within its session. This architecture sidesteps the stored procedure concurrency constraint entirely.
 
 #### 4. Package availability (verified)
 
@@ -2171,8 +2275,7 @@ The application package is the distributable container that encapsulates all dat
     ├── account_usage_source_collector.py
     ├── otlp_export.py
     ├── hec_export.py
-    ├── volume_estimator.py
-    └── pipeline_health_recorder.py
+    └── volume_estimator.py
 ```
 
 **Key decisions:**
@@ -2373,8 +2476,7 @@ snowflake-native-splunk-app/              # Project root (git repo)
 │       ├── account_usage_source_collector.py
 │       ├── otlp_export.py
 │       ├── hec_export.py
-│       ├── volume_estimator.py
-│       └── pipeline_health_recorder.py
+│       └── volume_estimator.py
 ├── scripts/                              # Post-deploy SQL hooks (run by snow app run, not staged)
 │   └── shared_content.sql                # Shared data setup run via post_deploy
 ├── marketplace.yml                       # Resource requirements for Marketplace readiness check
@@ -2791,9 +2893,8 @@ All app procedures are **permanent** (not `TEMP`) and use **`EXECUTE AS OWNER`**
 | Procedure | Parameters | Called By | Needs EAI/Secrets | Purpose |
 |---|---|---|---|---|
 | `_internal.event_table_collector` | — | Triggered task (stream-driven) | Yes (OTLP + HEC) | Read Event Table streams, export spans/metrics via OTLP/gRPC, logs via HEC |
-| `_internal.account_usage_source_collector` | `source_name VARCHAR` | Child tasks (task graph) | Yes (HEC) | Query one ACCOUNT_USAGE view, export via HEC |
+| `_internal.account_usage_source_collector` | `source_name VARCHAR` | Independent scheduled task (one per source) | Yes (HEC) | Query one ACCOUNT_USAGE governed view, export via HEC, record health metrics inline |
 | `_internal.volume_estimator` | — | Streamlit UI (on demand) | No | Estimate daily/monthly data volume per source |
-| `_internal.pipeline_health_recorder` | — | Finalizer task (task graph) | No | Record pipeline execution metrics to `_metrics.pipeline_health` |
 
 - Procedures that need external network access declare `EXTERNAL_ACCESS_INTEGRATIONS` and `SECRETS` in their DDL (bound at install via the reference mechanism).
 - Procedures that are purely internal (no egress) omit these clauses.
@@ -2815,15 +2916,13 @@ All app procedures are **permanent** (not `TEMP`) and use **`EXECUTE AS OWNER`**
 
 ## Tasks Architecture
 
-This section consolidates all task-related design decisions, DDL patterns, and operational considerations for the app's two pipelines. It complements Section 7.6 (Parallel Processing via Task Graph) by providing the implementation-level details needed to build, deploy, and operate the tasks.
+This section consolidates all task-related design decisions, DDL patterns, and operational considerations for the app's two pipelines. It complements Section 7.6 (Independent Scheduled Tasks) by providing the implementation-level details needed to build, deploy, and operate the tasks.
 
 **References:**
 - [Introduction to tasks](https://docs.snowflake.com/en/user-guide/tasks-intro)
-- [Task graphs (DAGs)](https://docs.snowflake.com/en/user-guide/tasks-graphs)
 - [Triggered tasks](https://docs.snowflake.com/en/user-guide/tasks-triggered)
 - [CREATE TASK](https://docs.snowflake.com/en/sql-reference/sql/create-task)
 - [ALTER TASK](https://docs.snowflake.com/en/sql-reference/sql/alter-task)
-- [Managing tasks with Python API](https://docs.snowflake.com/en/developer-guide/snowflake-python-api/snowflake-python-managing-tasks)
 
 ### Compute Model: Serverless
 
@@ -2833,7 +2932,7 @@ All app tasks use the **serverless compute model** — the `CREATE TASK` DDL omi
 - **No consumer warehouse dependency**: the app cannot guarantee a specific warehouse exists or is appropriately sized in consumer accounts. Serverless tasks manage compute automatically.
 - **Auto-tuning**: Snowflake dynamically sizes compute based on a "dynamic analysis of the most recent runs of the same task" ([docs](https://docs.snowflake.com/en/user-guide/tasks-intro#serverless-tasks)). After each task completes, Snowflake reviews performance and adjusts compute resources for future runs — tasks become more efficient over time.
 - **Compute bounds**: the maximum compute for a serverless task is equivalent to an **XXLARGE warehouse**. This can be constrained via `SERVERLESS_TASK_MIN_STATEMENT_SIZE` (default: XSMALL) and `SERVERLESS_TASK_MAX_STATEMENT_SIZE` (default: XXLARGE) ([docs](https://docs.snowflake.com/en/user-guide/tasks-intro#cost-and-performance-warehouse-sizes)). For MVP, defaults are sufficient; post-MVP, constraining the max size can help control costs.
-- **Schedule adherence**: for serverless scheduled tasks, "if a run of a standalone task or scheduled task graph exceeds the interval, Snowflake increases the size of the compute resources" ([docs](https://docs.snowflake.com/en/user-guide/tasks-intro#recommendations-for-choosing-a-compute-model)). This means our 30-minute ACCOUNT_USAGE schedule is self-enforcing — Snowflake scales up to keep runs within the window.
+- **Schedule adherence**: for serverless scheduled tasks, "if a run of a standalone task or scheduled task graph exceeds the interval, Snowflake increases the size of the compute resources" ([docs](https://docs.snowflake.com/en/user-guide/tasks-intro#recommendations-for-choosing-a-compute-model)). This means each source's scheduled interval is self-enforcing — Snowflake scales up to keep runs within the window.
 - **Per-run billing**: consumers pay only for actual compute used, measured in **compute-hours** credit usage. Serverless task credits have a multiplier vs. standard warehouse credits (see the "Serverless Feature Credit Table" in the [Snowflake Service Consumption Table](https://www.snowflake.com/legal-files/CreditConsumptionTable.pdf)). Despite the multiplier, total cost is often lower than a user-managed warehouse because there is no idle warehouse time and compute is right-sized automatically.
 - **Requires `EXECUTE MANAGED TASK`**: this global privilege is declared in `manifest.yml` and granted by the consumer during install.
 
@@ -2868,65 +2967,70 @@ CREATE OR REPLACE TASK _internal.event_table_export_task
 
 > **Note**: Tasks are created in the SUSPENDED state. The setup script resumes them after all dependencies (streams, procedures, EAI) are created. One triggered task is created per Event Table stream selected by the consumer.
 
-#### 2. Serverless Scheduled Task Graph (ACCOUNT_USAGE Pipeline)
+#### 2. Serverless Standalone Scheduled Tasks (ACCOUNT_USAGE Pipeline)
 
-**Purpose**: Orchestrate parallel collection and export of ACCOUNT_USAGE views on a schedule, with a finalizer for health recording.
+**Purpose**: Independently collect and export each enabled ACCOUNT_USAGE governed view on a source-specific schedule, with inline health recording.
 
-**Key characteristics** ([task graphs docs](https://docs.snowflake.com/en/user-guide/tasks-graphs)):
-- Root task uses `SCHEDULE = '30 MINUTES'` (aligned with fastest source cadence — see Section 7.8).
-- Child tasks use `AFTER <parent_task>` — siblings of the same parent run in parallel.
-- Finalizer task uses `FINALIZE = <root_task>` — runs after all other tasks complete or fail.
-- `ALLOW_OVERLAPPING_EXECUTION` defaults to `FALSE` — only one graph run at a time. If a run exceeds the schedule interval, the next run is skipped. This is the correct behavior for our watermark-based pipeline (prevents duplicate exports).
+**Key characteristics** ([tasks docs](https://docs.snowflake.com/en/user-guide/tasks-intro)):
+- Each source gets its own standalone scheduled task with a `SCHEDULE` aligned to the source's Snowflake latency (see Section 7.8).
+- No parent-child dependencies — tasks are fully independent.
+- `ALLOW_OVERLAPPING_EXECUTION` defaults to `FALSE` per task — each task won't overlap with itself, but different sources run concurrently without blocking each other.
+- Each task has its own `TASK_AUTO_RETRY_ATTEMPTS` and `SUSPEND_TASK_AFTER_NUM_FAILURES` — error handling is per-source.
 
-**Ownership and schema constraints** ([task graph ownership docs](https://docs.snowflake.com/en/user-guide/tasks-graphs#manage-task-graph-ownership)):
-- **All tasks in a task graph must have the same owner role and reside in the same database and schema.** Our entire task graph lives in the `_internal` schema, owned by the app's application role — this requirement is naturally satisfied.
-
-**DDL patterns in `setup.sql`:**
-
-Root task:
-```sql
-CREATE OR REPLACE TASK _internal.account_usage_root
-  SCHEDULE = '30 MINUTES'
-  SUSPEND_TASK_AFTER_NUM_FAILURES = 10
-  TASK_AUTO_RETRY_ATTEMPTS = 1                -- retry entire graph once on child failure
-  USER_TASK_TIMEOUT_MS = 1800000              -- 30-minute graph timeout
-  ALLOW_OVERLAPPING_EXECUTION = FALSE
-  AS CALL _internal.account_usage_root_handler();
-  -- Root determines which sources are due for polling and sets return value
-```
-
-Child task (one per enabled ACCOUNT_USAGE source):
+**DDL pattern in `setup.sql`** (one per enabled ACCOUNT_USAGE source):
 ```sql
 CREATE OR REPLACE TASK _internal.query_history_collector
-  USER_TASK_TIMEOUT_MS = 600000               -- 10-minute per-child timeout
-  AFTER _internal.account_usage_root
+  SCHEDULE = '30 MINUTES'
+  SUSPEND_TASK_AFTER_NUM_FAILURES = 10
+  TASK_AUTO_RETRY_ATTEMPTS = 1
+  USER_TASK_TIMEOUT_MS = 600000               -- 10-minute timeout per run
   AS CALL _internal.account_usage_source_collector('QUERY_HISTORY');
 ```
 
-Finalizer task:
 ```sql
-CREATE OR REPLACE TASK _internal.pipeline_health_recorder_task
-  USER_TASK_TIMEOUT_MS = 120000               -- 2-minute timeout for metrics recording
-  FINALIZE = _internal.account_usage_root
-  AS CALL _internal.pipeline_health_recorder();
+CREATE OR REPLACE TASK _internal.task_history_collector
+  SCHEDULE = '30 MINUTES'
+  SUSPEND_TASK_AFTER_NUM_FAILURES = 10
+  TASK_AUTO_RETRY_ATTEMPTS = 1
+  USER_TASK_TIMEOUT_MS = 600000
+  AS CALL _internal.account_usage_source_collector('TASK_HISTORY');
 ```
 
-> **Finalizer constraints**: each root task can have only one finalizer, and a finalizer cannot have child tasks. The finalizer runs only when no other tasks are running or queued in the current graph run. If the root task is skipped (e.g., overlap prevention), the finalizer also does not run.
+```sql
+CREATE OR REPLACE TASK _internal.complete_task_graphs_collector
+  SCHEDULE = '30 MINUTES'
+  SUSPEND_TASK_AFTER_NUM_FAILURES = 10
+  TASK_AUTO_RETRY_ATTEMPTS = 1
+  USER_TASK_TIMEOUT_MS = 600000
+  AS CALL _internal.account_usage_source_collector('COMPLETE_TASK_GRAPHS');
+```
+
+```sql
+CREATE OR REPLACE TASK _internal.lock_wait_history_collector
+  SCHEDULE = '30 MINUTES'
+  SUSPEND_TASK_AFTER_NUM_FAILURES = 10
+  TASK_AUTO_RETRY_ATTEMPTS = 1
+  USER_TASK_TIMEOUT_MS = 600000
+  AS CALL _internal.account_usage_source_collector('LOCK_WAIT_HISTORY');
+```
+
+Post-MVP sources use their own cadence (e.g., `SCHEDULE = '60 MINUTES'` for LOGIN_HISTORY, `SCHEDULE = '90 MINUTES'` for ACCESS_HISTORY).
 
 ### Task Lifecycle in setup.sql
 
 Tasks start in the **SUSPENDED** state upon creation ([docs](https://docs.snowflake.com/en/user-guide/tasks-intro#define-schedules-or-triggers)). The `setup.sql` script follows this lifecycle:
 
 1. **Create procedures** — all stored procedures must exist before tasks reference them.
-2. **Create streams** — streams on Event Tables must exist before triggered tasks reference them.
-3. **Create tasks** — `CREATE OR REPLACE TASK` for all tasks (root, children, finalizer, triggered). All created in SUSPENDED state.
-4. **Resume child tasks and finalizer first** — child tasks and finalizer must be resumed before the root task.
-5. **Resume root task last** — resuming the root task activates the entire graph.
+2. **Create governed views and streams** — governed views over Event Tables (and ACCOUNT_USAGE sources) must exist before streams are created on them; streams must exist before triggered tasks reference them.
+3. **Create tasks** — `CREATE OR REPLACE TASK` for all tasks (triggered and standalone scheduled). All created in SUSPENDED state.
+4. **Resume each task individually** — each task is resumed independently after creation.
 
-For the task graph, use `SYSTEM$TASK_DEPENDENTS_ENABLE()` to atomically resume all tasks:
+For ACCOUNT_USAGE scheduled tasks:
 ```sql
--- Resume all tasks in the graph at once (children + finalizer + root)
-SELECT SYSTEM$TASK_DEPENDENTS_ENABLE('_internal.account_usage_root');
+ALTER TASK _internal.query_history_collector RESUME;
+ALTER TASK _internal.task_history_collector RESUME;
+ALTER TASK _internal.complete_task_graphs_collector RESUME;
+ALTER TASK _internal.lock_wait_history_collector RESUME;
 ```
 
 For triggered tasks (Event Table pipeline):
@@ -2934,52 +3038,52 @@ For triggered tasks (Event Table pipeline):
 ALTER TASK _internal.event_table_export_task RESUME;
 ```
 
-**Modifying a running task graph** ([versioning docs](https://docs.snowflake.com/en/user-guide/tasks-graphs#versioning)):
-- Suspend the **root task** first (`ALTER TASK _internal.account_usage_root SUSPEND`). Child tasks retain their state but stop receiving new triggers.
-- Make modifications (add/remove child tasks, alter parameters).
-- Resume the root task — Snowflake sets a new version of the entire graph.
-- If a run is in progress when the root is suspended, it completes using the current version.
+**Modifying a running task**: Since tasks are independent, each task can be modified without affecting others:
+- Suspend the specific task (`ALTER TASK _internal.query_history_collector SUSPEND`).
+- Make modifications (alter parameters, replace the task).
+- Resume the task (`ALTER TASK _internal.query_history_collector RESUME`).
+- Other sources continue running on their schedules during the modification.
 
-This is relevant for **app upgrades**: the setup script uses `CREATE OR REPLACE TASK`, which effectively drops and recreates each task. The `SYSTEM$TASK_DEPENDENTS_ENABLE()` call at the end re-establishes the graph and sets a new version.
+This is relevant for **app upgrades**: the setup script uses `CREATE OR REPLACE TASK`, which recreates each task individually. Each task is resumed after creation. Other sources are only briefly interrupted during their own `CREATE OR REPLACE` — there is no global pipeline suspension.
 
 ### Dynamic Task Management (Streamlit UI)
 
-When the consumer enables/disables monitoring packs, the Streamlit UI dynamically manages child tasks using the [Snowflake Python API DAG classes](https://docs.snowflake.com/en/developer-guide/snowflake-python-api/snowflake-python-managing-tasks) or direct SQL:
+When the consumer enables/disables monitoring packs or individual sources, the Streamlit UI dynamically manages standalone tasks via direct SQL. Since tasks are independent, no other source is affected by these operations.
 
-**Adding a child task** (when enabling a new source):
+**Adding a source task** (when enabling a new source):
 ```sql
-ALTER TASK _internal.account_usage_root SUSPEND;
-
 CREATE OR REPLACE TASK _internal.login_history_collector
+  SCHEDULE = '60 MINUTES'
+  SUSPEND_TASK_AFTER_NUM_FAILURES = 10
+  TASK_AUTO_RETRY_ATTEMPTS = 1
   USER_TASK_TIMEOUT_MS = 600000
-  AFTER _internal.account_usage_root
   AS CALL _internal.account_usage_source_collector('LOGIN_HISTORY');
 
 ALTER TASK _internal.login_history_collector RESUME;
-ALTER TASK _internal.account_usage_root RESUME;
 ```
 
-**Removing a child task** (when disabling a source):
+**Removing a source task** (when disabling a source):
 ```sql
-ALTER TASK _internal.account_usage_root SUSPEND;
 DROP TASK IF EXISTS _internal.login_history_collector;
-ALTER TASK _internal.account_usage_root RESUME;
 ```
 
-**Suspending a child task** (temporary skip — e.g., during maintenance):
-- A suspended child task is **skipped** by the graph — downstream tasks (if any) run as if it succeeded. Since our graph is flat (all children → finalizer), suspending a child simply means that source is not polled.
+**Suspending a source task** (temporary skip — e.g., during maintenance):
+```sql
+ALTER TASK _internal.login_history_collector SUSPEND;
+```
+A suspended task simply stops running on its schedule. Other sources are unaffected. Resume with `ALTER TASK ... RESUME`.
 
 ### Key Task Parameters
 
 | Parameter | Where Set | Value | Purpose |
 |---|---|---|---|
-| `SCHEDULE` | Root task | `'30 MINUTES'` | Poll interval for ACCOUNT_USAGE pipeline (Section 7.8) |
+| `SCHEDULE` | Each ACCOUNT_USAGE task | Source-specific (e.g., `'30 MINUTES'`) | Poll interval per source, aligned to Snowflake latency (Section 7.8) |
 | `TARGET_COMPLETION_INTERVAL` | Triggered task | `'5 MINUTES'` | Serverless scaling target for Event Table processing |
 | `WHEN` | Triggered task | `SYSTEM$STREAM_HAS_DATA(...)` | Stream-driven trigger condition |
-| `TASK_AUTO_RETRY_ATTEMPTS` | Root task | `1` | Auto-retry entire graph once on child failure |
+| `TASK_AUTO_RETRY_ATTEMPTS` | Each task | `1` | Auto-retry the task once on failure |
 | `SUSPEND_TASK_AFTER_NUM_FAILURES` | All tasks | `10` (default) | Auto-suspend after 10 consecutive failures to prevent runaway costs ([docs](https://docs.snowflake.com/en/user-guide/tasks-intro#automatically-suspend-tasks-after-failed-runs)) |
-| `USER_TASK_TIMEOUT_MS` | All tasks | Varies per task | Hard timeout per task run. On root task, applies to entire graph; on child task, overrides root timeout for that child ([docs](https://docs.snowflake.com/en/user-guide/tasks-graphs#task-graph-timeouts)) |
-| `ALLOW_OVERLAPPING_EXECUTION` | Root task | `FALSE` (default) | Prevent concurrent graph runs — critical for watermark-based pipeline correctness |
+| `USER_TASK_TIMEOUT_MS` | All tasks | `600000` (10 min) for ACCOUNT_USAGE tasks | Hard timeout per task run |
+| `ALLOW_OVERLAPPING_EXECUTION` | All tasks | `FALSE` (default) | Prevent concurrent runs of the same task — critical for watermark-based pipeline correctness |
 | `SERVERLESS_TASK_MIN_STATEMENT_SIZE` | Optional | Not set (default XSMALL) | Minimum compute size floor. Snowflake auto-tunes within this range after each run. Default XSMALL is sufficient for MVP |
 | `SERVERLESS_TASK_MAX_STATEMENT_SIZE` | Optional | Not set (default XXLARGE) | Maximum compute size ceiling. Snowflake auto-scales up to this limit. Constrain post-MVP for cost control (e.g., `'LARGE'` cap) |
 | `USER_TASK_MINIMUM_TRIGGER_INTERVAL_IN_SECONDS` | Triggered task | `30` (default) | Minimum seconds between triggered task runs — default is appropriate |
@@ -3010,59 +3114,38 @@ Tasks provide built-in observability that our Pipeline Health Dashboard (Section
 | View/Function | Scope | What It Shows |
 |---|---|---|
 | `TASK_HISTORY()` | Information Schema | Per-task run history: state (SUCCEEDED/FAILED/CANCELLED/SKIPPED), scheduled time, query start/completion time, error messages ([docs](https://docs.snowflake.com/en/sql-reference/functions/task_history)) |
-| `COMPLETE_TASK_GRAPHS()` | Information Schema | End-to-end DAG execution: scheduled time, completed time, state, root task ID. Available for runs completed in past 60 minutes ([docs](https://docs.snowflake.com/en/sql-reference/functions/complete_task_graphs)) |
-| `COMPLETE_TASK_GRAPHS` | Account Usage | Same as above but with extended retention (1 year). Used by our Performance Pack for task failure alerting |
-| `CURRENT_TASK_GRAPHS()` | Information Schema | Currently running or scheduled graph runs ([docs](https://docs.snowflake.com/en/sql-reference/functions/current_task_graphs)) |
 | `TASK_HISTORY` | Account Usage | Extended retention (1 year) task history. Exported by Performance Pack |
 | `SERVERLESS_TASK_HISTORY` | Account Usage/Information Schema | Credit consumption per serverless task. Exported by Cost Pack (post-MVP) |
 | `TASK_VERSIONS` | Account Usage | History of task version changes — useful for tracking app upgrade impacts |
 
 **Runtime introspection functions** (available within task body / stored procedure):
-- `SYSTEM$TASK_RUNTIME_INFO('CURRENT_ROOT_TASK_UUID')` — unique identifier for the current graph run
-- `SYSTEM$TASK_RUNTIME_INFO('CURRENT_TASK_GRAPH_ORIGINAL_SCHEDULED_TIMESTAMP')` — when the graph run was originally scheduled
 - `SYSTEM$TASK_RUNTIME_INFO('CURRENT_TASK_NAME')` — name of the currently executing task
-- `SYSTEM$SET_RETURN_VALUE()` / `SYSTEM$GET_PREDECESSOR_RETURN_VALUE()` — pass data between tasks in the graph (used by root task to communicate which sources are due for polling — see Section 7.6)
-- `SYSTEM$GET_TASK_GRAPH_CONFIG()` — read task graph configuration (available if we use the `CONFIG` parameter)
-
-### Task Graph Configuration (`CONFIG` Parameter)
-
-The task graph supports a `CONFIG` JSON parameter on the root task that can be read by all tasks in the graph via `SYSTEM$GET_TASK_GRAPH_CONFIG()` ([docs](https://docs.snowflake.com/en/user-guide/tasks-graphs#pass-configuration-information-to-the-task-graph)). This is useful for passing shared configuration without requiring each child task to read `_internal.config` independently:
-
-```sql
-ALTER TASK _internal.account_usage_root SET
-  CONFIG = '{"batch_size": 5000, "max_batches_per_run": 100}';
-```
-
-Child tasks can then read: `SELECT SYSTEM$GET_TASK_GRAPH_CONFIG('batch_size')`. This is a **post-MVP optimization** — in MVP, each procedure reads configuration from `_internal.config` directly.
 
 ### Task Inventory
 
-| Task | Type | Schema | Trigger/Schedule | Calls Procedure | Notes |
+| Task | Type | Schema | Schedule | Calls Procedure | Notes |
 |---|---|---|---|---|---|
 | `_internal.event_table_export_task` | Triggered (serverless) | `_internal` | `WHEN SYSTEM$STREAM_HAS_DATA(...)` | `_internal.event_table_collector` | One per Event Table stream; near real-time |
-| `_internal.account_usage_root` | Scheduled (serverless) | `_internal` | `SCHEDULE = '30 MINUTES'` | Root handler (determines due sources) | Root of task graph DAG |
-| `_internal.query_history_collector` | Child (serverless) | `_internal` | `AFTER account_usage_root` | `_internal.account_usage_source_collector('QUERY_HISTORY')` | MVP: Performance Pack |
-| `_internal.task_history_collector` | Child (serverless) | `_internal` | `AFTER account_usage_root` | `_internal.account_usage_source_collector('TASK_HISTORY')` | MVP: Performance Pack |
-| `_internal.complete_task_graphs_collector` | Child (serverless) | `_internal` | `AFTER account_usage_root` | `_internal.account_usage_source_collector('COMPLETE_TASK_GRAPHS')` | MVP: Performance Pack |
-| `_internal.lock_wait_history_collector` | Child (serverless) | `_internal` | `AFTER account_usage_root` | `_internal.account_usage_source_collector('LOCK_WAIT_HISTORY')` | MVP: Performance Pack |
-| `_internal.pipeline_health_recorder_task` | Finalizer (serverless) | `_internal` | `FINALIZE = account_usage_root` | `_internal.pipeline_health_recorder` | Records metrics after graph run |
+| `_internal.query_history_collector` | Standalone scheduled (serverless) | `_internal` | `SCHEDULE = '30 MINUTES'` | `_internal.account_usage_source_collector('QUERY_HISTORY')` | MVP: Performance Pack |
+| `_internal.task_history_collector` | Standalone scheduled (serverless) | `_internal` | `SCHEDULE = '30 MINUTES'` | `_internal.account_usage_source_collector('TASK_HISTORY')` | MVP: Performance Pack |
+| `_internal.complete_task_graphs_collector` | Standalone scheduled (serverless) | `_internal` | `SCHEDULE = '30 MINUTES'` | `_internal.account_usage_source_collector('COMPLETE_TASK_GRAPHS')` | MVP: Performance Pack |
+| `_internal.lock_wait_history_collector` | Standalone scheduled (serverless) | `_internal` | `SCHEDULE = '30 MINUTES'` | `_internal.account_usage_source_collector('LOCK_WAIT_HISTORY')` | MVP: Performance Pack |
 
-> **Naming convention**: child tasks are named `_internal.<source_name_lowercase>_collector` for clarity in `TASK_HISTORY` views. The finalizer task uses `_task` suffix to avoid name collision with the procedure it calls.
+> **Naming convention**: tasks are named `_internal.<source_name_lowercase>_collector` for clarity in `TASK_HISTORY` views.
 
 ### Operational Considerations
 
 **Auto-suspend on consecutive failures**: the `SUSPEND_TASK_AFTER_NUM_FAILURES` parameter (default 10) automatically suspends a task after consecutive failures. This prevents runaway serverless compute costs. The Pipeline Health Dashboard should surface suspended tasks prominently so the consumer can investigate and resume.
 
-**Manual retry**: use `EXECUTE TASK _internal.account_usage_root RETRY LAST` to retry the task graph from the last failed task ([docs](https://docs.snowflake.com/en/sql-reference/sql/execute-task)). This is useful for operators recovering from transient Splunk outages.
+**Manual retry**: use `EXECUTE TASK _internal.query_history_collector RETRY LAST` to retry a specific source task from the last failed run ([docs](https://docs.snowflake.com/en/sql-reference/sql/execute-task)). This is useful for operators recovering from transient Splunk outages.
 
-**Manual execution**: use `EXECUTE TASK _internal.account_usage_root` to trigger an immediate one-time graph run outside the schedule — useful for testing and initial data backfill.
+**Manual execution**: use `EXECUTE TASK _internal.query_history_collector` to trigger an immediate one-time run of a specific source outside the schedule — useful for testing and initial data backfill.
 
-**App upgrade safety**: the `setup.sql` script uses `CREATE OR REPLACE TASK`, which recreates all tasks. On upgrade:
-1. The existing root task is suspended automatically (CREATE OR REPLACE drops the old task).
-2. All tasks are recreated with updated definitions.
-3. `SYSTEM$TASK_DEPENDENTS_ENABLE()` resumes the entire graph.
-4. Snowflake sets a new task graph version.
-5. If a graph run was in progress at upgrade time, the old run completes with the old version. The new version applies from the next run.
+**App upgrade safety**: the `setup.sql` script uses `CREATE OR REPLACE TASK`, which recreates each task individually. On upgrade:
+1. Each task is recreated with `CREATE OR REPLACE TASK` (this implicitly drops the old task).
+2. Each task is resumed with `ALTER TASK ... RESUME`.
+3. Since tasks are independent, other sources are only briefly interrupted during their own `CREATE OR REPLACE` — there is no global pipeline suspension.
+4. If a task run is in progress at upgrade time, the in-progress run may be interrupted by `CREATE OR REPLACE`. The next scheduled run uses the new definition.
 
 **Cost monitoring**: serverless task costs can be tracked via:
 - `SERVERLESS_TASK_HISTORY` (Information Schema table function and Account Usage view) — per-task credit breakdown.
