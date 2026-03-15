@@ -19,8 +19,8 @@
 7. [Native App Framework & Governance](#7-native-app-framework--governance)
 8. [Governance Strategy for Our Native App](#8-governance-strategy-for-our-native-app)
    - 8.1 Core Design Decision: Leverage, Don't Replicate
-   - 8.3 ACCOUNT_USAGE Privacy — Custom Governed Views (Pattern C for ALL ACCOUNT_USAGE sources across all packs)
-   - 8.4 Event Table Privacy (Pattern C: custom governed view + stream for all event tables)
+   - 8.3 ACCOUNT_USAGE — User-Selected Sources (custom view or default view; no app-created views)
+   - 8.4 Event Table — User-Selected Sources (governed view or event table; no app-created views)
    - 8.5 Governance Compliance Panel
    - 8.6 ACCESS_HISTORY.policies_referenced — Sensitive Query Identification
    - 8.7 Implementation — Querying Governance Posture
@@ -41,9 +41,9 @@ Horizon Catalog is organized into three product areas:
 
 **Relevance to our app:** Our stored procedures (owner's rights, running as the app) are subject to the same governance enforcement as any other query. If the consumer has masking policies on columns we read from, those masks are applied to our stored procedure's result sets automatically. We do not need to implement separate redaction — Snowflake enforces it at the platform level.
 
-> **DESIGN DECISION: Leverage, Don't Replicate**
+> **DESIGN DECISION: Leverage, Don't Replicate — User-Owned Governance**
 >
-> This is a foundational design principle for how our native app handles sensitive data. Snowflake's governance policies are enforced at the **platform layer** — below our application code. When our stored procedures read ACCOUNT_USAGE views or consumer objects, masking policies, row access policies, and projection policies are enforced automatically by Snowflake's query engine. For Event Tables, masking policies are blocked directly on event tables — our app uses a **custom governed view** (Pattern C) where masking IS supported (see §8.4). For ACCOUNT_USAGE views (e.g., QUERY_HISTORY), policies cannot be applied to the system views directly — our app creates **custom governed views** over them, enabling consumers to attach masking and row access policies (see §8.3). In both cases, the governed view is the **data contract** between the consumer's Snowflake account and our export pipeline — the consumer controls what data leaves their account using Snowflake's native governance tools.
+> This is a foundational design principle for how our native app handles sensitive data. Snowflake's governance policies are enforced at the **platform layer** — below our application code. Our app **does not auto-create** governed views. **The user is responsible for creating and maintaining governed views** if they want to enforce masking, row access, or projection policies on exported data. The user may already have custom views over ACCOUNT_USAGE or event tables with policies attached; they can select those as the telemetry source. If the user selects a **governed view** (their own) as the source, we stream or read from that view and Snowflake enforces the user's policies. If the user selects the **default ACCOUNT_USAGE view** or the **event table directly**, we work with that source and **inform the user about the risk** (policies cannot be applied to system views or event tables directly). No view auto-creation or sync with source tables/views — the design stays simple; governance is the user's choice.
 
 > **Source:** [Snowflake Horizon Catalog docs](https://docs.snowflake.com/en/guides/horizon), [Getting Started with Horizon for Data Governance](https://www.snowflake.com/en/developers/guides/getting-started-with-horizon-for-data-governance-in-snowflake/)
 
@@ -406,8 +406,8 @@ When an aggregation policy is active:
 | Object Type | Can Apply Policies? | Notes |
 |---|---|---|
 | User-created tables/views | **Yes** | Full support for all policy types |
-| ACCOUNT_USAGE views | **No** | System-managed, read-only. **Workaround:** Create a user-owned view on top of the ACCOUNT_USAGE view — masking, RAP, and projection policies can be applied to the user-owned view. See §8.3. |
-| Event Tables (user-created) | **Partial** | RAP and projection work; masking is **blocked**. **Workaround:** Custom governed view. See §8.4. |
+| ACCOUNT_USAGE views | **No** | System-managed, read-only. **User option:** Create a user-owned view on top of the ACCOUNT_USAGE view and attach masking, RAP, and projection policies; then select that view as the app's source. See §8.3. |
+| Event Tables (user-created) | **Partial** | RAP and projection work; masking is **blocked**. **User option:** Create a custom governed view over the event table, attach policies, and select that view as the app's telemetry source. See §8.4. |
 | `SNOWFLAKE.TELEMETRY.EVENTS` (default event table) | **Via EVENTS_VIEW** (RAP only) or **custom view** (full policy support) | See §4.6 and §8.4 |
 | Information Schema views | **No** | System-managed |
 
@@ -795,484 +795,187 @@ GRANT REFERENCE_USAGE ON DATABASE <db_name>
 
 ## 8. Governance Strategy for Our Native App
 
-### 8.1 Core Design Decision: Leverage, Don't Replicate
+### 8.1 Core Design Decision: Leverage, Don't Replicate — No Auto-Creation of Views
 
 > **This is a foundational design decision for sensitive data handling.**
 
-Our app does **not** implement its own data classification or privacy enforcement engine. Snowflake's governance policies are enforced at the **platform layer** — below our application code. For both Event Tables and ACCOUNT_USAGE views, policies cannot be applied to the source objects directly (masking is blocked on event tables; ACCOUNT_USAGE views are system-managed). Our app creates **custom governed views** over **every** data source — Pattern C with streams for Event Tables (see §8.4) and governed views with poll-based reads for all ACCOUNT_USAGE sources across all Monitoring Packs (see §8.3). The consumer attaches masking policies, row access policies, and projection policies to these governed views using Snowflake's native governance tools. All policies are enforced automatically by Snowflake's query engine when our pipelines read from the governed views.
+Our app does **not** implement its own data classification or privacy enforcement engine. Snowflake's governance policies are enforced at the **platform layer** — below our application code. Our app **does not auto-create** governed views. **The user is responsible for creating governed views** (and attaching masking, row access, or projection policies) if they want to maintain governance standards. The user may already have custom views over ACCOUNT_USAGE or event tables; we do not create an additional view layer.
+
+**Data flow:**
+
+- **Event Tables:** If the user selects a **governed view** as the telemetry source, we stream from that view (Snowflake enforces the user's policies). If the user selects the **event table** directly, we stream from the event table; we **inform the user** that masking cannot be applied on event tables and they may want to use a custom view for governance.
+- **ACCOUNT_USAGE:** If the user selects a **custom view** (with policies attached) as the source, we read from that view. If the user selects the **default ACCOUNT_USAGE view**, we read from it directly; we **inform the user** that policies cannot be applied to system views and they may want to use a custom view for governance.
+
+Our serverless tasks work with **whatever source the user selected** — no view sync, no app-owned governed views to maintain.
 
 **What this means in practice:**
 
 1. **Encourage** consumers to classify their sensitive data using Snowflake's native capabilities (classification profiles, custom classifiers, Trust Center)
 2. **Query** classification and policy metadata to understand what the consumer has protected
-3. **Respect** the consumer's governance posture — Snowflake enforces policies automatically on our queries
-4. **Honor** the full scope of the consumer's data governance measures in our Streamlit UI
+3. **Respect** the consumer's governance posture — Snowflake enforces policies automatically when we read from their governed views
+4. **Inform** the user when they select a non-governed source (default ACCOUNT_USAGE view or event table) about the governance risk — no auto-creation, just clear guidance
 
 ### 8.2 Data Sources and Governance Considerations
 
 #### ACCOUNT_USAGE Views (Performance Pack, Cost Pack, Security Pack)
 
-> **Uniform governed view approach:** Every ACCOUNT_USAGE source is queried through a **custom governed view**, regardless of sensitivity level. This gives every data export point a governance hook — the consumer can attach masking, row access, or projection policies to any source without app changes. For low-risk sources the governed view is a simple pass-through; for high-risk sources the app applies a default masking policy. Since ACCOUNT_USAGE uses a poll-based pipeline (no streams), governed views carry none of the CRITICAL risks of the Event Table pattern (no stream breakage, no SQL restrictions). See §8.3 for full architecture.
+> **User-selected source:** For each ACCOUNT_USAGE source, the user selects either a **custom view** (their own, with masking/row access/projection policies attached) or the **default ACCOUNT_USAGE view**. Our serverless tasks read from the selected source. We **do not** create or maintain governed views. If the user selects the default view, we **inform them** that policies cannot be applied to system views and that they can create a custom view to enforce governance. See §8.3.
 
-| Data Source | Sensitive Data Risk | Governed View Strategy |
-|---|---|---|
-| `QUERY_HISTORY` | **High** — `QUERY_TEXT` may contain literal PII values | Governed view with **default masking policy on QUERY_TEXT** (REDACT mode). Consumer controls via Streamlit toggle (REDACT/FULL/CUSTOM). See §8.3 |
-| `LOGIN_HISTORY` | **Medium** — user names, IP addresses, authentication methods | Governed view with **masking hooks** on CLIENT_IP, REPORTED_CLIENT_TYPE. Consumer attaches policies. See §8.3 |
-| `ACCESS_HISTORY` | **Medium** — records who accessed what; `policies_referenced` is highly valuable (see §8.6) | Governed view pass-through. Consumer attaches policies if needed. Object/column names generally safe |
-| `TASK_HISTORY` | **Low** — operational metadata, no user data | Governed view pass-through. Consumer governance hook available but typically unused |
-| `COMPLETE_TASK_GRAPHS` | **Low** — DAG metadata | Governed view pass-through |
-| `LOCK_WAIT_HISTORY` | **Low** — lock contention metadata | Governed view pass-through |
-| `WAREHOUSE_METERING_HISTORY` | **Low** — credit consumption data | Governed view pass-through |
-| `METERING_HISTORY` | **Low** — service-level credit consumption | Governed view pass-through |
-| `COPY_HISTORY` | **Low** — file ingestion metadata | Governed view pass-through |
-| `SESSIONS` | **Medium** — session metadata, user names, IP addresses | Governed view with masking hooks. Consumer attaches policies |
-| `GRANTS_TO_USERS` / `GRANTS_TO_ROLES` | **Low** — privilege metadata | Governed view pass-through |
-| `NETWORK_POLICIES` | **Low** — network rule metadata | Governed view pass-through |
+| Data Source | Sensitive Data Risk | User Option | When Default Selected |
+|---|---|---|---|
+| `QUERY_HISTORY` | **High** — `QUERY_TEXT` may contain literal PII | User can create a custom view over QUERY_HISTORY and attach masking on QUERY_TEXT; select that view as source | We inform user: QUERY_TEXT may contain PII; consider a custom view with masking |
+| `LOGIN_HISTORY` | **Medium** — user names, IP addresses | User can use a custom view with policies; select as source | We inform user of governance limitation |
+| `ACCESS_HISTORY` | **Medium** — `policies_referenced` valuable (see §8.6) | User can use custom view with policies if needed | Inform if sensitive |
+| `TASK_HISTORY`, `COMPLETE_TASK_GRAPHS`, `LOCK_WAIT_HISTORY`, etc. | **Low** — operational metadata | User may use default view or their own view | Typically low risk; inform as needed |
+| `SESSIONS` | **Medium** — session metadata, IPs | User can use custom view with masking/RAP | We inform user of governance limitation |
 
 #### Event Tables (Distributed Tracing Pack)
 
-| Data Source | Sensitive Data Risk | Governance Approach |
-|---|---|---|
-| Event Tables (both default and user-created) | **Variable** — depends on what the application logs | Pattern C: Custom governed view → stream. Consumer attaches RAP + masking policies to the view. Masking is blocked on event tables directly — custom view is the only way to redact values. See §8.4 |
-| Span/log attributes (RECORD, RECORD_ATTRIBUTES, VALUE) | **High** — may contain PII, credentials, request payloads | Consumer attaches masking policies to the governed view to redact sensitive fields before export |
+| Data Source | Sensitive Data Risk | User Option | When Event Table Selected |
+|---|---|---|---|
+| Event Table (default or user-created) | **Variable** — depends on application logs | User can select **their governed view** (with RAP + masking) as telemetry source, or the **event table** directly | We stream from event table; **inform user** that masking is blocked on event tables — use a custom view if they need value-level redaction. See §8.4 |
+| Span/log attributes (RECORD, RECORD_ATTRIBUTES, VALUE) | **High** — may contain PII | If user uses a governed view, they attach masking to RECORD, RECORD_ATTRIBUTES, VALUE on that view | If streaming from event table, we inform about risk |
 
-### 8.3 ACCOUNT_USAGE Privacy — Custom Governed Views
+### 8.3 ACCOUNT_USAGE — User-Selected Sources (No App-Created Views)
 
-#### Design Decision: Pattern C Applied to ACCOUNT_USAGE Views
+#### Design Decision: User Selects Source — Custom View or Default View
 
-> **DECISION:** For **every** ACCOUNT_USAGE source across all Monitoring Packs, our app creates a **custom governed view** and reads from that view instead of the system view directly. The governed view serves the same role as the Event Table governed view (§8.4) — it is the **governed data contract** between the consumer's Snowflake account and our export pipeline. High-risk sources (e.g., QUERY_HISTORY) get a default masking policy applied by the app. Low-risk sources (e.g., TASK_HISTORY, WAREHOUSE_METERING_HISTORY) get a simple pass-through view that still gives the consumer a governance hook. The consumer controls what data leaves their account using Snowflake's native governance tools (masking policies, row access policies, projection policies) on any governed view — no app changes required.
+> **DECISION:** We **do not** create or maintain governed views. For each ACCOUNT_USAGE source (QUERY_HISTORY, TASK_HISTORY, LOGIN_HISTORY, etc.), the **user selects** the data source: either their **own custom view** (with masking, row access, or projection policies attached) or the **default ACCOUNT_USAGE view**. Our serverless tasks read from the selected source. If the user selects the default view, we **inform them** that policies cannot be applied to system views and that creating a custom view is the way to enforce governance — that's it. No auto-creation, no view sync.
 
-#### The Problem: QUERY_TEXT
+#### Why a Custom View Helps (User Guidance)
 
-`QUERY_TEXT` in QUERY_HISTORY is the **highest-risk field** because it may contain literal sensitive values embedded in SQL:
+Policies cannot be applied to `ACCOUNT_USAGE` views directly (they are system-managed). For example, `QUERY_TEXT` in QUERY_HISTORY may contain literal PII embedded in SQL; masking cannot be applied to the system view. **If the user wants governance**, they create a user-owned view on top of the ACCOUNT_USAGE view and attach masking, row access, or projection policies to that view. They then **select that view** as the app's source. Snowflake enforces the user's policies when our pipeline reads from it.
 
-```sql
--- This query text would appear in QUERY_HISTORY:
-SELECT * FROM customers WHERE email = 'jane.doe@example.com' AND ssn = '123-45-6789';
-```
-
-**Why a custom governed view solves this:**
-- We **cannot** apply masking policies to `ACCOUNT_USAGE.QUERY_HISTORY` directly (system-managed view)
-- The consumer cannot apply masking policies to it either
-- But we **can** create a user-owned view on top of QUERY_HISTORY, and masking policies **work** on user-created views
-- This is the same insight that drives Pattern C for Event Tables — when policies are blocked on the source object, a custom view is the governed intermediary
-
-#### Architecture: Custom Governed View → Poll-Based Pipeline → Splunk
+**Architecture when user selects a custom view:**
 
 ```
-SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
+User's custom view (e.g. my_schema.my_query_history with masking on QUERY_TEXT)
     ↓
-app_schema.governed_query_history  (custom view + default masking policy on QUERY_TEXT)
+Poll-based pipeline reads from selected source → Transform → HEC → Splunk
+```
+
+**Architecture when user selects default ACCOUNT_USAGE view:**
+
+```
+SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY (or other)
     ↓
-Poll-based pipeline (watermark) → Transform → HEC → Splunk
+Poll-based pipeline reads from selected source → Transform → HEC → Splunk
+    + We inform user: policies cannot be applied to this source; consider a custom view for governance.
 ```
 
-**Key architectural difference from Event Table Pattern C:** QUERY_HISTORY uses a **poll-based pipeline** (watermark), not a stream-based pipeline. This eliminates all the CRITICAL risks of the Event Table view pattern:
+#### What the User Can Do (Their Own Views)
 
-| Risk (from Event Table Pattern C) | Applies to QUERY_HISTORY? | Why |
-|---|:---:|---|
-| `CREATE OR REPLACE VIEW` breaks streams | **No** | No streams involved — poll-based pipeline |
-| View must use simple SQL only (no GROUP BY, DISTINCT, UDFs) | **No** | No stream on the view — no SQL restrictions |
-| First stream creation locks underlying table | **No** | No streams to create |
-| Triggered task false positives | **No** | Scheduled task, not stream-triggered |
-| Secure view staleness risk | **No** | No stream staleness concept |
+If the user creates a custom view over ACCOUNT_USAGE and selects it as the source:
 
-This makes the governed view pattern for ACCOUNT_USAGE strictly **less risky** than for Event Tables.
+1. **Attach a masking policy** on high-risk columns (e.g. QUERY_TEXT) — e.g. regex-based PII scrubbing, or full redaction.
+2. **Add a row access policy** — e.g. exclude certain users, databases, or query tags.
+3. **Apply projection policies** — control which columns are visible.
+4. **Tag-based masking** — if they use sensitivity tags, tag-based policies are enforced automatically when we read from their view.
 
-#### Pipeline Setup
-
-```sql
--- 1. App creates the governed view during setup.
---    ALL QUERY_HISTORY columns are included. Privacy is enforced via masking
---    policies attached to the view, NOT by column exclusion.
-CREATE OR REPLACE VIEW app_schema.governed_query_history AS
-SELECT
-    QUERY_ID, QUERY_TEXT, DATABASE_NAME, SCHEMA_NAME,
-    QUERY_TYPE, SESSION_ID, USER_NAME, ROLE_NAME,
-    WAREHOUSE_NAME, WAREHOUSE_SIZE, WAREHOUSE_TYPE,
-    CLUSTER_NUMBER, QUERY_TAG, EXECUTION_STATUS,
-    ERROR_CODE, ERROR_MESSAGE, START_TIME, END_TIME,
-    TOTAL_ELAPSED_TIME, BYTES_SCANNED, ROWS_PRODUCED,
-    COMPILATION_TIME, EXECUTION_TIME, QUEUED_PROVISIONING_TIME,
-    QUEUED_REPAIR_TIME, QUEUED_OVERLOAD_TIME,
-    TRANSACTION_BLOCKED_TIME, OUTBOUND_DATA_TRANSFER_CLOUD,
-    OUTBOUND_DATA_TRANSFER_REGION, OUTBOUND_DATA_TRANSFER_BYTES,
-    INBOUND_DATA_TRANSFER_CLOUD, INBOUND_DATA_TRANSFER_REGION,
-    INBOUND_DATA_TRANSFER_BYTES, CREDITS_USED_CLOUD_SERVICES,
-    QUERY_ACCELERATION_BYTES_SCANNED,
-    QUERY_ACCELERATION_PARTITIONS_SCANNED,
-    QUERY_ACCELERATION_UPPER_LIMIT_SCALE_FACTOR
-FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY;
-
--- 2. App applies a DEFAULT masking policy on QUERY_TEXT (safe default = REDACT).
---    This policy always masks QUERY_TEXT — equivalent to the old REDACT mode.
---    No role-based conditionals (IS_ROLE_IN_SESSION returns NULL in Native App context).
-CREATE OR REPLACE MASKING POLICY app_schema.default_query_text_mask
-    AS (val VARCHAR) RETURNS VARCHAR ->
-    '***REDACTED***';
-
-ALTER VIEW app_schema.governed_query_history
-    ALTER COLUMN QUERY_TEXT SET MASKING POLICY app_schema.default_query_text_mask;
-
--- 3. Poll-based pipeline reads from the governed view (same watermark logic as before)
---    SELECT * FROM app_schema.governed_query_history
---    WHERE START_TIME > :last_exported_watermark
---    ORDER BY START_TIME
---    LIMIT :batch_size;
-```
-
-#### Consumer-Configured Export Modes (Streamlit UI)
-
-The Streamlit UI Settings panel provides a simple toggle for QUERY_TEXT handling. Under the hood, the toggle manages the masking policy on the governed view:
-
-| Mode | What Happens | Default? |
-|---|---|---|
-| `REDACT` | App's built-in masking policy is active on `QUERY_TEXT`. All queries return `'***REDACTED***'` for this column. All other QUERY_HISTORY columns are exported normally. | **Yes** |
-| `FULL` | App removes the masking policy from the governed view. `QUERY_TEXT` flows through as-is. Consumer explicitly acknowledges privacy implications via a confirmation dialog. | No |
-| `CUSTOM` | Consumer has applied their own masking policy to the governed view (detected by the app). App shows the consumer's policy name and status. App does not manage the policy — the consumer owns it. | No |
-
-**Implementation of the toggle:**
-
-```python
-def set_query_text_mode(session, mode: str):
-    """Switch QUERY_TEXT export mode by managing the masking policy on the governed view."""
-    view = "app_schema.governed_query_history"
-    default_policy = "app_schema.default_query_text_mask"
-
-    if mode == "REDACT":
-        # Ensure default masking policy is active (FORCE replaces any existing policy)
-        session.sql(f"""
-            ALTER VIEW {view}
-                ALTER COLUMN QUERY_TEXT SET MASKING POLICY {default_policy} FORCE
-        """).collect()
-
-    elif mode == "FULL":
-        # Remove any masking policy from QUERY_TEXT
-        session.sql(f"""
-            ALTER VIEW {view}
-                ALTER COLUMN QUERY_TEXT UNSET MASKING POLICY
-        """).collect()
-    # CUSTOM mode: no action — consumer manages their own policy
-```
-
-**CUSTOM mode detection:** The app queries `INFORMATION_SCHEMA.POLICY_REFERENCES` to check if a non-default masking policy is applied to the governed view's `QUERY_TEXT` column. If a consumer-owned policy is detected, the UI shows `CUSTOM` mode with the policy name.
-
-#### Consumer Governance: Beyond the Toggle
-
-The governed view pattern gives consumers **full control** using Snowflake-native governance tools they already know. The Streamlit UI notifies the consumer that their governed views are the place to enforce data governance for observability exports.
-
-**What the consumer can do (independently, using their own DBAs and security teams):**
-
-1. **Replace the default masking policy with a custom one** — e.g., regex-based PII scrubbing that strips emails and SSNs from QUERY_TEXT while preserving query structure:
-
-```sql
--- Consumer creates their own masking policy (in their schema)
-CREATE OR REPLACE MASKING POLICY consumer_schema.scrub_query_pii
-    AS (val VARCHAR) RETURNS VARCHAR ->
-    REGEXP_REPLACE(
-        REGEXP_REPLACE(val,
-            '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}',
-            '***@redacted.com'),
-        '\\b\\d{3}-\\d{2}-\\d{4}\\b',
-        '***-**-****'
-    );
-
--- Consumer applies it to the governed view (FORCE replaces app's default policy)
-ALTER VIEW app_schema.governed_query_history
-    ALTER COLUMN QUERY_TEXT SET MASKING POLICY consumer_schema.scrub_query_pii FORCE;
-```
-
-2. **Add a row access policy** — e.g., exclude queries from specific users, databases, or with specific tags:
-
-```sql
--- Consumer creates a RAP to exclude queries from service accounts
-CREATE OR REPLACE ROW ACCESS POLICY consumer_schema.filter_export_queries
-    AS (user_name VARCHAR) RETURNS BOOLEAN ->
-    user_name NOT IN ('SVC_ETL_ACCOUNT', 'SVC_INTERNAL_BOT');
-
-ALTER VIEW app_schema.governed_query_history
-    ADD ROW ACCESS POLICY consumer_schema.filter_export_queries ON (USER_NAME);
-```
-
-3. **Apply projection policies** — block additional columns beyond QUERY_TEXT from appearing in exports.
-
-4. **Apply tag-based masking** — if the consumer tags columns with sensitivity tags, tag-based masking policies are enforced automatically.
-
-#### Blocked Context Functions — Important Consideration
-
-In the Native App Framework, context functions like `IS_ROLE_IN_SESSION()`, `CURRENT_ROLE()`, and `CURRENT_USER()` return NULL in shared content and owner's-rights stored procedures (see §7.2). Masking policies that use role-based conditions will always evaluate the NULL branch.
-
-**Impact:** Standard role-based masking policies won't differentiate users when data flows through our app's pipeline:
-
-```sql
--- THIS EVALUATES NULL FOR IS_ROLE_IN_SESSION IN NATIVE APP CONTEXT
--- → always falls to ELSE branch (masked)
-CREATE MASKING POLICY example AS (val VARCHAR) RETURNS VARCHAR ->
-    CASE
-        WHEN IS_ROLE_IN_SESSION('ADMIN') THEN val  -- NULL → false
-        ELSE '***MASKED***'                         -- always hits this
-    END;
-```
-
-**This is actually the desired behavior for export use cases** — the app always sees the masked data, which is the safe default. Consumers who want QUERY_TEXT exported unmasked should use the `FULL` toggle or create an unconditional pass-through policy.
-
-**Consumer guidance (shown in Streamlit UI):** Masking policies applied to governed views should not rely on `IS_ROLE_IN_SESSION()` or `CURRENT_ROLE()` for the export pipeline — these functions return NULL in the Native App context. Use unconditional masking (regex scrubbing, field removal) or the REDACT/FULL toggle for controlling QUERY_TEXT export.
-
-#### Comparison: Governed View vs. REDACT/FULL Approach
-
-| Dimension | Previous: App-level REDACT/FULL | New: Uniform Governed Views |
-|---|---|---|
-| **Consumer simplicity (MVP)** | Toggle in UI | Same toggle in UI (REDACT/FULL) for QUERY_TEXT; pass-through for other sources |
-| **Architectural consistency** | Different from Event Table pattern | Same Pattern C for all data sources — Event Tables and ACCOUNT_USAGE |
-| **Coverage** | Only QUERY_TEXT in QUERY_HISTORY | Every ACCOUNT_USAGE source across all packs has a governance hook |
-| **Granularity** | Binary (exclude column or include as-is) | Binary MVP + partial masking, row filtering, projection control for advanced consumers |
-| **Design philosophy** | App implements redaction logic | Platform enforces governance — "Leverage, Don't Replicate" |
-| **Row-level filtering** | Not possible | Consumer adds RAP to any governed view |
-| **Default safety** | REDACT = safe default | Default masking policy on high-risk sources; pass-through with governance hook on low-risk sources |
-| **Post-MVP extensibility** | Need to build PATTERN_REDACT in app code | Consumer creates any policy they want on any governed view — no app changes needed |
-| **Performance** | Direct ACCOUNT_USAGE query | View-on-view (negligible overhead for poll-based batches) |
-| **Upgrade risk** | None | Low — no streams, `CREATE OR REPLACE VIEW` is safe |
-
-#### ACCESS_HISTORY as Complementary Signal
-
-For observability use cases that benefit from knowing what data was accessed without needing the actual query text:
-- ACCESS_HISTORY shows **which objects and columns were accessed** without the query text
-- The `policies_referenced` column shows which governance policies were enforced (see §8.6)
-- Combined with TAG_REFERENCES, gives a complete picture of sensitive data access patterns
-- Our Security Pack (post-MVP) will export ACCESS_HISTORY to Splunk via its own governed view, enabling cross-system compliance monitoring
-
-#### Per-Pack Governed View Strategy
-
-Every ACCOUNT_USAGE source flows through a governed view. The app creates these views during pack enablement. For low-risk sources, the view is a simple `SELECT * FROM` pass-through. For high/medium-risk sources, the app applies a default masking policy. In all cases, the consumer can attach additional policies via `ALTER VIEW`.
-
-**Performance Pack (MVP):**
-
-| Source | Governed View | Default Policy | Consumer Hooks |
-|---|---|---|---|
-| `QUERY_HISTORY` | `app_schema.governed_query_history` | Masking on `QUERY_TEXT` (REDACT mode) | RAP, masking, projection on any column. Streamlit toggle for QUERY_TEXT mode. |
-| `TASK_HISTORY` | `app_schema.governed_task_history` | None (pass-through) | Consumer attaches RAP/masking if needed (e.g., filter by database, mask task names) |
-| `COMPLETE_TASK_GRAPHS` | `app_schema.governed_complete_task_graphs` | None (pass-through) | Consumer attaches policies if needed |
-| `LOCK_WAIT_HISTORY` | `app_schema.governed_lock_wait_history` | None (pass-through) | Consumer attaches policies if needed |
-
-**Security Pack (post-MVP):**
-
-| Source | Governed View | Default Policy | Consumer Hooks |
-|---|---|---|---|
-| `LOGIN_HISTORY` | `app_schema.governed_login_history` | Masking hooks on `CLIENT_IP`, `REPORTED_CLIENT_TYPE` | RAP (e.g., exclude service account logins), masking on IP addresses |
-| `ACCESS_HISTORY` | `app_schema.governed_access_history` | None (pass-through) | Consumer attaches policies if needed. `policies_referenced` column is critical for compliance — see §8.6 |
-| `SESSIONS` | `app_schema.governed_sessions` | Masking hooks on `CLIENT_IP` | RAP, masking on session user/IP data |
-| `GRANTS_TO_USERS` | `app_schema.governed_grants_to_users` | None (pass-through) | Consumer attaches policies if needed |
-| `GRANTS_TO_ROLES` | `app_schema.governed_grants_to_roles` | None (pass-through) | Consumer attaches policies if needed |
-| `NETWORK_POLICIES` | `app_schema.governed_network_policies` | None (pass-through) | Consumer attaches policies if needed |
-
-**Cost Pack (post-MVP):**
-
-| Source | Governed View | Default Policy | Consumer Hooks |
-|---|---|---|---|
-| `METERING_HISTORY` | `app_schema.governed_metering_history` | None (pass-through) | All cost sources are low-risk operational metadata |
-| `WAREHOUSE_METERING_HISTORY` | `app_schema.governed_warehouse_metering_history` | None (pass-through) | Consumer attaches policies if needed |
-| `PIPE_USAGE_HISTORY` | `app_schema.governed_pipe_usage_history` | None (pass-through) | Consumer attaches policies if needed |
-| `SERVERLESS_TASK_HISTORY` | `app_schema.governed_serverless_task_history` | None (pass-through) | Consumer attaches policies if needed |
-| Other cost sources | `app_schema.governed_<source_name>` | None (pass-through) | Same pattern |
-
-**Data Pipeline Pack (post-MVP):**
-
-| Source | Governed View | Default Policy | Consumer Hooks |
-|---|---|---|---|
-| `COPY_HISTORY` | `app_schema.governed_copy_history` | None (pass-through) | Consumer attaches policies if needed |
-| `LOAD_HISTORY` | `app_schema.governed_load_history` | None (pass-through) | Consumer attaches policies if needed |
-
-> **Why governed views even for low-risk sources?** Architectural consistency — every data export point has the same governance contract. The consumer never needs to wonder "does this source have a governance hook?" The answer is always yes. The overhead is negligible (view-on-view adds no measurable cost to poll-based batch reads), and the consumer can add policies to ANY source at ANY time without app changes.
-
-#### Pass-Through Governed View Template
-
-For low-risk sources, the governed view is a simple pass-through created during pack enablement:
-
-```sql
--- Template for low-risk ACCOUNT_USAGE sources (pass-through)
-CREATE OR REPLACE VIEW app_schema.governed_<source_name> AS
-SELECT *
-FROM SNOWFLAKE.ACCOUNT_USAGE.<SOURCE_NAME>;
-
--- Example: TASK_HISTORY
-CREATE OR REPLACE VIEW app_schema.governed_task_history AS
-SELECT *
-FROM SNOWFLAKE.ACCOUNT_USAGE.TASK_HISTORY;
-```
-
-The consumer can then attach policies at any time:
-
-```sql
--- Example: Consumer filters out internal service account tasks
-ALTER VIEW app_schema.governed_task_history
-    ADD ROW ACCESS POLICY consumer_schema.exclude_service_tasks ON (NAME);
-
--- Example: Consumer masks task error messages that might contain PII
-ALTER VIEW app_schema.governed_task_history
-    ALTER COLUMN ERROR_MESSAGE SET MASKING POLICY consumer_schema.mask_task_errors;
-```
-
-> **Safe to `CREATE OR REPLACE`:** Unlike Event Table governed views (where `CREATE OR REPLACE VIEW` breaks streams — see §8.4), ACCOUNT_USAGE governed views use poll-based pipelines with no streams. `CREATE OR REPLACE VIEW` is safe and can be used freely during app upgrades or schema migrations.
+**Blocked context functions (see §7.2):** In the Native App context, `IS_ROLE_IN_SESSION()`, `CURRENT_ROLE()` return NULL. Masking policies that rely on these will always take the "else" branch. For export pipelines, unconditional masking (e.g. regex scrub or full redact) is the typical approach.
 
 #### Streamlit UI: ACCOUNT_USAGE Configuration
 
 The ACCOUNT_USAGE configuration in our Streamlit UI must:
 
-1. **Show governed view status per source**: For each enabled ACCOUNT_USAGE source in the selected packs, display the governed view name and whether it exists
-2. **Show active policies per governed view**: Query `INFORMATION_SCHEMA.POLICY_REFERENCES` to list any masking, RAP, or projection policies the consumer has attached to each governed view
-3. **QUERY_TEXT toggle** (Performance Pack): REDACT/FULL/CUSTOM mode selector for the `governed_query_history` view's QUERY_TEXT masking policy (see Consumer-Configured Export Modes above)
-4. **Consumer guidance**: Explain that each governed view is a governance hook — the consumer can attach Snowflake-native policies to control exactly what data is exported per source
-5. **Recreate governed views**: Provide a "Rebuild Views" action that recreates pass-through governed views if the consumer needs to reset them (safe for ACCOUNT_USAGE — no stream breakage risk)
+1. **Per-source selection**: For each ACCOUNT_USAGE source in the enabled packs, let the user choose: **custom view** (they specify the view name) or **default ACCOUNT_USAGE view**.
+2. **Risk notice**: When the user selects a default ACCOUNT_USAGE view, show a clear notice: *Policies cannot be applied to system views. To enforce masking or row access, create a custom view over this source, attach your policies, and select that view here.*
+3. **Optional: show policies on selected view**: If the selected source is a custom view, we can query `INFORMATION_SCHEMA.POLICY_REFERENCES` to show which masking/RAP/projection policies are attached (informational only).
+4. **No "Rebuild Views" or app-created views**: We do not create or recreate any views.
+
+#### ACCESS_HISTORY as Complementary Signal
+
+- ACCESS_HISTORY shows which objects and columns were accessed; `policies_referenced` (see §8.6) shows which policies were enforced.
+- Our Security Pack (post-MVP) can export ACCESS_HISTORY to Splunk; the user would select their custom view or the default view, with the same risk-inform approach if default is selected.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│ ACCOUNT_USAGE Governance                                         │
-│ Your data flows through governed views before export to Splunk   │
+│ ACCOUNT_USAGE — Select Source per Pack                           │
 ├─────────────────────────────────────────────────────────────────┤
+│ For each source, choose: your custom view (with policies)         │
+│ or the default ACCOUNT_USAGE view.                               │
 │                                                                  │
-│ Performance Pack (MVP):                                          │
-│   QUERY_HISTORY      → governed_query_history                    │
-│     ✓ QUERY_TEXT mode: [REDACT ▾]  (default masking active)     │
-│     ⓘ 0 additional consumer policies attached                   │
+│ QUERY_HISTORY:  [ my_schema.my_query_history ▾ ]  (custom view)  │
+│   Policies on view: masking on QUERY_TEXT                        │
+│   Or: [ SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY ] → ⚠ No policies  │
+│       possible on system view; we'll export as-is. Consider      │
+│       a custom view to enforce governance.                       │
 │                                                                  │
-│   TASK_HISTORY        → governed_task_history                    │
-│     ⓘ Pass-through (no default policies)                        │
-│     ⓘ 0 consumer policies attached                              │
-│                                                                  │
-│   COMPLETE_TASK_GRAPHS → governed_complete_task_graphs           │
-│     ⓘ Pass-through (no default policies)                        │
-│     ⓘ 0 consumer policies attached                              │
-│                                                                  │
-│   LOCK_WAIT_HISTORY   → governed_lock_wait_history               │
-│     ⓘ Pass-through (no default policies)                        │
-│     ⓘ 0 consumer policies attached                              │
-│                                                                  │
-│ ⓘ Attach masking or row access policies to any governed view     │
-│   to control what data is exported to Splunk.                    │
-│   ALTER VIEW app_schema.governed_<source>                        │
-│     ADD ROW ACCESS POLICY ...  |  ALTER COLUMN ... SET MASKING   │
-│     POLICY ...                                                   │
+│ TASK_HISTORY:   [ SNOWFLAKE.ACCOUNT_USAGE.TASK_HISTORY ▾ ]       │
+│   ⓘ Default selected — no governance policies on this source.   │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### 8.4 Event Table Privacy
+### 8.4 Event Table — User-Selected Sources (No App-Created Views)
 
-#### Design Decision: Pattern C — Custom Governed View + Stream
+#### Design Decision: User Selects Telemetry Source — Governed View or Event Table
 
-> **DECISION:** For both default and user-created event tables, our app creates a **custom view** over the consumer's event table and streams from that view. The custom view is the **governed data contract** between the consumer's Snowflake account and our app — the consumer controls exactly what telemetry data leaves their account using Snowflake's native governance tools.
+> **DECISION:** We **do not** create or maintain governed views over event tables. The **user selects** the telemetry source: either their **own governed view** (a custom view over an event table, with masking/row access policies attached) or the **event table** directly. We stream from the selected source. If the user selects a governed view, we create the stream on that view and Snowflake enforces the user's policies. If the user selects the event table directly, we stream from the event table and **inform the user** that masking policies cannot be applied on event tables — they may want to use a custom view for value-level redaction. That's it. No auto-creation of views, no sync with source tables.
 
 > **Full research and live test results:** See [Event Table Streams & Governance Research](event_table_streams_governance_research.md)
 
-**Why a custom view (not direct streaming from the event table):**
+**Governance constraints on event tables (for user guidance):**
 
-Live testing confirmed critical governance constraints on event tables:
-
-| Policy Type | Directly on Event Table | On Custom View |
+| Policy Type | Directly on Event Table | On User's Custom View |
 |---|---|---|
 | **Masking policies** | **BLOCKED** (`INVALID OPERATION FOR EVENT TABLES`) | **Works** |
-| **Row access policy** | Works (user-created only; not default) | **Works** (both default and user-created) |
+| **Row access policy** | Works (user-created only; not default) | **Works** |
 | **Projection policy** | Works (user-created only; not default) | **Works** |
-| **Column transformation/exclusion** | Not possible | **Works** (via SELECT list, `OBJECT_DELETE`, etc.) |
-| **Stream creation** | Works (both default and user-created) | **Works** |
+| **Stream creation** | Works | **Works** (stream on view) |
 
-Masking policies are **blocked on all event tables** (including user-created ones). The only way to apply value-level redaction (e.g., strip emails from log messages, remove sensitive JSON keys) is through a **custom view**. This makes Pattern C the only architecture that provides full governance for both event table types.
+Masking is **blocked on all event tables**. If the user wants value-level redaction (e.g. strip PII from log messages), they must create their own custom view over the event table, attach masking policies to that view, and **select that view** as the app's telemetry source.
 
-#### Architecture: Custom View → Stream → Task → Splunk
+#### Architecture: User-Selected Source → Stream → Task → Splunk
+
+**When user selects a governed view:**
 
 ```
-Event Table ──→ Custom View (RAP + Masking + Column Filtering) ──→ Stream (APPEND_ONLY) ──→ Task ──→ Splunk
+User's governed view (over event table, with RAP + masking)
+    ↓
+Stream (APPEND_ONLY on view) → Task → Splunk
 ```
 
-**Pipeline setup (same for both default and user-created event tables):**
+**When user selects event table directly:**
 
-```sql
--- 1. Custom view with governance: column transformation, policy hooks
---    The view MUST include all columns the pipeline needs (VALUE is required
---    for LOG messages and METRIC values). Privacy is enforced via masking
---    policies attached to the view, NOT by column exclusion.
-CREATE OR REPLACE VIEW app_schema.governed_events_export AS
-SELECT
-    TIMESTAMP,
-    START_TIMESTAMP,
-    OBSERVED_TIMESTAMP,
-    TRACE,
-    RECORD_TYPE,
-    RECORD,
-    RECORD_ATTRIBUTES,
-    -- Remove known-sensitive infrastructure keys from RESOURCE_ATTRIBUTES
-    OBJECT_DELETE(
-      OBJECT_DELETE(RESOURCE_ATTRIBUTES, 'snow.query.id'),
-      'snow.compute_pool.node.id'
-    ) AS RESOURCE_ATTRIBUTES,
-    SCOPE,
-    SCOPE_ATTRIBUTES,
-    VALUE                 -- REQUIRED: LOG message text and METRIC values
-    -- EXEMPLARS excluded (not used by the export pipeline)
-FROM reference('consumer_event_table');
-
--- 2. Consumer attaches governance policies to the view
---    Row access policy: controls which rows are exported
-ALTER VIEW app_schema.governed_events_export
-    ADD ROW ACCESS POLICY consumer_schema.event_row_filter ON (RESOURCE_ATTRIBUTES);
-
---    Masking policy on RECORD: redacts sensitive fields in span/log structured data
-ALTER VIEW app_schema.governed_events_export
-    ALTER COLUMN RECORD SET MASKING POLICY consumer_schema.mask_log_content;
-
---    Masking policy on VALUE: redacts PII in log message text and metric payloads
-ALTER VIEW app_schema.governed_events_export
-    ALTER COLUMN VALUE SET MASKING POLICY consumer_schema.mask_value_content;
-
--- 3. Stream from the governed view
-CREATE STREAM IF NOT EXISTS app_schema.event_stream
-    ON VIEW app_schema.governed_events_export
-    APPEND_ONLY = TRUE;
+```
+Event Table
+    ↓
+Stream (APPEND_ONLY on table) → Task → Splunk
+    + We inform user: masking cannot be applied on event tables; consider a custom view for governance.
 ```
 
-> **Why VALUE is included, not excluded:** The export pipeline reads `VALUE` for two signal types: **LOGs** (log message text → `message` field in HEC events) and **METRICs** (metric measurement → OTLP metric data points). Excluding `VALUE` from the view would break log and metric export. The consumer protects sensitive content in `VALUE` by attaching a **masking policy** to the governed view's `VALUE` column — Snowflake enforces the mask automatically when the stream is consumed.
+Our serverless tasks work with whatever source the user selected. No app-created views to maintain.
 
-**Governance enforcement:** When our serverless task reads from the stream, Snowflake enforces all policies attached to the view — RAP filters rows, masking policies redact sensitive values in RECORD, RECORD_ATTRIBUTES, and VALUE, and excluded columns (EXEMPLARS) never reach our code. This is "Leverage, Don't Replicate" in action.
+#### Key Limitations (When User Uses Their Own View + Stream)
 
-#### Key Limitations and Operational Rules (from research)
+If the user selects a **governed view** as the source and we create a stream on it, the following apply to **their view** (user responsibility):
 
-> **Critical architectural insight:** The view SQL restrictions below apply **only to the `CREATE VIEW` definition**, not to queries against the stream. Our Snowpark collector code (which filters by `RECORD_TYPE`, extracts VARIANT fields, and projects per-signal columns) runs at **stream query time** with full SQL/Snowpark capability — no restrictions. The governed view itself is intentionally a simple pass-through with minimal transformations.
-
-| Limitation | Severity | Mitigation / How Our Design Handles It |
+| Limitation | Severity | User Guidance |
 |---|---|---|
-| `CREATE OR REPLACE VIEW` **breaks all streams** on the view (offset lost, unrecoverable) | **CRITICAL** | Use `ALTER VIEW` for all policy changes (add/drop RAP, masking). Never `CREATE OR REPLACE` the view after streams exist. The app's provisioning and **upgrade process** must never recreate the view — schema migrations require explicit stream drop/recreate with documented data gap. Document prominently for consumers. |
-| View must use **simple SQL only** — no GROUP BY, DISTINCT, LIMIT, UDFs, correlated subqueries | **MEDIUM** | **Not a constraint for our design.** The governed view is intentionally a simple column pass-through with only `OBJECT_DELETE` (a system scalar function). All heavy processing — `RECORD_TYPE` filtering, VARIANT field extraction (`col["field"]`), per-signal-type projections, and deduplication — happens in the **Snowpark collector procedure at stream query time**, where no SQL restrictions apply. The view handles governance; Snowpark handles data transformation. |
-| First stream creation **locks underlying event table** (one-time change tracking setup) | **MEDIUM** | Schedule during low-activity period. One-time cost per event table. Subsequent stream or view operations do not re-lock. |
-| Triggered tasks fire on **all** underlying event table changes (not just rows matching a view filter) | **LOW for our design** | Our governed view does **not** use a WHERE filter — it passes all `RECORD_TYPE` values through. The Snowpark collector filters by signal type at query time. Since every event table insert is a legitimate trigger, false positives are minimal. We use serverless triggered tasks, so even genuinely empty runs (no new data) have negligible cost. |
-| Staleness window tied to **underlying table** retention (cannot control for default event table) | **MEDIUM** | **User-created ET:** Set `MAX_DATA_EXTENSION_TIME_IN_DAYS = 90` on the event table during setup (up to 90-day staleness window). **Default ET** (`SNOWFLAKE.TELEMETRY.EVENTS`): Cannot alter retention (system-owned). Must consume stream frequently (every 1–5 min via triggered task) and monitor `STALE_AFTER` aggressively. Avoid `CREATE SECURE VIEW` (secure views do not auto-extend retention). |
-| Non-deterministic functions in view definition cause unstable results | **LOW** | Our governed view uses only `OBJECT_DELETE` (deterministic). All other transformations (including any that reference session context) happen in Snowpark at stream query time, outside the view definition. |
-| `_staging.stream_offset_log` schema must match the **view** schema, not the event table schema | **MEDIUM** | The zero-row INSERT that advances the stream offset (`INSERT INTO ... SELECT * FROM <stream> WHERE 0 = 1`) requires schema compatibility. Since the stream is on the governed view (which may exclude EXEMPLARS and transform RESOURCE_ATTRIBUTES), the offset log table must be `LIKE <governed_view>`, not `LIKE <event_table>`. |
+| `CREATE OR REPLACE VIEW` **breaks all streams** on the view (offset lost) | **CRITICAL** | Use `ALTER VIEW` for policy changes; never `CREATE OR REPLACE` after the stream exists. |
+| View must use **simple SQL only** (no GROUP BY, DISTINCT, LIMIT, UDFs) for stream compatibility | **MEDIUM** | Keep the view a simple column pass-through; we document schema requirements. |
+| Stream schema (offset log) must match the **view** schema | **MEDIUM** | Our pipeline aligns to the selected source schema (view or event table). |
+| Staleness / retention | **MEDIUM** | For default event table, retention cannot be altered; consume stream frequently. For user-created event tables, user can set retention. |
 
-> **Operational best practices:** See [Pattern C Operational Best Practices](event_table_streams_governance_research.md#operational-best-practices-for-pattern-c)
+> **Operational best practices:** See [Event Table Streams & Governance Research](event_table_streams_governance_research.md#operational-best-practices-for-pattern-c) (applies when user provides a governed view).
 
 #### Streamlit UI: Event Table Configuration
 
-The Event Table configuration panel in our Streamlit UI must:
+The Event Table configuration panel must:
 
-1. **Allow** the consumer to select either a user-created event table or the default event table as the telemetry source
-2. **Create a custom governed view** over the selected event table — this is our app's standard pipeline, not an optional feature
-3. **Guide** the consumer to attach governance policies (RAP, masking) to the custom view if they want to control what data is exported
-4. **Show governance status** for the custom view: which policies (RAP, masking) are currently attached
-5. **Monitor stream health:** staleness status via `SHOW STREAMS`, warn if stream is approaching stale
+1. **Source selection**: Let the user choose the telemetry source — **their governed view** (they specify the view name) or the **event table** directly (default or user-created).
+2. **Risk notice**: When the user selects an event table directly, show: *Masking policies cannot be applied on event tables. To redact sensitive data in RECORD, RECORD_ATTRIBUTES, or VALUE, create a custom view over this event table, attach masking policies, and select that view as the source.*
+3. **Optional**: If the source is a custom view, show which policies are attached (from POLICY_REFERENCES).
+4. **Stream health**: When a stream exists (on view or table), show staleness status and warn if approaching stale.
+5. **No app-created views**: We do not create governed views; we stream from the user's selected source.
 
-#### Span/Log Attribute Sensitivity
+#### Span/Log Attribute Sensitivity (User Guidance)
 
-Span and log attributes (RECORD, RECORD_ATTRIBUTES, VALUE columns) are OBJECT/VARIANT type and may contain PII logged by the consumer's applications. Since masking policies are **blocked on event tables directly**, the custom view is the only place to apply value-level redaction.
+RECORD, RECORD_ATTRIBUTES, and VALUE may contain PII. If the user streams from the **event table** directly, we cannot apply masking there — we inform them of the risk. If they use a **governed view**, they attach masking policies to that view's RECORD, RECORD_ATTRIBUTES, and/or VALUE columns.
 
-All three high-risk columns are **included** in the governed view because the pipeline needs them:
-- **RECORD** (OBJECT) — contains structured span/log fields (name, kind, status, severity_text). Required for span and log export.
-- **RECORD_ATTRIBUTES** (OBJECT) — contains user-defined span/log attributes. Required for OTLP attribute mapping.
-- **VALUE** (VARIANT) — contains log message text and metric measurement values. Required for LOG export (`message` field) and METRIC export (metric data points).
+> **Consumer Guidance (shown in Streamlit UI):** If your applications log sensitive data in span attributes, log messages, or metric payloads, use a custom view over your event table and attach masking policies to RECORD, RECORD_ATTRIBUTES, and/or VALUE, then select that view as the telemetry source.
 
-The consumer protects sensitive content in these columns by attaching **masking policies** to the governed view — not by excluding the columns from the view.
-
-> **Consumer Guidance (shown in Streamlit UI):** If your applications log sensitive data in span attributes, log messages, or metric payloads (e.g., user IDs, email addresses, request payloads), attach masking policies to the governed view's RECORD, RECORD_ATTRIBUTES, and/or VALUE columns to redact those fields before export to Splunk.
-
-Example masking policies on the custom view:
+Example masking policies (user applies to their view):
 ```sql
 -- Masking policy to redact sensitive keys in RECORD (structured span/log fields)
 CREATE OR REPLACE MASKING POLICY mask_log_content
@@ -1282,7 +985,7 @@ CREATE OR REPLACE MASKING POLICY mask_log_content
         ELSE OBJECT_DELETE(OBJECT_DELETE(val, 'user.email'), 'user.ssn')
     END;
 
-ALTER VIEW app_schema.governed_events_export
+ALTER VIEW <user_schema>.<user_governed_events_view>
     ALTER COLUMN RECORD SET MASKING POLICY mask_log_content;
 
 -- Masking policy to redact PII patterns in VALUE (log message text, metric payloads)
@@ -1295,7 +998,7 @@ CREATE OR REPLACE MASKING POLICY mask_value_content
             '***@redacted.com')::VARIANT
     END;
 
-ALTER VIEW app_schema.governed_events_export
+ALTER VIEW <user_schema>.<user_governed_events_view>
     ALTER COLUMN VALUE SET MASKING POLICY mask_value_content;
 ```
 
@@ -1304,6 +1007,8 @@ ALTER VIEW app_schema.governed_events_export
 Our Streamlit UI should include a **Governance Compliance** panel that demonstrates our app fully **honors and respects** the consumer's existing data governance, privacy measures, and protection posture. This is NOT a duplicate of the Trust Center dashboard — we do not show raw classification statistics. Instead, we show how our app's behavior aligns with what the consumer has configured.
 
 **Purpose:** Communicate to the consumer that our app is governance-aware and adapts its behavior based on their configured policies. Build trust.
+
+**When default views or event tables are selected:** The panel **must inform the user** that masking and row access policies cannot be applied to those sources (system ACCOUNT_USAGE views and event tables do not support policy attachment). To enforce governance on exported data, the user has to create their own custom views (with masking/row access policies) over those sources and select those custom views as the telemetry source in the app.
 
 **Data sources for the panel (all via pure SQL against ACCOUNT_USAGE views):**
 
@@ -1338,22 +1043,21 @@ Our Streamlit UI should include a **Governance Compliance** panel that demonstra
 │   All policies are enforced automatically by Snowflake when     │
 │   this app reads data from your account.                        │
 │                                                                  │
-│ Governed Export Views:                                            │
+│ Selected Export Sources:                                          │
 │                                                                  │
-│   QUERY_HISTORY → governed_query_history                         │
-│     QUERY_TEXT mode: [REDACT ▾]                                 │
-│     Masking policy: app_schema.default_query_text_mask (active) │
-│     Row access policy: none                                     │
+│   QUERY_HISTORY → my_schema.my_query_history (custom view)       │
+│     Masking on QUERY_TEXT; row access: 1 policy                  │
+│     Or: default ACCOUNT_USAGE.QUERY_HISTORY → see notice below   │
 │                                                                  │
-│   Event Table → governed_events_export                           │
-│     Masking policies: 2 active (RECORD, VALUE)                  │
-│     Row access policy: consumer_schema.event_row_filter          │
-│     Stream: healthy (stale_after: 85 days)                      │
+│   Telemetry → my_schema.my_events_view (custom view)             │
+│     Masking: RECORD, VALUE; stream healthy                       │
+│     Or: event table directly → see notice below                  │
 │                                                                  │
-│ ⚠ To enforce your data governance on observability exports,      │
-│   attach masking and row access policies to the governed views   │
-│   listed above. These views are the data contract between your   │
-│   Snowflake account and this app's export pipeline.              │
+│ ⚠ If you selected default views or event tables as sources:     │
+│   Masking and row access policies cannot be applied to these     │
+│   sources. To enforce governance, you have to create your own    │
+│   custom views (with masking/row access policies) for this       │
+│   source and select those views as the telemetry source.         │
 │                                                                  │
 │ ⓘ For full governance details, visit                            │
 │   Snowsight → Governance & Security → Trust Center              │
@@ -1398,11 +1102,11 @@ The `policies_referenced` column in ACCESS_HISTORY is extremely valuable for our
 
 By joining ACCESS_HISTORY with QUERY_HISTORY on `query_id`, we can identify which queries accessed policy-protected (sensitive) data. This enables:
 
-1. **Targeted QUERY_TEXT enrichment:** When QUERY_TEXT is exported (FULL or CUSTOM mode on the governed view, see §8.3), we can annotate the exported log with a `sensitive_data_accessed: true` field for queries that accessed policy-protected data — so Splunk can alert on it.
+1. **Targeted QUERY_TEXT enrichment:** When QUERY_TEXT is exported (user selected a custom view without full masking, or the default view, see §8.3), we can annotate the exported log with a `sensitive_data_accessed: true` field for queries that accessed policy-protected data — so Splunk can alert on it.
 
 2. **Compliance audit without extra effort:** The `policies_referenced` data tells us exactly which policies were enforced, on which objects and columns, without needing to manually cross-reference TAG_REFERENCES and POLICY_REFERENCES.
 
-3. **Governance posture intelligence:** Combined with the governed view pattern (§8.3), `policies_referenced` provides end-to-end governance visibility — the governed view enforces what data leaves Snowflake, and ACCESS_HISTORY records what data was accessed and which policies were enforced.
+3. **Governance posture intelligence:** When the user selects a custom view as the source (§8.3), `policies_referenced` provides end-to-end governance visibility — the user's view enforces what data leaves Snowflake, and ACCESS_HISTORY records what data was accessed and which policies were enforced.
 
 **SQL patterns for extracting policy enforcement data:**
 
@@ -1431,7 +1135,7 @@ WHERE obj_policy.value:"policyKind"::VARCHAR = 'ROW_ACCESS_POLICY'
 **Important latency consideration:** ACCESS_HISTORY has up to **3-hour latency**, while QUERY_HISTORY has up to **45-minute latency**. When our poll-based pipeline reads the governed QUERY_HISTORY view, the corresponding ACCESS_HISTORY records may not yet be available. For the sensitive-query-identification use case, we'd need to either:
 - Accept the latency gap (most queries we export won't have ACCESS_HISTORY records yet)
 - Use a separate, delayed enrichment pass (post-MVP complexity)
-- Keep it simple in MVP: export QUERY_HISTORY via the governed view (with masking policies enforced by Snowflake), and separately export ACCESS_HISTORY (Security Pack, post-MVP) for compliance audit
+- Keep it simple in MVP: export QUERY_HISTORY from the user-selected source (their view with masking, or default with risk notice), and separately export ACCESS_HISTORY (Security Pack, post-MVP) for compliance audit
 
 ### 8.7 Implementation — Querying Governance Posture
 
@@ -1503,16 +1207,16 @@ def collect_governance_posture(session) -> dict:
 | Capability | Snowflake Native (Leverage) | Our App (Build) |
 |---|---|---|
 | **Data classification** | Automated classification, custom classifiers, classification profiles, Trust Center | Query metadata for Governance Compliance panel; encourage consumers to classify |
-| **Column masking** | Dynamic data masking, tag-based masking | Applied on custom governed views for both Event Tables (stream reads) and ACCOUNT_USAGE views (poll reads). Consumer attaches masking policies using Snowflake-native tools. |
-| **Row filtering** | Row access policies | Applied on custom governed views. Enforced on stream reads (Event Tables) and poll reads (ACCOUNT_USAGE). Consumer controls which rows are exported. |
-| **Event Table pipeline** | Pattern C: Custom governed view → stream → task → Splunk | Same architecture for both default and user-created event tables. Consumer controls exported data via policies on the governed view. |
-| **ACCOUNT_USAGE pipeline** | Pattern C: Custom governed view → poll-based task → Splunk | App creates governed views over **every** ACCOUNT_USAGE source across all packs. High-risk sources (QUERY_HISTORY) get default masking policies; low-risk sources get pass-through views. Every export point has a governance hook. Consumer attaches policies to any governed view. No stream-based risks (poll-based pipeline — `CREATE OR REPLACE VIEW` is safe). |
+| **Column masking** | Dynamic data masking, tag-based masking | When the user selects a **custom view** as the source, they attach masking policies to that view; Snowflake enforces them. We do not create views. |
+| **Row filtering** | Row access policies | When the user selects a custom view, they attach RAP to it. We read/stream from the selected source. |
+| **Event Table pipeline** | User selects: governed view or event table | We stream from the user's selected source (their view or the event table). If event table selected, we inform that masking cannot be applied. No app-created views. |
+| **ACCOUNT_USAGE pipeline** | User selects: custom view or default view | We read from the user's selected source (their view or default ACCOUNT_USAGE view). If default selected, we inform that policies cannot be applied. No app-created views. |
 | **Projection control** | Projection policies | Respect consumer projection policies; if a column is blocked, our export adapts |
 | **Aggregation privacy** | Aggregation policies | Generally not applicable to our telemetry export use case |
 | **Governance metadata** | TAG_REFERENCES, POLICY_REFERENCES, DATA_CLASSIFICATION_LATEST, ACCESS_HISTORY, SYSTEM$SHOW_SENSITIVE_DATA_MONITORED_ENTITIES() | Governance Compliance panel in Streamlit UI |
 | **Sensitive query tracking** | ACCESS_HISTORY with `policies_referenced` | Identify queries that accessed protected data; annotate exports; compliance audit |
-| **QUERY_TEXT privacy** | Custom governed view with default masking policy (safe default). Consumer can apply own masking policies (regex PII scrubbing, etc.) via Snowflake-native governance. | REDACT/FULL toggle in Streamlit UI. CUSTOM mode detected when consumer applies their own policy. No app-level redaction logic — platform enforces governance. |
-| **No intermediate storage** | — | Serverless tasks read governed views → transform → export directly to Splunk. No staging/duplication of data. |
+| **QUERY_TEXT privacy** | User creates a custom view over QUERY_HISTORY and attaches masking (e.g. regex PII scrubbing); selects that view as source. Or selects default view and we inform of risk. | No app-created view or toggle. User selects source; we show risk notice when default ACCOUNT_USAGE view is selected. |
+| **No intermediate storage** | — | Serverless tasks read from the user-selected source (their view or default view/table) → transform → export directly to Splunk. No staging/duplication of data. |
 
 ---
 
@@ -1538,13 +1242,11 @@ def collect_governance_posture(session) -> dict:
 | Call SYSTEM$SHOW_SENSITIVE_DATA_MONITORED_ENTITIES() | Role must have access to entities and profiles | May require additional grants in some configurations |
 | SHOW CLASSIFICATION_PROFILE | `<profile>!PRIVACY_USER` instance role | Consumer must grant if app needs profile details |
 | Read INFORMATION_SCHEMA TAG_REFERENCES function | Role must have access to the tagged object | More granular than ACCOUNT_USAGE; includes inherited tags |
-| Create masking policies (on app's own tables/views) | Automatic — app is owner of its own schemas | App creates default masking policy on governed QUERY_HISTORY view |
-| Apply/unset masking policies (on app's own views) | Automatic — app is owner of its own schemas | REDACT/FULL toggle manages masking policy on `governed_query_history` |
-| Consumer applies own masking policy to app's governed views | `APPLY MASKING POLICY ON ACCOUNT` (or APPLY on the specific policy) | Consumer's security officer / ACCOUNTADMIN can apply custom policies to governed views using `FORCE` parameter |
-| Consumer applies row access policy to app's governed views | `APPLY ROW ACCESS POLICY ON ACCOUNT` (or equivalent) | Consumer controls which rows are exported to Splunk |
-| Read ACCOUNT_USAGE via governed views | `IMPORTED PRIVILEGES ON SNOWFLAKE DB` | App creates governed views (`governed_query_history`, `governed_task_history`, etc.) over all ACCOUNT_USAGE sources. Same privilege as direct access — the governed view is a user-owned view-on-view. |
-| Read Event Tables (any type) via governed view | Reference mechanism + consumer grants SELECT | Pattern C: App creates custom view over event table; consumer attaches RAP + masking to the view. Stream from the view. |
-| Create streams on governed Event Table views | App owns the view | `CREATE STREAM ON VIEW app_schema.governed_events_export APPEND_ONLY = TRUE` |
+| Consumer creates custom view over ACCOUNT_USAGE / event table | Consumer's schemas and roles | User creates views and attaches masking/RAP; no app-created views |
+| Consumer applies masking/row access policy to their views | `APPLY MASKING POLICY` / `APPLY ROW ACCESS POLICY` (or equivalent) | Consumer attaches policies to their own views; they select that view as the app's source |
+| Read ACCOUNT_USAGE (default or consumer's view) | `IMPORTED PRIVILEGES ON SNOWFLAKE DB` | We read from the user-selected source (default view or their custom view). Same privilege as direct ACCOUNT_USAGE access. |
+| Read Event Tables / user's governed view | Reference mechanism + consumer grants SELECT on table or view | User selects event table or their governed view; we stream from the selected source. Consumer grants SELECT on the object they chose. |
+| Create stream on user's view or event table | Consumer grants SELECT; app or consumer creates stream per design | Stream is created on the user-selected source (view or event table). If view, schema compatibility follows that view. |
 
 ## Appendix C: Full Semantic Category Reference
 

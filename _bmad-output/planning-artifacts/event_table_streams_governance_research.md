@@ -13,7 +13,8 @@
 4. [Live Test Results: Data Governance Policies on Event Tables](#4-live-test-results-data-governance-policies-on-event-tables)
 5. [Live Test Results: Grants on System Objects](#5-live-test-results-grants-on-system-objects)
 6. [Stream Operational Details](#6-stream-operational-details)
-7. [Gaps & Limitations: View-Based Streams vs Direct Event Table Streams](#7-gaps--limitations-view-based-streams-vs-direct-event-table-streams)
+7. [Gaps & Limitations: View-Based Streams vs Direct Event Table Streams](#7-gaps--limitations-view-based-streams-vs-direct-event-table-streams)  
+   - [View recreation and stream handling (Cortex Search verification)](#view-recreation-and-stream-handling-cortex-search-verification)
 8. [Architecture Patterns](#8-architecture-patterns)
 9. [Recommendation for the Native App](#9-recommendation-for-the-native-app)
 10. [Documentation References](#10-documentation-references)
@@ -682,6 +683,34 @@ reflect those changes.
 | 7.8 | Non-deterministic functions cause unstable results | **LOW** | N/A | Use only deterministic functions in view |
 | 7.9 | Additional storage cost (change tracking + retention) | **LOW** | Same | Factor into cost estimates |
 | 7.10 | ET alterations not propagated to views | **LOW** | N/A | Monitor for Snowflake platform changes |
+
+### View recreation and stream handling (Cortex Search verification)
+
+*Verified via Snowflake MCP `cortex_search` against `CKE_SNOWFLAKE_DOCS_SERVICE` (SNOWFLAKE_DOCUMENTATION.SHARED) with `columns: ['chunk']` to retrieve document snippets.*
+
+**Questions answered:**
+
+1. **Can we detect when the user re-created the view with `CREATE OR REPLACE VIEW`?**  
+   We do not need to detect the view DDL itself. As soon as the view is recreated, **any stream on that view becomes stale and unreadable**. Snowflake docs state: *"Recreating or swapping a view drops its change data, which makes any stream on the view stale. A stale stream is unreadable."* We can detect the problem by:
+   - **SHOW STREAMS** (or equivalent INFORMATION_SCHEMA): the **`stale`** column is `TRUE` when the stream can no longer be read.
+   - **Querying the stream**: reading from a stale stream fails; the app can treat repeated read failures as an orphaned stream.
+
+2. **What can we do so streams still work on the new view?**  
+   Nothing. The docs are explicit: *"Any stream on a given view breaks if the source view or underlying tables are dropped or recreated (using CREATE OR REPLACE VIEW)."* The stream’s offset is tied to the previous view instance; it cannot be “repaired” to point at the new view. The only resolution is to **recreate the stream** (e.g. `CREATE OR REPLACE STREAM`), which starts at the current table version and **accepts a data gap** for changes that occurred between the old stream’s last consumed offset and the recreation.
+
+3. **Should we mark the view as orphaned in the telemetry health dashboard and stop streaming?**  
+   **Yes.** Recommended behavior:
+   - **Detect**: Use `SHOW STREAMS` (or stream metadata) to check the **stale** flag, and/or treat persistent stream read failures as “stream broken.”
+   - **Mark**: In Pipeline Health / Telemetry dashboard, mark the affected source (view + stream) as **orphaned** or **broken** with a clear message that the source view was likely recreated and the stream is no longer valid.
+   - **Stop**: Do not attempt to consume the stream; reads will fail.
+   - **Recovery**: Require the user to **re-select the (recreated) view** as the telemetry source. The app can then **drop and recreate the stream** on the current view (with an explicit warning about the one-time data gap). Do not try to “re-attach” the old stream to the new view.
+
+**Cortex Search quotes (docs):**
+
+- *"Any stream on a given view breaks if the source view or underlying tables are dropped or recreated (using CREATE OR REPLACE VIEW)."*
+- *"Recreating or swapping a view drops its change data, which makes any stream on the view stale. A stale stream is unreadable."*
+- *"When a stream is stale, it cannot be read. Recreate the stream to resume reading from it."*
+- *"To resolve this issue, recreate the stream in the primary database (using CREATE OR REPLACE STREAM)."*
 
 ---
 

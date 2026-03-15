@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UX Design Directions - Splunk Observability for Snowflake</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #f4f6f8;
+            color: #333;
+            margin: 0;
+            padding: 2rem;
+        }
+        h1 { text-align: center; color: #292929; }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 2rem;
+            margin-top: 2rem;
+        }
+        .card {
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+            padding: 1.5rem;
+            border: 1px solid #e2e8f0;
+        }
+        .card h2 { margin-top: 0; font-size: 1.25rem; color: #1f2937; }
+        .card p { font-size: 0.9rem; color: #6b7280; margin-bottom: 1.5rem; }
+        .mockup {
+            border: 2px solid #e2e8f0;
+            border-radius: 6px;
+            background: #f9fafb;
+            padding: 1rem;
+            height: 300px;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        /* Direction 1: Tabbed */
+        .tabs { display: flex; border-bottom: 1px solid #cbd5e1; gap: 15px;}
+        .tab { padding: 5px 10px; border-bottom: 2px solid transparent; color: #64748b; font-size: 0.85rem;}
+        .tab.active { border-bottom-color: #3b82f6; color: #0f172a; font-weight: bold; }
+        .content-box { background: white; border: 1px solid #e2e8f0; border-radius: 4px; padding: 10px; flex-grow: 1; }
+        
+        /* Direction 2: Accordion */
+        .accordion { background: white; border: 1px solid #e2e8f0; border-radius: 4px; padding: 10px; display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem;}
+        .accordion.open { border-bottom: none; border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+        .acc-content { background: white; border: 1px solid #e2e8f0; border-top: none; padding: 10px; flex-grow: 1; border-bottom-left-radius: 4px; border-bottom-right-radius: 4px;}
+        
+        /* Direction 3: Sidebar/MPA */
+        .sidebar-layout { display: flex; gap: 10px; height: 100%; }
+        .sidebar { width: 80px; background: #f1f5f9; border-right: 1px solid #e2e8f0; padding: 10px; display: flex; flex-direction: column; gap: 10px;}
+        .nav-item { height: 15px; background: #cbd5e1; border-radius: 3px; }
+        .nav-item.active { background: #3b82f6; }
+        
+        /* Direction 4: Stepper */
+        .stepper { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+        .step { width: 20px; height: 20px; border-radius: 50%; background: #cbd5e1; color: white; display: flex; align-items: center; justify-content: center; font-size: 0.6rem;}
+        .step.active { background: #3b82f6; }
+        .line { flex-grow: 1; height: 2px; background: #cbd5e1; margin: 0 5px; }
+        
+        /* Generic Streamlit Elements */
+        .st-input { height: 20px; border: 1px solid #cbd5e1; border-radius: 4px; background: white; margin-bottom: 5px; }
+        .st-button { background: #3b82f6; color: white; border-radius: 4px; padding: 5px 10px; text-align: center; font-size: 0.8rem; align-self: flex-start; margin-top: auto;}
+    </style>
+</head>
+<body>
+    <h1>UX Design Directions (Streamlit Layouts)</h1>
+    <p style="text-align: center; max-width: 600px; margin: 0 auto;">Since we are strictly constrained to native Streamlit components, these directions explore different structural layout patterns for our Connection Wizard and Dashboard.</p>
+
+    <div class="grid">
+        <!-- Direction 1 -->
+        <div class="card">
+            <h2>Direction 1: The Tabbed Single-Page</h2>
+            <p>Uses <code>st.tabs()</code> to separate Setup, Governance, and Health in one view. High visibility, fast switching.</p>
+            <div class="mockup">
+                <div class="tabs">
+                    <div class="tab active">Setup</div>
+                    <div class="tab">Governance</div>
+                    <div class="tab">Health</div>
+                </div>
+                <div class="content-box">
+                    <div class="st-input" style="width: 100%;"></div>
+                    <div class="st-input" style="width: 100%;"></div>
+                    <div class="st-button">Save Connection</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Direction 2 -->
+        <div class="card">
+            <h2>Direction 2: The Expanding Accordion</h2>
+            <p>Uses <code>st.expander()</code> to stack steps vertically. Keeps the user on one long scrolling page. Good for dense config.</p>
+            <div class="mockup">
+                <div class="accordion open">1. Splunk Connection <span>▼</span></div>
+                <div class="acc-content">
+                    <div class="st-input" style="width: 100%;"></div>
+                    <div class="st-button">Next</div>
+                </div>
+                <div class="accordion">2. Telemetry Sources <span>▶</span></div>
+                <div class="accordion">3. Governance Review <span>▶</span></div>
+            </div>
+        </div>
+
+        <!-- Direction 3 -->
+        <div class="card">
+            <h2>Direction 3: Multi-Page App (Sidebar)</h2>
+            <p>Uses <code>st.navigation()</code> or multiple files. Completely isolates Setup from the Health Dashboard via the left sidebar.</p>
+            <div class="mockup">
+                <div class="sidebar-layout">
+                    <div class="sidebar">
+                        <div class="nav-item"></div>
+                        <div class="nav-item active"></div>
+                        <div class="nav-item"></div>
+                    </div>
+                    <div class="content-box">
+                        <h3 style="margin-top:0; font-size: 0.9rem;">Configuration</h3>
+                        <div class="st-input" style="width: 100%;"></div>
+                        <div class="st-input" style="width: 100%;"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Direction 4 -->
+        <div class="card">
+            <h2>Direction 4: The Sequential Stepper</h2>
+            <p>Uses session state to swap out <code>st.container()</code> contents. Forces a strict linear wizard flow (Next/Back).</p>
+            <div class="mockup">
+                <div class="stepper">
+                    <div class="step active">1</div><div class="line"></div>
+                    <div class="step">2</div><div class="line"></div>
+                    <div class="step">3</div>
+                </div>
+                <div class="content-box">
+                    <div style="font-size:0.8rem; margin-bottom: 10px;">Step 1: Enter HEC Token</div>
+                    <div class="st-input" style="width: 100%;"></div>
+                    <div style="display:flex; justify-content: space-between; margin-top: auto;">
+                        <div class="st-button" style="background: white; color: #333; border: 1px solid #ccc;">Back</div>
+                        <div class="st-button">Next Step</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

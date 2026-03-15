@@ -1,14 +1,12 @@
 # Executive Summary
 
-The objective is to provide a turnkey Splunk Observability-as-a-Service Native App for Snowflake that captures and exports Snowflake-native telemetry to external Splunk backends. The app supports two complementary export protocols:
-- **OTLP/gRPC** → Splunk Observability Cloud — for OTel-native telemetry (spans, metrics) originating from Event Tables.
-- **Splunk HEC (HTTP)** → Splunk Enterprise/Cloud — for logs (including Event Table logs) and structured operational data originating from ACCOUNT_USAGE views.
+The objective is to provide a turnkey Splunk Observability-as-a-Service Native App for Snowflake that captures and exports Snowflake-native telemetry to external Splunk backends. All telemetry is exported via a **single OTLP/gRPC endpoint** to a remote OpenTelemetry collector (e.g. Splunk distribution). The collector is responsible for routing: traces/metrics to Splunk Observability Cloud, logs/events to Splunk Enterprise/Cloud.
 
-The architecture employs a **dual-pipeline design** with a **uniform governed view layer** for data governance:
-1. **Event-driven pipeline**: Custom governed views on Event Tables → Snowflake Streams → Serverless Triggered Tasks export telemetry in near real-time (~20–30s latency).
-2. **Poll-based pipeline**: Custom governed views on ACCOUNT_USAGE → Scheduled Serverless Tasks with watermark-based incremental reads export operational telemetry at configurable intervals.
+The architecture employs a **dual-pipeline design** with **user-selected sources** for data governance:
+1. **Event-driven pipeline**: User-selected source (custom view or event table) → Snowflake Streams → Serverless Triggered Tasks export telemetry in near real-time (~20–30s latency).
+2. **Poll-based pipeline**: User-selected source (custom view or default ACCOUNT_USAGE view) → Scheduled Serverless Tasks with watermark-based incremental reads export operational telemetry at configurable intervals.
 
-Both pipelines read from **governed views** — not raw source objects — giving consumers full control over what data leaves their Snowflake account via Snowflake-native governance tools (masking policies, row access policies, projection policies). All pipelines export telemetry directly to Splunk destinations without intermediate data staging. Retry handling in MVP relies on transport-level retries built into the OTLP SDK and `httpx`/`tenacity`. A **zero-copy failure tracking layer** (post-MVP) will record lightweight references (hashes or natural keys) for persistently failed batches, enabling dedicated retry logic while eliminating 99%+ of staging storage overhead.
+Both pipelines read from the **source the user selected** — either their own custom view (with masking/row access policies attached) or the default view/event table. When the user selects a default source, the **Data governance** page informs them that masking and row access policies cannot be applied and they must create custom views for governance. The app does not create or maintain views. All pipelines export telemetry directly to a remote OTLP endpoint without intermediate data staging. Retry handling in MVP relies on transport-level retries built into the OTel SDK (gRPC retry with exponential backoff). A **zero-copy failure tracking layer** (post-MVP) will record lightweight references for persistently failed batches.
 
 The app is distributed via the Snowflake Marketplace and designed for iterative delivery through pre-built **Monitoring Packs**. MVP ships with the **Distributed Tracing Pack** and **Performance Pack**; additional packs (Cost, Security, Data Pipeline) are delivered iteratively post-MVP.
 
@@ -23,8 +21,8 @@ This section defines the boundary of the first shipped version. Everything descr
 ### Monitoring Packs
 | Pack | Sources | Pipeline |
 |---|---|---|
-| **Distributed Tracing Pack** | User-selected Event Tables — MVP scope: SQL/Snowpark compute telemetry (spans, metrics, logs) | Event-driven (Governed View → Stream → Triggered Tasks) → OTLP/gRPC (spans & metrics) + HEC HTTP (logs) |
-| **Performance Pack** | QUERY_HISTORY, TASK_HISTORY, COMPLETE_TASK_GRAPHS, LOCK_WAIT_HISTORY | Poll-based (Independent Scheduled Tasks + Watermarks) → HEC HTTP |
+| **Distributed Tracing Pack** | User-selected Event Tables — MVP scope: SQL/Snowpark compute telemetry (spans, metrics, logs) | Event-driven (User-selected source → Stream → Triggered Tasks) → OTLP/gRPC |
+| **Performance Pack** | QUERY_HISTORY, TASK_HISTORY, COMPLETE_TASK_GRAPHS, LOCK_WAIT_HISTORY | Poll-based (Independent Scheduled Tasks + Watermarks) → OTLP/gRPC |
 
 ### App Deployment & Configuration
 - Full `manifest.yml` v2 with privileges, references, and event sharing (Section 1).
@@ -32,40 +30,35 @@ This section defines the boundary of the first shipped version. Everything descr
 - Automated infrastructure provisioning: networking/EAI, streams, scheduled tasks, internal tables (Section 3).
 
 ### Pipelines
-- **Event-driven pipeline**: Governed Event Table view → Stream → Triggered Tasks → `event_table_collector` → OTLP/gRPC + HEC.
-- **Poll-based pipeline**: Governed ACCOUNT_USAGE views → Independent Scheduled Tasks (one per enabled source, each with its own schedule) → `account_usage_source_collector` → HEC.
+- **Event-driven pipeline**: User-selected source (custom view or event table) → Stream → Triggered Tasks → `event_table_collector` → OTLP/gRPC.
+- **Poll-based pipeline**: User-selected source (custom view or default ACCOUNT_USAGE view) → Independent Scheduled Tasks (one per enabled source, each with its own schedule) → `account_usage_source_collector` → OTLP/gRPC.
 - Stream checkpointing with zero-row INSERT offset advancement (Section 8).
+- **Stale stream auto-recovery**: When a stream goes stale, the app detects it, drops and recreates the stream on the user-selected source, records the data gap in `_metrics.pipeline_health`, and logs the recovery event.
 
 ### Data Governance & Privacy (MVP)
-- **Governed view layer** — custom views over Event Tables and ACCOUNT_USAGE sources; all pipelines read from governed views only (Section 7A).
-- **Consumer-managed policies** — consumers attach Snowflake-native dynamic data masking, row access policies, and projection policies to governed views; the app honours them transparently.
-- **Governance posture visibility** — Streamlit tab showing attached policies and tags via `ACCOUNT_USAGE` governance views.
+- **User-selected sources** — for each data source, the user selects the telemetry source: their own custom view (with policies) or the default ACCOUNT_USAGE view / event table. The app does not create or maintain views.
+- **Consumer-managed policies** — consumers create custom views with Snowflake-native dynamic data masking, row access policies, and projection policies, and select those views as the source; the app honours them transparently.
+- **Data governance page** — read-only table of enabled sources showing status, view name, source type, governance message, and sensitive columns. When default sources are selected, informs that policies can't be applied.
 - **Entity discrimination** — MVP-scope filtering of Event Table telemetry to SQL/Snowpark compute via `RESOURCE_ATTRIBUTES:"snow.executable.type"` (Section 7B).
-- **OTel semantic convention mapping** — layered convention approach (`db.*`, `snowflake.*` custom namespace) for Event Table telemetry; CIM mapping for ACCOUNT_USAGE (Section 7B).
+- **OTel semantic convention mapping** — layered convention approach (`db.*`, `snowflake.*` custom namespace) for Event Table telemetry (Section 7B).
 
 ### Design Decisions (Implemented in MVP)
 - **7.1 Batching Strategy** — chunked exports with configurable batch sizes.
-- **7.2 Retry Strategy** — transport-level retries only, using native capabilities of each protocol's client library:
-  - OTLP/gRPC: Built-in OTel SDK application-level retry with exponential backoff (~6 retries over ~63s) for transient gRPC errors (UNAVAILABLE, DEADLINE_EXCEEDED, RESOURCE_EXHAUSTED).
-  - HEC HTTP: `httpx` with `tenacity` for exponential backoff retries on 429/5xx status codes.
-  - **No application-level failure tracking** — if all transport retries exhaust, the batch is lost and the pipeline advances. This is acceptable for MVP because transport-level retries handle the vast majority of transient failures.
+- **7.2 Retry Strategy** — transport-level retries only, using OTel SDK built-in gRPC retry with exponential backoff (~6 retries over ~63s) for transient gRPC errors (UNAVAILABLE, DEADLINE_EXCEEDED, RESOURCE_EXHAUSTED). **No application-level failure tracking** — if all transport retries exhaust, the batch is lost and the pipeline advances.
 - **7.6 Independent Scheduled Tasks** — one standalone serverless task per ACCOUNT_USAGE source with source-specific schedule.
 - **7.7 Source Prioritization** — priority ordering for Event Table streams (ACCOUNT_USAGE sources run independently on their own schedules).
 - **7.8 Per-Source Polling Schedule** — each source task runs at an interval aligned with its Snowflake latency.
-- **7.9 OTLP Transport Selection** — OTLP/gRPC for spans & metrics, HEC HTTP for logs and ACCOUNT_USAGE.
+- **7.9 OTLP Transport Selection** — single OTLP/gRPC endpoint for all telemetry; remote collector handles routing.
 - **7.11 Vectorized Transformations** — Snowpark DataFrame filtering + `to_pandas_batches()` chunked processing.
 - **7.12 Snowpark Best Practices** — push relational work to Snowflake engine.
 - **7.13 Data Transformation Optimization for Event Tables** — per-signal-type Snowpark projections.
-- **7A Data Governance & Governed View Architecture** — governed view layer, consumer-managed policies, governance posture visibility.
+- **7A Data Governance** — user-selected sources (custom view or default), consumer-managed policies, Data governance page.
 - **7B Event Table Telemetry: Entity Discrimination & OTel Semantic Conventions** — entity discrimination filter, OTel convention mapping.
 
 ### Pipeline Health Observability (MVP)
 - **Internal metrics table** (`_metrics.pipeline_health`) — records per-run operational metrics.
-- **Streamlit Overview Tab only**, with three KPI cards:
-  - Total rows collected / exported / failed (last 24h).
-  - Current failed batches awaiting retry (transport-level retry failures within the current run).
-  - Pipeline up/down status per source (based on last successful run timestamp).
-- **Volume estimator** (`_internal.volume_estimator`) — initial and on-demand throughput projection.
+- **Observability health page** — helicopter view with destination health card (OTLP status), 4 aggregated KPI cards (Sources OK, Rows exported 24h, Failed batches 24h, Avg freshness), export throughput trend chart, category health summary table with drill-down, and recent errors feed. See PRD for full page structure.
+- **App operational logging** — structured logs to consumer's account-level event table via Native App event definitions; queryable via Snowsight.
 
 ## Out of Scope (Post-MVP)
 
@@ -73,6 +66,8 @@ This section defines the boundary of the first shipped version. Everything descr
 - **Cost Pack** — METERING_HISTORY, WAREHOUSE_METERING_HISTORY, PIPE_USAGE_HISTORY, SERVERLESS_TASK_HISTORY, AUTOMATIC_CLUSTERING_HISTORY, STORAGE_USAGE, DATABASE_STORAGE_USAGE_HISTORY, DATA_TRANSFER_HISTORY, REPLICATION_USAGE_HISTORY, SNOWPARK_CONTAINER_SERVICES_HISTORY, EVENT_USAGE_HISTORY.
 - **Security Pack** — LOGIN_HISTORY, ACCESS_HISTORY, SESSIONS, GRANTS_TO_USERS, GRANTS_TO_ROLES, NETWORK_POLICIES.
 - **Data Pipeline Pack** — COPY_HISTORY, LOAD_HISTORY, PIPE_USAGE_HISTORY.
+- **Cortex AI Pack** — Telemetry from Cortex Services (Cortex AI Functions, Cortex Agents, Cortex Search) via `AI_OBSERVABILITY_EVENTS` table accessed through `GET_AI_OBSERVABILITY_EVENTS()` function. Enriched with OTel `gen_ai.*` semantic conventions for generative AI observability. Aligns with Snowflake's strategic priority areas and Marketplace Partner Milestone 2 content requirements.
+- **Openflow Pack** — Event Table telemetry from Openflow pipelines (entity discrimination: `RESOURCE_ATTRIBUTES:"application" = 'openflow'`). Covers Openflow pipeline execution traces, task orchestration, and data flow monitoring.
 
 ### Failure Tracking & Recovery (Deferred)
 - **Zero-copy reference-based failure tracking** (Section 5) — `_staging.failed_event_batches`, `_staging.failed_account_usage_refs` tables. In MVP, if transport-level retries exhaust, the batch is dropped and the pipeline advances.
@@ -82,8 +77,8 @@ This section defines the boundary of the first shipped version. Everything descr
 - Configuration settings: `max_retry_attempts`, `failed_batch_retention_days` (UI fields deferred).
 
 ### Rate Limit Handling (Deferred)
-- **In-app rate limiting** (Section 7.10) — request pacing, adaptive throttling, 429 backoff with Retry-After.
-- **Rate Limits Dashboard Tab** (Section 9.3) — HEC/OTLP rate limit metrics visualization.
+- **In-app rate limiting** (Section 7.10) — request pacing, adaptive throttling, backoff with Retry-After.
+- **Rate Limits Dashboard** — OTLP rate limit metrics visualization.
 
 ### Exporter Features (Deferred)
 - Sampling.
@@ -92,15 +87,15 @@ This section defines the boundary of the first shipped version. Everything descr
 - Advanced load-shedding or dynamic sampling based on backend pressure.
 - Complex processor chains (metric transformations, span processors, etc.).
 
-### Pipeline Health Dashboard Tabs (Deferred)
+### Observability Health Dashboard Enhancements (Deferred)
 - **Throughput Tab** — rows exported over time, export latency distribution.
 - **Errors & Failures Tab** — failed batches by source, recent errors table (requires failure tracking).
-- **Volume Estimation Tab** — estimated vs. actual volume comparison.
-- **Rate Limits Tab** — HEC/OTLP rate limit metrics (requires rate limit handling).
+- **Volume Estimation** — estimated vs. actual volume comparison (volume estimator deferred to post-MVP).
+- **Rate Limits** — OTLP rate limit metrics (requires rate limit handling).
 - **Stream health status** per Event Table stream (STALE_AFTER monitoring).
+- **Streamlit Logging tab** — verbosity selector, scrollable log display, keyword search (deferred to post-MVP).
 
 ### Advanced Optimizations (Deferred)
-- `ThreadPoolExecutor` + `httpx.Client` connection pooling for concurrent HEC exports (BP-7). Note: `asyncio` + `httpx.AsyncClient` was evaluated and rejected — unverified in Snowflake's sandbox, no official examples exist. See BP-7 in Section 7.12 for full analysis.
 - Vectorized UDFs for hash computation (BP-6).
 - Thread-safe Snowpark sessions for parallelism within procedures (Section 7.6 post-MVP note).
 - OTLP HTTP fallback if gRPC is blocked.
@@ -127,12 +122,12 @@ privileges:
   - CREATE DATABASE:
       description: "Required to create internal state database for watermarks and configuration"
   - CREATE EXTERNAL ACCESS INTEGRATION:
-      description: "Required to create EAI for egress to Splunk endpoints (OTLP gRPC and HEC HTTP)"
+      description: "Required to create EAI for egress to OTLP endpoint"
 ```
 
 **References** (declared in `manifest.yml`):
 - **Event Table references**: Consumer's Event Tables (e.g., `SNOWFLAKE.TELEMETRY.EVENTS` or custom) — bound via reference mechanism so the app can create streams and read telemetry data.
-- **Secret references**: Snowflake Secrets storing Splunk tokens (OTLP access token, HEC token) — bound to the EAI for authenticated egress.
+- **Secret references**: Snowflake Secrets storing optional PEM certificates — bound to the EAI for authenticated egress.
 
 **Event Sharing** (declared in `manifest.yml`):
 - `SNOWFLAKE$ERRORS_AND_WARNINGS` (mandatory) — enables provider-side detection of app failures in consumer accounts.
@@ -150,7 +145,7 @@ The consumer is explicitly prompted (via the Streamlit UI, using the [Python Per
 
 | Pack | Included Telemetry Sources | Use Case |
 |---|---|---|
-| **Distributed Tracing Pack** | User-selected Event Tables (SNOWFLAKE.TELEMETRY.EVENTS or custom); MVP scope: **SQL/Snowpark compute telemetry** (queries, stored procedures, UDFs, UDTFs) | Distributed traces (→ OTLP/gRPC), custom metrics (→ OTLP/gRPC), application logs (→ HEC), error tracking |
+| **Distributed Tracing Pack** | User-selected Event Tables (SNOWFLAKE.TELEMETRY.EVENTS or custom); MVP scope: **SQL/Snowpark compute telemetry** (queries, stored procedures, UDFs, UDTFs) | Distributed traces, custom metrics, application logs → OTLP/gRPC |
 | **Performance Pack** | QUERY_HISTORY, TASK_HISTORY, COMPLETE_TASK_GRAPHS, LOCK_WAIT_HISTORY | Slow query detection, task failure alerting, concurrency bottlenecks |
 | **Cost Pack** | METERING_HISTORY, WAREHOUSE_METERING_HISTORY, PIPE_USAGE_HISTORY, SERVERLESS_TASK_HISTORY, AUTOMATIC_CLUSTERING_HISTORY, STORAGE_USAGE, DATABASE_STORAGE_USAGE_HISTORY, DATA_TRANSFER_HISTORY, REPLICATION_USAGE_HISTORY, SNOWPARK_CONTAINER_SERVICES_HISTORY, EVENT_USAGE_HISTORY | Credit consumption, storage growth, data egress cost tracking |
 | **Security Pack** | LOGIN_HISTORY, ACCESS_HISTORY, SESSIONS, GRANTS_TO_USERS, GRANTS_TO_ROLES, NETWORK_POLICIES | Failed login alerting, access auditing, privilege drift detection |
@@ -165,26 +160,13 @@ The user enables packs via toggle switches. Advanced users can expand each pack 
 
 This banner is displayed at Event Table selection time (not buried in docs) so the consumer understands exactly what telemetry the app will process. If the consumer's Event Table is dedicated to SQL/Snowpark compute (recommended), the banner is purely informational. If the Event Table is shared across multiple service categories, the banner clarifies that non-compute telemetry is excluded. See [Section 7B](#7b-event-table-telemetry-entity-discrimination--otel-semantic-conventions) for the entity discrimination design.
 
-**Destination Setup**: The user inputs backend credentials:
-- Splunk Observability Cloud Connection Settings:
-  - `SPLUNK_REALM`
-  - `SPLUNK_ACCESS_TOKEN`
-- Splunk Enterprise/Cloud Connection Settings:
-  - `HEC endpoint`
-  - `HEC token`
+**Destination Setup (Splunk settings → Export settings tab)**: The user configures a single **OTLP/gRPC endpoint** (URL with port) pointing to a remote OpenTelemetry collector (e.g. Splunk distribution). Optionally, the user pastes a **PEM certificate** for collectors using private/self-signed certificates; when no certificate is provided, the system uses Snowflake's default trust store (Mozilla/certifi CA bundle). The user can **Test connection** to validate OTLP reachability before saving, and **Validate certificate** to check PEM validity. All telemetry is exported via this single endpoint; the collector is responsible for routing to Splunk Observability Cloud (traces/metrics) and Splunk Enterprise/Cloud (logs/events).
 
-Tokens/secrets are securely stored using Snowflake Secrets. The OTLP exporter sends Event Table spans and metrics via OTLP/gRPC exclusively to Splunk Observability Cloud (see Section 7.9 for transport rationale). Event Table logs and all ACCOUNT_USAGE data are sent as structured JSON events through HTTP to the configured HEC endpoint.
+Secrets (optional PEM certificates) are securely stored using Snowflake Secrets.
 
-**Performance Tuning**: Parameters (`export_batch_size`, `max_batches_per_run`) use hardcoded defaults optimized for typical workloads and are not exposed in the MVP UI to reduce configuration complexity. Retry behavior relies entirely on transport-level retries built into the OTLP SDK and `httpx`/`tenacity` (see MVP Scope and Section 7.2) — no user-configurable retry settings in MVP.
+**Performance Tuning**: Parameters (`export_batch_size`, `max_batches_per_run`) use hardcoded defaults optimized for typical workloads and are not exposed in the MVP UI to reduce configuration complexity. Retry behavior relies entirely on transport-level retries built into the OTel SDK (gRPC retry with exponential backoff) — no user-configurable retry settings in MVP.
 
-**Data Governance Configuration**: After initial setup, the Streamlit UI presents a **Governance Compliance** panel (read-only tab) that shows the consumer their current governance posture across all governed views the app has created. The panel does not configure policies — consumers attach masking, row access, and projection policies to the governed views via Snowflake SQL or Snowsight, outside the app. The panel's role is to:
-
-- Confirm which governed views exist and which policies are attached to each.
-- Show high-risk sources (e.g., `governed_query_history`) with their current masking mode and whether a default masking policy is active.
-- Surface an actionable callout: _"To control what data this app exports to Splunk, attach masking or row access policies to the governed views listed below."_
-- Provide a link to Snowsight Trust Center for full governance management.
-
-For consumers who have not yet configured any governance policies, the panel still renders — showing zero policies attached — so the consumer is aware the governance hook exists and can act on it at any time. See [Section 7A — Governance Compliance Panel](#governance-compliance-panel-streamlit) for the full description and [Data Governance & Privacy Features — §8.5](snowflake_data_governance_privacy_features.md) for the panel wireframe and implementation.
+**Data Governance Configuration**: The **Data governance** page shows a read-only table of **enabled sources only** with columns for status, view name, source type, governance message, and sensitive columns. The user selects their telemetry source (custom view or default) on the **Telemetry sources** page. When default views or event tables are selected, the per-row governance message informs that masking and row access policies cannot be applied to those sources and that the user must create custom views for governance. The app does not create or maintain views — the user owns governance through their own custom views.
 
 All settings are stored in the app's configuration table (`_internal.config`) and can be adjusted via the Streamlit UI Settings panel.
 
@@ -194,8 +176,8 @@ All settings are stored in the app's configuration table (`_internal.config`) an
 The app programmatically executes a setup routine to create the following components:
 
 **Networking & Security** (requires `manifest_version: 2` and `CREATE EXTERNAL ACCESS INTEGRATION` privilege via automated granting):
-- Network Rule to allow egress traffic from Snowflake to Splunk endpoints (OTLP gRPC and HEC HTTP).
-- External Access Integration (EAI): Created in the setup script; combines the NETWORK RULE (allowing egress) and the SECRET (for authentication).
+- Network Rule to allow egress traffic from Snowflake to the OTLP endpoint.
+- External Access Integration (EAI): Created in the setup script; combines the NETWORK RULE (allowing egress) and the SECRET (for optional PEM certificate).
 - App Specification: Defines the allowed HOST_PORTS for consumer approval of external endpoint connections (consumers must approve the app specification to enable egress).
 
 **Staging Layer** (MVP — minimal):
@@ -217,7 +199,7 @@ CREATE TRANSIENT TABLE _staging.stream_offset_log LIKE <event_table>;
 - App configuration table (`_internal.config`): Stores all user-configurable settings from the Streamlit UI (Section 2).
 ```sql
 CREATE TABLE _internal.config (
-    config_key VARCHAR PRIMARY KEY,    -- e.g., 'splunk_realm', 'hec_endpoint', 'max_retry_attempts'
+    config_key VARCHAR PRIMARY KEY,    -- e.g., 'otlp_endpoint', 'pem_certificate_secret', 'export_batch_size'
     config_value VARCHAR,              -- string value (cast at read time)
     config_type VARCHAR DEFAULT 'STRING', -- STRING, NUMBER, BOOLEAN, SECRET_REF
     description VARCHAR,
@@ -225,7 +207,7 @@ CREATE TABLE _internal.config (
     updated_by VARCHAR DEFAULT CURRENT_USER()
 );
 ```
-  Key entries include: `splunk_realm`, `splunk_access_token_secret` (SECRET reference name), `hec_endpoint`, `hec_token_secret` (SECRET reference name), `export_batch_size`, `max_batches_per_run`, and per-pack enablement flags (`pack_enabled:distributed_tracing`, `pack_enabled:performance`, etc.). Secrets are stored as Snowflake Secret objects — only the **reference name** is stored in `_internal.config`, never the token value itself. Post-MVP entries (deferred): `max_retry_attempts`, `failed_batch_retention_days`, `retry_interval_minutes`.
+  Key entries include: `otlp_endpoint`, `pem_certificate_secret` (SECRET reference name), `export_batch_size`, `max_batches_per_run`, and per-pack enablement flags (`pack_enabled:distributed_tracing`, `pack_enabled:performance`, etc.). Secrets are stored as Snowflake Secret objects — only the **reference name** is stored in `_internal.config`, never the certificate value itself. Post-MVP entries (deferred): `max_retry_attempts`, `failed_batch_retention_days`, `retry_interval_minutes`.
 
 - High-Watermark State Table (`_internal.export_watermarks`): Defined below in the Poll-Based Pipeline section.
 
@@ -244,12 +226,12 @@ CREATE TABLE _metrics.pipeline_health (
 ```
 
 **Event-Driven Pipeline (Event Table Pack)**:
-- Python Stored Procedure (`_internal.event_table_collector`): Based on the `opentelemetry-sdk` to read Event Table streams and export directly to Splunk via OTLP. Advances the stream offset via a zero-row INSERT pattern within an explicit transaction (see Section 8.0). In MVP, relies on transport-level retries only (OTel SDK built-in retry for gRPC, `httpx`/`tenacity` for HEC); if all retries exhaust, the batch is logged as failed in `_metrics.pipeline_health` and the pipeline advances.
-- Change Tracking (Stream): An `APPEND_ONLY` stream created on the **governed Event Table view** (not the raw Event Table) to capture new telemetry records without duplicates ([Streams docs](https://docs.snowflake.com/en/user-guide/streams-intro): append-only streams are "notably more performant" for insert-only sources like Event Tables). This ensures consumer governance policies are applied to the change data. Streams use a namespaced naming convention (`_splunk_obs_stream_<event_table_name>`) to avoid conflicts if the consumer has their own streams on the same Event Table. The setup script should also set `MAX_DATA_EXTENSION_TIME_IN_DAYS = 90` on tracked Event Tables to maximize the staleness prevention window (see Section 8.1).
+- Python Stored Procedure (`_internal.event_table_collector`): Based on the `opentelemetry-sdk` to read Event Table streams and export directly via OTLP/gRPC. Advances the stream offset via a zero-row INSERT pattern within an explicit transaction (see Section 8.0). In MVP, relies on transport-level retries only (OTel SDK built-in gRPC retry with exponential backoff); if all retries exhaust, the batch is logged as failed in `_metrics.pipeline_health` and the pipeline advances.
+- Change Tracking (Stream): An `APPEND_ONLY` stream created on the **user-selected source** (custom view or event table) to capture new telemetry records without duplicates ([Streams docs](https://docs.snowflake.com/en/user-guide/streams-intro): append-only streams are "notably more performant" for insert-only sources like Event Tables). When the user selects a custom view, consumer governance policies are applied to the change data. Streams use a namespaced naming convention (`_splunk_obs_stream_<event_table_name>`) to avoid conflicts if the consumer has their own streams on the same Event Table. The setup script should also set `MAX_DATA_EXTENSION_TIME_IN_DAYS = 90` on tracked Event Tables to maximize the staleness prevention window (see Section 8.1).
 - Serverless Triggered Task: Configured with `WHEN SYSTEM$STREAM_HAS_DATA('stream_name')` — the `SCHEDULE` parameter is **not** set (triggered and scheduled are mutually exclusive for triggered tasks). `TARGET_COMPLETION_INTERVAL` is **required** for serverless triggered tasks ([triggered tasks docs](https://docs.snowflake.com/en/user-guide/tasks-triggered)). Executes the collector procedure as soon as new telemetry data is available. Minimum trigger interval is 30 seconds by default (`USER_TASK_MINIMUM_TRIGGER_INTERVAL_IN_SECONDS`). If the task hasn't run for 12 hours, Snowflake schedules an automatic health check to prevent stream staleness. Note: `SYSTEM$STREAM_HAS_DATA()` calls on an empty stream also prevent staleness by resetting the staleness clock. See Tasks Architecture section for full DDL pattern and parameter reference.
 
-**Poll-Based Pipeline (MVP: Performance Pack only; post-MVP: Cost / Security / Data Pipeline Packs)**:
-- Python Stored Procedure (`_internal.account_usage_source_collector`): A shared, parameterized procedure that queries a single ACCOUNT_USAGE view using watermark-based incremental reads and exports directly to Splunk via HEC. Accepts source name as parameter. In MVP, relies on transport-level retries only (`httpx`/`tenacity`); if all retries exhaust, the batch is logged as failed in `_metrics.pipeline_health` and the watermark advances.
+**Poll-Based Pipeline (MVP: Performance Pack only)**:
+- Python Stored Procedure (`_internal.account_usage_source_collector`): A shared, parameterized procedure that queries a single ACCOUNT_USAGE view using watermark-based incremental reads and exports directly via OTLP/gRPC. Accepts source name as parameter. In MVP, relies on transport-level retries only (OTel SDK built-in gRPC retry); if all retries exhaust, the batch is logged as failed in `_metrics.pipeline_health` and the watermark advances.
 - High-Watermark State Table (`_internal.export_watermarks`): Tracks the last exported timestamp per source to avoid duplicates and missed records.
   - Schema: `(source_name VARCHAR PRIMARY KEY, last_exported_timestamp TIMESTAMP_LTZ, last_run_at TIMESTAMP_LTZ, rows_collected NUMBER, poll_interval_seconds NUMBER, last_poll_time TIMESTAMP_LTZ)`
 - Independent Serverless Scheduled Tasks: One standalone serverless task per enabled ACCOUNT_USAGE source, each with its own schedule aligned to the source's Snowflake latency (see Section 7.8). Each task calls `account_usage_source_collector` for its designated source and records its own health metrics inline to `_metrics.pipeline_health` at the end of each run (see Section 7.6). Tasks are fully independent — each has its own error handling, retry (`TASK_AUTO_RETRY_ATTEMPTS`), and auto-suspend (`SUSPEND_TASK_AFTER_NUM_FAILURES`). `ALLOW_OVERLAPPING_EXECUTION` is `FALSE` (default) per task — each task won't overlap with itself, but different sources run concurrently without blocking each other. Adding/removing sources via the Streamlit UI simply creates/drops individual tasks without affecting other running sources. See Tasks Architecture section for full DDL patterns, parameter reference, and lifecycle management.
@@ -263,8 +245,8 @@ CREATE TABLE _metrics.pipeline_health (
 - Internal metrics table (`_metrics.pipeline_health`): Records operational metrics for each pipeline run (schema defined above in Configuration & State Tables; full metrics list in Section 9.1).
 - Streamlit dashboard page for pipeline health visualization (Sections 9.1–9.3).
 
-**Volume Estimation** (created on initial setup):
-- Python Stored Procedure (`_internal.volume_estimator`): Queries existing data in each enabled source to project expected daily/monthly throughput, helping consumers understand the data volume their Splunk environment will receive (see Section 9.2 for details). Runs during initial setup and can be re-run on demand from the Streamlit UI.
+**Volume Estimation** *(deferred to post-MVP)*:
+- Python Stored Procedure (`_internal.volume_estimator`): Queries existing data in each enabled source to project expected daily/monthly throughput, helping consumers understand the data volume their Splunk environment will receive (see Section 9.2 for details).
 
 ## 4. Telemetry Capture (The Producers)
 
@@ -274,15 +256,15 @@ Scope: Any Snowflake-supported code (UDFs, UDTFs, Stored Procedures, or Snowpark
 
 Ingestion: Snowflake automatically captures OTel-compatible events (Metrics, Logs, Traces) and writes them asynchronously to the designated Event Table. The Event Table is the only Snowflake telemetry source that supports Streams (change tracking), enabling the near-real-time event-driven pipeline.
 
-**Governed view layer:** The app creates a custom governed view over the Event Table. Export pipelines and streams operate against this view — not the raw table — so that consumer-applied governance policies (masking, row access, projection) are honoured transparently. Masking policies cannot be applied directly to Event Tables; the governed view pattern is the validated workaround (see [Event Table Streams & Governance Research](event_table_streams_governance_research.md) for live-tested confirmation).
+**User-selected source:** The user selects the telemetry source on **Telemetry sources** — either their own custom view over the Event Table (with governance policies attached) or the event table directly. The app creates a stream on the selected source and reads from it. When the user selects a custom view with masking on RECORD, RECORD_ATTRIBUTES, and/or VALUE, Snowflake enforces policies transparently. When the event table is selected directly, the Data governance page informs that masking cannot be applied on event tables and the user should use a custom view. The app does not create or maintain views. See [Event Table Streams & Governance Research](event_table_streams_governance_research.md) for governance validation.
 
-**Entity discrimination:** The Event Table is a shared, multi-service telemetry store. MVP targets SQL/Snowpark compute telemetry by filtering on `RESOURCE_ATTRIBUTES:"snow.executable.type"` (positive include-list applied in Snowpark downstream of the governed view). The full entity discrimination strategy and OTel semantic convention mapping are documented in [Event Table Entity Discrimination Strategy](event_table_entity_discrimination_strategy.md) and [OTel Semantic Conventions Research](otel_semantic_conventions_snowflake_research.md).
+**Entity discrimination:** The Event Table is a shared, multi-service telemetry store. MVP targets SQL/Snowpark compute telemetry by filtering on `RESOURCE_ATTRIBUTES:"snow.executable.type"` (positive include-list applied in Snowpark downstream of the user-selected source). The full entity discrimination strategy and OTel semantic convention mapping are documented in [Event Table Entity Discrimination Strategy](event_table_entity_discrimination_strategy.md) and [OTel Semantic Conventions Research](otel_semantic_conventions_snowflake_research.md).
 
 ### 4.2 ACCOUNT_USAGE Producer
 
 Beyond the Event Table, Snowflake stores extensive operational telemetry in the `SNOWFLAKE.ACCOUNT_USAGE` schema. These are secure shared views with inherent latency (45 minutes to 3 hours depending on the view) and 1-year retention. They do not support Streams, so the app uses scheduled polling with watermark-based incremental reads.
 
-**Governed view layer:** The app creates custom governed views over each ACCOUNT_USAGE source view. These governed views serve the same purpose as for Event Tables: consumers can attach Snowflake-native governance policies (dynamic data masking, row access, projection) and the export pipeline reads exclusively from the governed views. See [Data Governance & Privacy Features](snowflake_data_governance_privacy_features.md) for the "Pattern C: Custom Governed Views" design rationale.
+**User-selected source:** For each ACCOUNT_USAGE source, the user selects the telemetry source on **Telemetry sources** — either their own custom view (with masking/row access/projection policies) or the default ACCOUNT_USAGE view. The app reads from the selected source. When the user selects a custom view, Snowflake enforces attached policies transparently. When the default view is selected, the Data governance page informs that policies can't be applied and the user must create a custom view for governance. The app does not create or maintain views.
 
 The complete catalog of all telemetry sources is documented in **Appendix A: Comprehensive Snowflake Telemetry Source Catalog**.
 
@@ -396,7 +378,7 @@ FUNCTION retry_failed_account_usage_ref(ref):
     ELSE IF ref.ref_type == 'TIME_RANGE':
         QUERY ACCOUNT_USAGE.{source_name} WHERE START_TIME BETWEEN ref_time_start AND ref_time_end
     
-    EXPORT rows to Splunk via HEC
+    EXPORT rows via OTLP/gRPC
     DELETE failure reference
 ```
 
@@ -422,7 +404,7 @@ The zero-copy approach eliminates 99.9%+ of staging storage overhead while maint
 - **Non-blocking pipeline advancement**: If Splunk is temporarily unreachable, the collectors record lightweight failure references and continue advancing (Stream offsets advance via zero-row INSERT + COMMIT per Section 8.0; watermarks advance for ACCOUNT_USAGE). The pipeline never stalls. Failed batches are preserved via references and retried independently by a separate retry task.
 - **Failure isolation**: Export failures affect only the specific failed batch. A single failed Event Table batch (stored as ~320 KB of hashes) doesn't block millions of subsequent rows from being collected and exported. Failed ACCOUNT_USAGE batches (stored as ~100 bytes of time ranges or key arrays) similarly don't impact other sources.
 - **Re-fetch from authoritative source**: Retry always queries fresh data from the original Event Table or ACCOUNT_USAGE view using stored references. No risk of stale data from an intermediate buffer. ACCOUNT_USAGE views retain 1 year of history, ensuring references remain valid.
-- **Observable failure surface**: The failure tracking tables (`failed_event_batches`, `failed_account_usage_refs`) are the single source of truth for pipeline health. They remain small (proportional to actual failure rate, not total throughput) and surface only genuine export problems in the Pipeline Health Dashboard.
+- **Observable failure surface**: The failure tracking tables (`failed_event_batches`, `failed_account_usage_refs`) are the single source of truth for pipeline health. They remain small (proportional to actual failure rate, not total throughput) and surface only genuine export problems in the Observability health page.
 - **Simplified maintenance**: No aggressive cleanup required; reference tables remain small even under sustained failures (proportional to actual failure rate, not total throughput).
 
 ## 6. Near-Real-Time Export (The Exporter)
@@ -444,27 +426,26 @@ The exporter implements only a minimal set of features that are commonly availab
 
 #### 6.1.2 Retry on Transient Failures (Required)
 
-- **What:** Automatic retries for transient transport issues, using native client capabilities.
+- **What:** Automatic retries for transient transport issues, using OTel SDK built-in gRPC retry.
 - **Implementation:**
-  - **OTLP/gRPC:** Use built-in retry/backoff behavior of the OTel Python OTLP exporters.
-  - **HEC HTTP:** Use `httpx` + `tenacity` for retry with exponential backoff on connection/timeout/5xx/429 responses. (`httpx-retry` is not available on the Snowflake Anaconda Channel; `tenacity` provides equivalent functionality.)
+  - **OTLP/gRPC:** Use built-in retry/backoff behavior of the OTel Python OTLP exporters (~6 retries over ~63s with exponential backoff for transient gRPC errors: UNAVAILABLE, DEADLINE_EXCEEDED, RESOURCE_EXHAUSTED).
 - **Why:** Matches Collector's retry behavior; avoids manual re-send logic for temporary network or backend errors.
 
 #### 6.1.3 Basic Rate Limiting / Backoff (Required at Destination Edge)
 
 - **What:** Respect backend rate limits to avoid being throttled or dropped.
 - **Implementation:**
-  - **HEC:** Use a lightweight in-app token-bucket rate limiter to cap requests per second in line with Splunk HEC limits. Note: dedicated rate-limiting libraries (`httpx-ratelimit`, `httpx_ratelimiter`, `httpx-limiter`) are not available on the Snowflake Anaconda Channel, so the app implements its own. In practice, the adaptive polling schedule (Section 7.8) keeps HEC throughput at ~0.01 req/s — well below the 400 req/s safety cap — so this limiter acts as a safety net, not a primary throttle.
   - **OTLP/gRPC:** Rely on OTLP exporter's handling of `RESOURCE_EXHAUSTED` and backoff behavior.
 - **Why:** Equivalent to Collector's exporter-level backoff/queueing behavior to protect backends.
+- **Post-MVP:** In-app rate limiting (token-bucket, Retry-After parsing) for more granular control.
 
 #### 6.1.4 Minimal Filtering / Routing by Source (Required)
 
-- **What:** Route data to the correct backend and format, without complex transformations.
+- **What:** Export all telemetry to a single OTLP/gRPC endpoint; the remote collector handles routing.
 - **Behavior:**
-  - Event Tables → OTLP/gRPC to Splunk Observability Cloud (spans/logs/metrics mapping).
-  - ACCOUNT_USAGE → HEC HTTP as structured JSON events.
-- **Why:** Matches Collector's role of routing telemetry to appropriate exporters.
+  - Event Tables → OTLP/gRPC (spans, metrics, logs with OTel DB Client conventions).
+  - ACCOUNT_USAGE → OTLP/gRPC (structured events with resource attributes for collector routing).
+- **Why:** Single endpoint simplifies app configuration; leverages collector flexibility for downstream routing.
 
 ---
 
@@ -472,7 +453,7 @@ The exporter implements only a minimal set of features that are commonly availab
 
 The following exporter features are deferred post-MVP (see also the consolidated **MVP Scope** section at the top of this document):
 
-- ~~PII redaction / field masking~~ — **Moved to MVP** via the governed view architecture. Consumers apply Snowflake-native data protection policies (dynamic data masking, row access, projection) on the governed views that the app creates over Event Tables and ACCOUNT_USAGE views. The app's export pipelines read exclusively from these governed views, so any policy the consumer attaches is honoured transparently. See [Data Governance & Governed View Architecture](#data-governance--governed-view-architecture).
+- PII redaction / field masking — **up to the user** via user-selected sources/custom views. Consumers create custom views with Snowflake-native data protection policies (dynamic data masking, row access, projection) and select those views as the telemetry source. The app reads exclusively from the user-selected source, so any policy the consumer attaches is honoured transparently.
 - Sampling.
 - Attribute/label normalization or renaming.
 - Content-based routing beyond basic source-type split.
@@ -484,7 +465,7 @@ The following exporter features are deferred post-MVP (see also the consolidated
 
 ### 6.2 Export Routing
 
-The exporter reads batches from **governed views** — never from raw source objects — and routes them based on source type and signal type. Streams are created on the Event Table governed views; watermark queries run against the ACCOUNT_USAGE governed views. This ensures all consumer-applied governance policies are enforced before data leaves Snowflake.
+The exporter reads batches from the **user-selected source** (custom view or default) and exports all telemetry via OTLP/gRPC to a remote OpenTelemetry collector. Streams are created on the user-selected Event Table source; watermark queries run against the user-selected ACCOUNT_USAGE source. When the user selects a custom view with governance policies, Snowflake enforces them before data leaves the account.
 
 **Event Table Streams → Split Routing by Signal Type**
 
@@ -520,72 +501,31 @@ The exporter reads batches from **governed views** — never from raw source obj
   - `RESOURCE_ATTRIBUTES['snow.session.role.primary.name']` → `snowflake.session.role` (primary role in session)
   - Account name (retrieved from Snowflake context) → `snowflake.account.name`
 
-- **Logs → Splunk HEC HTTP (Splunk Enterprise/Cloud)**
+- **Logs → OTLP/gRPC (via remote collector → Splunk Enterprise/Cloud)**
   
-  Event Table logs are application logs, naturally suited for HEC indexing. Each log row becomes a HEC event with:
+  Event Table logs are application logs exported as OTLP Log records. Each log row maps to:
+  - `body`: `VALUE` (log message text)
+  - `severity_text`: `RECORD['severity_text']` (e.g., "INFO", "ERROR", "WARN", "DEBUG")
+  - `severity_number`: `RECORD['severity_number']` (if present)
+  - `scope.name`: `SCOPE['name']` (logger name/class name)
+  - `timestamp`: `TIMESTAMP` (when event was ingested into Event Table)
+  - `resource_attributes`: Full `RESOURCE_ATTRIBUTES` object containing Snowflake context
+  - `record_attributes`: `RECORD_ATTRIBUTES` (user-defined log attributes if any)
   
-  **HEC Event Structure:**
-  - `sourcetype`: `snowflake:event_table_log`
-  - `source`: `snowflake_observability_app`
-  - `time`: `TIMESTAMP` (when event was ingested into Event Table)
-  - `event`: Structured JSON containing:
-    - `message`: `VALUE` (log message text)
-    - `severity`: `RECORD['severity_text']` (e.g., "INFO", "ERROR", "WARN", "DEBUG")
-    - `severity_number`: `RECORD['severity_number']` (optional; not in current Snowflake Event Table RECORD schema for LOG — include if present in RECORD_ATTRIBUTES or future schema)
-    - `scope_name`: `SCOPE['name']` (logger name/class name, e.g., "python_logger", "ScalaLoggingHandler")
-    - `record_type`: `RECORD_TYPE` (always "LOG" for log entries)
-    - `resource_attributes`: Full `RESOURCE_ATTRIBUTES` object containing Snowflake context:
-      - `snow.executable.name`: UDF/procedure name with full signature (e.g., "DO_LOGGING():VARCHAR(16777216)")
-      - `snow.executable.type`: Type of executable (FUNCTION, PROCEDURE, etc.)
-      - `snow.database.name`: Database containing the code
-      - `snow.schema.name`: Schema containing the code
-      - `snow.warehouse.name`: Warehouse running the query
-      - `snow.query.id`: Query ID that generated the log entry
-      - `db.user`: User executing the code
-      - `snow.owner.name`: Owner of the executable
-      - `snow.session.role.primary.name`: Primary role in the session
-    - `record_attributes`: `RECORD_ATTRIBUTES` (user-defined log attributes if any)
-  
-  **Example HEC Event (to be revised at dev stage):**
-  ```json
-  {
-    "time": 1681939249,
-    "sourcetype": "snowflake:event_table_log",
-    "source": "snowflake_observability_app",
-    "event": {
-      "message": "Logging from Python function start.",
-      "severity": "INFO",
-      "scope_name": "python_logger",
-      "record_type": "LOG",
-      "resource_attributes": {
-        "snow.executable.name": "ADD_TWO_NUMBERS(A FLOAT, B FLOAT):FLOAT",
-        "snow.database.name": "MY_DB",
-        "snow.schema.name": "PUBLIC",
-        "snow.warehouse.name": "COMPUTE_WH",
-        "snow.query.id": "01a2b3c4-...",
-        "db.user": "ANALYST_USER",
-        "snow.session.role.primary.name": "ACCOUNTADMIN"
-      }
-    }
-  }
-```
+  The remote OpenTelemetry collector routes log records to Splunk Enterprise/Cloud.
 
-**ACCOUNT_USAGE (Watermark Queries) → Splunk HEC HTTP (Splunk Enterprise/Cloud)**
+**ACCOUNT_USAGE (Watermark Queries) → OTLP/gRPC (via remote collector → Splunk Enterprise/Cloud)**
 
-ACCOUNT_USAGE views contain operational and usage metadata for the entire Snowflake account. This data is inherently tabular (not OTel-native), so rows are exported as structured JSON events to Splunk HEC without OTLP conversion.
+ACCOUNT_USAGE views contain operational and usage metadata for the entire Snowflake account. This data is exported as OTLP log records / events via the single OTLP/gRPC endpoint. The remote collector handles downstream routing.
 
 **Data Source Access Pattern:**
 - Read via **watermark-based incremental queries** (not Streams - ACCOUNT_USAGE views don't support change tracking)
 - Latency-aware adaptive polling schedule per source
 - Overlap window + deduplication to catch late-arriving data
 
-**HEC Event Structure (Common to All ACCOUNT_USAGE Sources):**
+**OTLP Event Structure (Common to All ACCOUNT_USAGE Sources):**
 
-Each ACCOUNT_USAGE row becomes a HEC event with:
-- `sourcetype`: `snowflake:<view_name_lowercase>` (dynamically set per source)
-- `source`: `snowflake_observability_app`
-- `time`: Timestamp field from the source (varies by view - see table below)
-- `event`: The full row as a JSON object (all columns preserved as-is)
+Each ACCOUNT_USAGE row becomes an OTLP log record / event with appropriate resource attributes for downstream routing by the collector.
 
 **Per-Source Timestamp Mapping: (to be revised at dev stage)**
 
@@ -611,7 +551,7 @@ Each ACCOUNT_USAGE row becomes a HEC event with:
 | GRANTS_TO_ROLES | `CREATED_ON` | `snowflake:grants_to_roles` |
 | NETWORK_POLICIES | `CREATED` (note: not CREATED_ON) | `snowflake:network_policies` |
 
-**Example HEC Events:**
+**Example OTLP Event Payloads:**
 
 **QUERY_HISTORY:**
 ```json
@@ -753,32 +693,31 @@ The exporter uses an **OTel Batch Processor dual-trigger pattern** for all pipel
 A batch is sent when either condition is met (whichever comes first):
 1. Time-based trigger (timeout): Maximum wait time before sending batch
   - Default: 200ms for OTLP (low latency)
-  - Default: 1000ms for HEC (latency-tolerant)
 
 2. Size-based trigger (send_batch_size): Target number of items per batch
-  - OTLP SPANs: 1024 (optimized for Splunk Observability Cloud)
-  - OTLP LOGs: 2048 (logs are smaller, batch more)
-  - OTLP METRICs: 512 (metrics are tiny)
-  - HEC: 5000 rows (HEC optimal batch size)
+  - SPANs: 1024 (optimized for Splunk Observability Cloud)
+  - LOGs: 2048 (logs are smaller, batch more)
+  - METRICs: 512 (metrics are tiny)
+  - ACCOUNT_USAGE events: 5000 rows (tabular data, larger batches efficient)
 
 3. Hard size limit (send_batch_max_size): Safety valve to split oversized batches
-  - OTLP SPANs: 2048 (2× target, prevents gRPC message size rejection)
-  - HEC: 10000 (prevents 1MB HEC payload limit)
+  - SPANs: 2048 (2× target, prevents gRPC message size rejection)
+  - ACCOUNT_USAGE events: 10000 (prevents oversized gRPC messages)
 
 Rationale:
 - Low-volume sources: Timeout ensures data isn't stuck waiting (e.g., 10 spans/minute → exported within 200ms)
 - High-volume sources: Size trigger ensures efficiency (e.g., 100K spans/minute → batches of 1024 exported every ~600ms)
-- Predictable latency: Maximum export delay = timeout value (200ms for OTLP, 1s for HEC)
-- Backend safety: send_batch_max_size prevents oversized batches from being rejected by Splunk
+- Predictable latency: Maximum export delay = timeout value (200ms)
+- Backend safety: send_batch_max_size prevents oversized batches from being rejected
 
 Configuration (per signal type):
 
 ```
 BATCH_CONFIG per signal type:
-    SPAN:   timeout = 200ms,  batch_size = 1024,  max_size = 2048
-    LOG:    timeout = 200ms,  batch_size = 2048,  max_size = 4096
-    METRIC: timeout = 200ms,  batch_size = 512,   max_size = 1024
-    HEC:    timeout = 1000ms, batch_size = 5000,  max_size = 10000
+    SPAN:            timeout = 200ms,  batch_size = 1024,  max_size = 2048
+    LOG:             timeout = 200ms,  batch_size = 2048,  max_size = 4096
+    METRIC:          timeout = 200ms,  batch_size = 512,   max_size = 1024
+    ACCOUNT_USAGE:   timeout = 200ms,  batch_size = 5000,  max_size = 10000
 ```
 
 **Event Table Pipeline (OTLP/gRPC):**
@@ -805,21 +744,21 @@ ON export trigger:
         COMMIT transaction (zero-row INSERT consumes stream; offset advances despite failure)
 ```
 
-**ACCOUNT_USAGE Pipeline (HEC HTTP):**
+**ACCOUNT_USAGE Pipeline (OTLP/gRPC):**
 FOR each enabled ACCOUNT_USAGE source:
 CHECK if source should be polled (latency-aware adaptive schedule)
 
 ```
 IF poll due:
     GET current watermark
-    READ batch from ACCOUNT_USAGE view (adaptive batch size per source)
+    READ batch from user-selected source (adaptive batch size per source)
     DEDUPLICATE if source has natural keys (handles late arrivals)
     
-    Feed to HEC batcher (dual trigger: 1s timeout OR 5000 rows)
+    Feed to OTLP batcher (dual trigger: timeout OR batch size)
     
     ON export trigger:
         TRY:
-            EXPORT via HEC HTTP as JSON events
+            EXPORT via OTLP/gRPC
             UPDATE watermark
             
         CATCH persistent failure:
@@ -838,17 +777,16 @@ IF poll due:
 
 ### 7.2 Retry Strategy
 
-Export failures are handled by **transport-level retries** using native capabilities of each protocol's client library. No custom application-level retry wrapper needed.
+Export failures are handled by **transport-level retries** using the OTel SDK's built-in gRPC retry mechanism. No custom application-level retry wrapper needed.
 
-**OTLP/gRPC (Event Tables → Splunk Observability Cloud)**
+**OTLP/gRPC (All Telemetry → Remote OpenTelemetry Collector)**
 
 Uses OpenTelemetry Python SDK's built-in gRPC retry mechanism:
 
 ```
-CREATE OTLP/gRPC span exporter:
-    endpoint = "ingest.{SPLUNK_REALM}.signalfx.com:443"
-    headers  = {"X-SF-Token": SPLUNK_ACCESS_TOKEN}
-    TLS      = enabled
+CREATE OTLP/gRPC exporter:
+    endpoint = "<configured OTLP endpoint>:<port>"
+    TLS      = enabled (default trust store or custom PEM certificate)
     compression = gzip
     timeout  = 30 seconds per request
     
@@ -857,32 +795,11 @@ CREATE OTLP/gRPC span exporter:
     #   DEADLINE_EXCEEDED (timeout)
     #   RESOURCE_EXHAUSTED (rate limit — with backoff)
 
-CREATE similar exporters for metrics using same pattern.
+CREATE similar exporters for metrics and logs using same pattern.
 ```
 The OTel Python OTLP/gRPC exporter implements its own application-level retry with exponential backoff (1s, 2s, 4s, 8s, 16s, 32s — ~6 retries totaling ~63s) for transient gRPC errors (UNAVAILABLE, DEADLINE_EXCEEDED, RESOURCE_EXHAUSTED). No additional retry logic needed — if all retries fail, the batch is logged as failed in `_metrics.pipeline_health` and the pipeline advances (MVP). Post-MVP: zero-copy failure tracking will record a reference for dedicated retry.
 
-Note: The default exporter timeout is 10 seconds per attempt. The timeout parameter is in **seconds** (not milliseconds — see [open-telemetry/opentelemetry-python#4044](https://github.com/open-telemetry/opentelemetry-python/issues/4044)). Traces and Metrics signals are Stable; Logs signal is still in Development with breaking changes, which is why Event Table logs are routed via HEC, not OTLP.
-
-**HEC HTTP (ACCOUNT_USAGE → Splunk Enterprise/Cloud)**
-
-Uses `httpx` HTTP client with retry via `tenacity` for unified retry logic:
-
-```
-CREATE HEC HTTP client:
-    base_url = "{HEC_ENDPOINT}/services/collector"
-    headers  = {"Authorization": "Splunk {HEC_TOKEN}", "Content-Type": "application/json"}
-    timeout  = 30 seconds
-
-RETRY POLICY (via tenacity):
-    max_attempts     = 5
-    backoff          = exponential (1s, 2s, 4s, 8s, 16s)
-    retry_on_status  = [429, 500, 502, 503, 504]
-
-SEND batch:
-    POST /event with JSON payload
-    ON 429 response: retry with exponential backoff (tenacity)
-    ON 5xx response: retry with exponential backoff (tenacity)
-```
+Note: The default exporter timeout is 10 seconds per attempt. The timeout parameter is in **seconds** (not milliseconds — see [open-telemetry/opentelemetry-python#4044](https://github.com/open-telemetry/opentelemetry-python/issues/4044)).
 
 > **Note (Post-MVP):** In-app rate limiting (request pacing, Retry-After header parsing, adaptive throttling) is deferred. See MVP Scope and Section 7.10.
 
@@ -894,7 +811,7 @@ The app uses a **zero-copy reference-based failure tracking** approach that stor
 
 **Failure detection and tracking**:
 
-1. **Transient failures** (network blips, temporary Splunk unavailability): Handled by exporter-level retries within the collector procedure. For OTLP/gRPC, the OTel Python exporter's built-in application-level retry handles transient errors (~6 retries with exponential backoff over ~63s). For HEC HTTP, `tenacity` provides unified retry logic with exponential backoff (5 retries configurable). If all retries fail within a single export attempt, the batch is marked as failed.
+1. **Transient failures** (network blips, temporary collector unavailability): Handled by exporter-level retries within the collector procedure. The OTel Python exporter's built-in gRPC application-level retry handles transient errors (~6 retries with exponential backoff over ~63s for UNAVAILABLE, DEADLINE_EXCEEDED, RESOURCE_EXHAUSTED). If all retries fail within a single export attempt, the batch is marked as failed.
 
 2. **Persistent batch failures** (batch still fails after all immediate retries): The exporter writes a lightweight reference to the failed batch into the appropriate staging table:
    - **Event Table batches** → `_staging.failed_event_batches` (stores time window + XXH3_128 hashes, ~320 KB per 10K-row batch)
@@ -937,7 +854,7 @@ FOR each failed_account_usage_ref WHERE retry_attempts < max_retry_attempts:
         ELSE IF ref_type == 'TIME_RANGE':
             QUERY ACCOUNT_USAGE view WHERE timestamp BETWEEN time_start AND time_end
         
-        EXPORT rows to Splunk via HEC
+        EXPORT rows via OTLP/gRPC
         
         DELETE failure reference (success)
         RECORD retry_success metric
@@ -953,12 +870,12 @@ Automatic cleanup (no manual intervention in MVP):
 - Failed batches exceeding `max_retry_attempts` (default: 5, configurable) stop being retried but remain in the failure tracking tables for observability until cleaned up.
 - A daily scheduled cleanup task automatically purges failed batch references older than `failed_batch_retention_days` (default: 30 days, configurable via Streamlit UI). This prevents unbounded growth during sustained Splunk outages without requiring any manual action.
 - Successfully retried batches are deleted immediately upon retry success.
-- The Pipeline Health Dashboard surfaces persistent failures with full context (error messages, timestamps, row counts) for **read-only monitoring** — no manual retry or clear buttons in MVP.
+- The Observability health page surfaces persistent failures with full context (error messages, timestamps, row counts) for **read-only monitoring** — no manual retry or clear buttons in MVP.
 
 Why this works for MVP:
 - Simple: Uses only Snowflake-native primitives (tables, tasks, stored procedures) — no manual intervention required
 - Reliable: Failed batches are preserved with minimal storage overhead until auto-purged
-- Observable: All failures visible in Pipeline Health Dashboard with full error context
+- Observable: All failures visible in Observability health page with full error context
 - Self-healing: Automatic retries handle transient issues; automatic cleanup handles unrecoverable failures after retention period
 - Non-blocking: Pipelines never stall due to failures (Streams/watermarks always advance after recording failure reference)
 
@@ -1023,7 +940,7 @@ Rationale:
 - Latency cutoff (NOW() - latency): Don't read data still in Snowflake's latency window (incomplete)
 - QUALIFY ROW_NUMBER(): Snowflake-native deduplication — must remain as Snowpark DataFrame operations pushed to Snowflake SQL, never pulled into Pandas for dedup ([Snowpark DataFrames are 8X faster than Pandas](https://www.snowflake.com/en/developers/guides/snowpark-python-top-three-tips-for-optimal-performance/))
 - Natural key partitioning (QUERY_ID, EVENT_ID): Ensures each row exported only once
-- **Column projection**: Use explicit `.select()` to project only the columns needed for export, rather than `SELECT *`. This is especially important for wide views like QUERY_HISTORY (~50 columns) and ACCESS_HISTORY (nested JSON columns), where unnecessary data transfer wastes I/O and memory ([Better Practices](https://medium.com/snowflake/lets-talk-about-some-better-practices-with-snowpark-python-python-udfs-and-stored-procs-903314944402)). Since our HEC export sends full rows as JSON (Section 6.2), projection should include all columns that will be in the HEC event payload — but the Snowpark query should still use explicit `.select()` rather than relying on implicit `SELECT *`.
+- **Column projection**: Use explicit `.select()` to project only the columns needed for export, rather than `SELECT *`. This is especially important for wide views like QUERY_HISTORY (~50 columns) and ACCESS_HISTORY (nested JSON columns), where unnecessary data transfer wastes I/O and memory ([Better Practices](https://medium.com/snowflake/lets-talk-about-some-better-practices-with-snowpark-python-python-udfs-and-stored-procs-903314944402)). Since our OTLP export sends full rows as structured records (Section 6.2), projection should include all columns that will be in the OTLP payload — but the Snowpark query should still use explicit `.select()` rather than relying on implicit `SELECT *`.
 
 Per-Source Configuration:
 | Source           | Latency | Overlap Window | Natural Key                              |
@@ -1059,7 +976,7 @@ Independent Scheduled Task: lock_wait_history_collector
 (Post-MVP: additional tasks per enabled source, each with its own schedule)
 ```
 
-Each task calls the shared stored procedure (`_internal.account_usage_source_collector`) parameterized by source name. The procedure handles watermark-based incremental reads, data transformation, HEC export, and inline health metric recording — writing a summary row to `_metrics.pipeline_health` at the end of each run (regardless of success or failure).
+Each task calls the shared stored procedure (`_internal.account_usage_source_collector`) parameterized by source name. The procedure handles watermark-based incremental reads, data transformation, OTLP/gRPC export, and inline health metric recording — writing a summary row to `_metrics.pipeline_health` at the end of each run (regardless of success or failure).
 
 **Why independent scheduled tasks over the alternatives:**
 
@@ -1078,12 +995,12 @@ Each task calls the shared stored procedure (`_internal.account_usage_source_col
 
 **Rationale:**
 
-- **No coordination overhead**: ACCOUNT_USAGE sources are fully independent data streams with independent watermarks, independent HEC exports, and no inter-source dependencies. A DAG adds root/finalizer tasks that exist only as coordination scaffolding for sources that don't need coordinating.
+- **No coordination overhead**: ACCOUNT_USAGE sources are fully independent data streams with independent watermarks, independent OTLP exports, and no inter-source dependencies. A DAG adds root/finalizer tasks that exist only as coordination scaffolding for sources that don't need coordinating.
 - **Source-specific schedules**: Each task's `SCHEDULE` is set to the optimal polling interval for its source (e.g., 30 min for QUERY_HISTORY, 90 min for ACCESS_HISTORY post-MVP). No early-exit pattern needed — the scheduler IS the cadence. This eliminates wasted task invocations for sources with slower latencies.
 - **True error isolation**: A slow or failing source (e.g., QUERY_HISTORY backfilling after a gap) only blocks its own next run (`ALLOW_OVERLAPPING_EXECUTION = FALSE` per task). All other sources continue on schedule. With a DAG, overlap prevention on the root task would block ALL sources if ANY source is slow.
 - **Operational simplicity**: Adding a new source = `CREATE TASK` + `ALTER TASK RESUME`. Removing a source = `DROP TASK`. No root suspend/resume ceremony. No risk of a modification window causing a polling gap for all sources.
 - **Cost savings**: No root task or finalizer invocations. For MVP with 4 sources at 30-min cadence: 4 task invocations per cycle vs. 6 with a DAG (root + 4 children + finalizer). Over 48 daily cycles: 192 vs. 288 serverless task invocations per day. The savings grow further post-MVP as sources with different cadences avoid unnecessary early-exit invocations.
-- **Inline health recording**: Each `account_usage_source_collector` call records its own operational metrics (rows collected, exported, failed, duration) to `_metrics.pipeline_health` at the end of execution. The Streamlit Pipeline Health Dashboard aggregates per-source health on-read — no finalizer needed for aggregation.
+- **Inline health recording**: Each `account_usage_source_collector` call records its own operational metrics (rows collected, exported, failed, duration) to `_metrics.pipeline_health` at the end of execution. The Streamlit Observability health page aggregates per-source health on-read — no finalizer needed for aggregation.
 - **Native retry per task**: `TASK_AUTO_RETRY_ATTEMPTS` on each task retries only the failed source. `SUSPEND_TASK_AFTER_NUM_FAILURES` (default 10) auto-suspends only the failing source to prevent runaway costs ([docs](https://docs.snowflake.com/en/user-guide/tasks-intro#automatically-suspend-tasks-after-failed-runs)).
 - **No feature flags**: Independent scheduled tasks work in every consumer account. Thread-safe sessions require `FEATURE_THREAD_SAFE_PYTHON_SESSION` ([Snowpark docs](https://docs.snowflake.com/en/developer-guide/snowpark/python/working-with-dataframes#submit-snowpark-queries-concurrently)), which we cannot guarantee.
 
@@ -1155,9 +1072,10 @@ Rationale:
 - Each task's `ALLOW_OVERLAPPING_EXECUTION = FALSE` (default) ensures a slow run only blocks its own next invocation, not other sources.
 
 ### 7.9 OTLP Transport Selection
-Decision: Use OTLP/gRPC exclusively for Event Table exports to Splunk Observability Cloud. No HTTP fallback in MVP.
+Decision: Use a **single OTLP/gRPC endpoint** for all telemetry exports (Event Table spans/metrics/logs and ACCOUNT_USAGE events). The endpoint points to a remote OpenTelemetry collector (e.g. Splunk distribution). The collector handles routing: traces/metrics to Splunk Observability Cloud, logs/events to Splunk Enterprise/Cloud. No HTTP fallback in MVP.
 
 Rationale:
+- **Single endpoint simplicity**: One OTLP/gRPC endpoint simplifies app configuration while leveraging the collector's flexibility for downstream routing, filtering, and transformation
 - Splunk recommendation: Splunk explicitly recommends gRPC for SDK-based exports due to superior auth handling and retry capabilities
 - Built-in compression: gRPC includes gzip compression by default (3-5× payload reduction)
 - Native retry logic: gRPC automatically retries on transient failures with exponential backoff
@@ -1165,21 +1083,19 @@ Rationale:
 - Lower latency: HTTP/2 persistent connections with multiplexing
 
 MVP Constraint:
-- No fallback to OTLP/HTTP. If gRPC is blocked by firewall/proxy, installation fails with clear error message directing user to configure network rules allowing gRPC egress to ingest.{realm}.signalfx.com:443.
+- No fallback to OTLP/HTTP. If gRPC is blocked by firewall/proxy, Test connection in Splunk settings will fail with a clear error message.
 
 Network Requirements (documented in setup guide):
-- Egress allowed to ingest.*.signalfx.com:443 (gRPC/TLS)
+- Egress allowed to the configured OTLP endpoint (gRPC/TLS)
 - Protocol: HTTP/2 over TLS
 - Network Rule in Snowflake Native App to allow OTLP/gRPC traffic
 
 ### 7.10 Alignment with Splunk Rate Limits (Post-MVP)
 
-> **MVP Note:** In-app rate limiting is deferred post-MVP. MVP relies on transport-level retry handling for 429/RESOURCE_EXHAUSTED responses (Section 7.2). The analysis below informs the post-MVP implementation.
+In-app rate limiting is deferred post-MVP. MVP relies on transport-level retry handling for RESOURCE_EXHAUSTED responses (Section 7.2).
 
-The app aligns with two distinct Splunk backend rate limits: Splunk Observability Cloud (OTLP/gRPC) and Splunk HEC (HTTP). Each has different constraints and rate limiting strategies.
+**Splunk Observability Cloud Rate Limits (OTLP/gRPC):**
 
-Splunk Observability Cloud Rate Limits (OTLP/gRPC)
-Key Limits:
 | Metric                       | Limit                                    | App Strategy                                                             |
 | ---------------------------- | ---------------------------------------- | ------------------------------------------------------------------------ |
 | MTS creations per minute     | 6,000 (or subscription-based)            | Monitor via sf.org.numMetricTimeSeriesCreated, warn if approaching limit |
@@ -1187,72 +1103,20 @@ Key Limits:
 | DPM (data points per minute) | Subscription-based                       | Dual-trigger batching smooths DPM rate (no spikes)                       |
 | Burst capacity               | 10× per-minute limit (up to 20 min/hour) | Leveraged during backfill/recovery scenarios                             |
 
-**Rate Limit Configuration (OTLP Exporter):**
-The OpenTelemetry gRPC exporter respects HTTP/2 flow control and Splunk's gRPC server-side rate limiting. When Splunk returns RESOURCE_EXHAUSTED status, the exporter automatically backs off.
+**Rate Limit Handling (OTLP Exporter):**
+The OpenTelemetry gRPC exporter respects HTTP/2 flow control and Splunk's gRPC server-side rate limiting. When the collector returns RESOURCE_EXHAUSTED status, the exporter automatically backs off with exponential retry.
 
-MTS Cardinality Control:
+**MTS Cardinality Control:**
 To prevent unbounded MTS creation, the app:
 - Only includes low-cardinality Snowflake metadata as OTLP resource attributes
 - Excludes high-cardinality attributes (query_id, user_id, session_id) from dimensions
 
-**Splunk HEC Rate Limits (HTTP):**
-Key Limits:
-| Metric              | Limit                                         | App Strategy                                               |
-| ------------------- | --------------------------------------------- | ---------------------------------------------------------- |
-| Requests per second | 500 requests/second (per HEC endpoint)        | In-app token-bucket limiter set to 400 req/s (80% of limit) |
-| Payload size        | 1 MB per request (recommended max)            | Batch size capped at 10,000 rows (~800 KB typical)         |
-| Total throughput    | No hard limit (dependent on indexer capacity) | Adaptive batch timeout (1s) prevents overwhelming indexers |
-
-Rate Limit Configuration (pseudo):
-```
-HEC CLIENT CONFIGURATION:
-    Layer 1 — Retry (via tenacity):
-        max_attempts       = 5
-        backoff_factor     = 1.0 (exponential: 1s, 2s, 4s, 8s, 16s)
-        retry_on_status    = [429, 500, 502, 503, 504]
-
-    Layer 2 — Rate Limiting (in-app token-bucket, pure Python):
-        max_requests       = 400 per second (80% of HEC 500 req/s limit)
-    
-    Client:
-        base_url = "{HEC_ENDPOINT}/services/collector"
-        headers  = {"Authorization": "Splunk {HEC_TOKEN}"}
-        timeout  = 30 seconds
-```
-
-How It Works:
-- Proactive rate limiting: In-app token-bucket limiter enforces 400 req/s locally (never sends >400 requests/second to HEC). Actual throughput is ~0.01 req/s during normal operation (see "Adaptive Polling Prevents HEC Overload" below), so the limiter rarely activates.
-- Reactive retry: If HEC still returns 429 Too Many Requests, `tenacity` backs off exponentially
-- Persistent failure: If all 5 retry attempts fail, batch marked as failed and stored for later retry
-
-Payload Size Control:
-HEC recommends <1 MB per request. The app enforces this via send_batch_max_size:
-```
-HEC BATCH CONFIG:
-    timeout          = 1000ms (1 second)
-    send_batch_size  = 5000 rows (target)
-    send_batch_max   = 10000 rows (safety valve, ~1 MB for ACCOUNT_USAGE rows)
-```
-Each ACCOUNT_USAGE row averages ~100-500 bytes, so 10,000 rows = ~500-800 KB (well below 1 MB limit).
-
-Adaptive Polling Prevents HEC Overload:
-
-Latency-aware polling (Section 7.8) ensures HEC isn't overwhelmed:
-- 15 ACCOUNT_USAGE sources polled adaptively → ~18 queries/hour
-- Each query → 1-2 HEC requests (5000-row batches)
-- Total: ~30-40 HEC requests/hour (~0.01 req/s, 0.0025% of limit)
-
-Even during recovery after sustained outage, failed batch retries stay within limits:
-- Retry task runs every 30 min
-- Processes max 50 batches per run
-- 50 batches × 2 retries/hour = 100 HEC requests/hour (~0.03 req/s, well below 400 req/s)
-
 ### 7.11 Vectorized Transformations (Snowpark + Chunked DataFrames)
 Problem: Transforming millions of Event Table rows into OTLP protobuf objects in pure Python row-by-row loops creates a CPU bottleneck and inefficient memory usage.
 
-Approach: Use Snowpark for all heavy relational work (filtering, projection, deduplication) and perform OTLP/HEC conversion in vectorized, chunked batches in Python using [`DataFrame.to_pandas_batches()`](https://docs.snowflake.com/en/developer-guide/snowpark/reference/python/latest/snowpark/api/snowflake.snowpark.DataFrame.to_pandas_batches) — avoiding global `collect()` and per-row loops over entire datasets.
+**Pushdown-first** approach: Use Snowpark for all heavy relational work (filtering, projection, deduplication) and perform OTLP conversion in vectorized, chunked batches in Python using [`DataFrame.to_pandas_batches()`](https://docs.snowflake.com/en/developer-guide/snowpark/reference/python/latest/snowpark/api/snowflake.snowpark.DataFrame.to_pandas_batches) — avoiding global `collect()` and per-row loops over entire datasets.
 
-> **Governed views:** All Snowpark DataFrames read from **governed views**, not raw source objects. For Event Tables, entity discrimination (filtering by `RESOURCE_ATTRIBUTES:"snow.executable.type"`) is applied as an additional Snowpark filter downstream of the governed view. See [Event Table Entity Discrimination Strategy](event_table_entity_discrimination_strategy.md) for the full filter logic.
+> **User-selected sources:** All Snowpark DataFrames read from the **user-selected source** (custom view or default). For Event Tables, entity discrimination (filtering by `RESOURCE_ATTRIBUTES:"snow.executable.type"`) is applied as an additional Snowpark filter downstream of the source. See [Event Table Entity Discrimination Strategy](event_table_entity_discrimination_strategy.md) for the full filter logic.
 
 **Concrete API — `to_pandas_batches()`:**
 
@@ -1266,16 +1130,16 @@ df = session.table("SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY").filter(
 )
 
 for chunk in df.to_pandas_batches():    # memory-bounded Pandas DataFrames
-    hec_events = convert_to_hec_json(chunk)  # vectorized Pandas → HEC JSON
-    hec_client.export(hec_events)            # synchronous HEC HTTP
+    otlp_records = convert_to_otlp(chunk)   # vectorized Pandas → OTLP records
+    otlp_exporter.export(otlp_records)       # synchronous OTLP/gRPC
     # watermark advanced after all chunks exported successfully
 ```
 
-For the Event Table pipeline (OTLP/HEC export), filtering and VARIANT extraction are pushed to Snowpark **per signal type** before `to_pandas_batches()` — Python never splits by RECORD_TYPE (see BP-1 in Section 7.12 and Section 7.13):
+For the Event Table pipeline (OTLP/gRPC export), filtering and VARIANT extraction are pushed to Snowpark **per signal type** before `to_pandas_batches()` — Python never splits by RECORD_TYPE (see BP-1 in Section 7.12 and Section 7.13):
 
 ```python
 # Step 1: Snowpark — filter by RECORD_TYPE and project/extract per signal
-stream_df = session.table("stream_on_governed_event_table_view")
+stream_df = session.table("stream_on_event_table_source")
 
 spans_projected = stream_df.filter(col("RECORD_TYPE") == "SPAN").select(
     col("TIMESTAMP"), col("START_TIMESTAMP"),
@@ -1305,13 +1169,13 @@ for chunk in spans_projected.to_pandas_batches():
     otlp_exporter.export_spans(convert_to_otlp_spans(chunk))
 
 for chunk in logs_projected.to_pandas_batches():
-    hec_client.export(convert_to_hec_logs(chunk))
+    otlp_exporter.export_logs(convert_to_otlp_logs(chunk))
 
 for chunk in metrics_projected.to_pandas_batches():
     otlp_exporter.export_metrics(convert_to_otlp_metrics(chunk))
 ```
 
-> **Key alignment with BP-1 and Section 7.13:** All filtering (`RECORD_TYPE`), VARIANT field extraction (`col["field"]`), and projection happen server-side in Snowpark. By the time `to_pandas_batches()` delivers chunks to Python, each row is already the right signal type with pre-extracted, typed columns — Python only serializes into OTLP protobuf or HEC JSON.
+> **Key alignment with BP-1 and Section 7.13:** All filtering (`RECORD_TYPE`), VARIANT field extraction (`col["field"]`), and projection happen server-side in Snowpark. By the time `to_pandas_batches()` delivers chunks to Python, each row is already the right signal type with pre-extracted, typed columns — Python only serializes into OTLP protobuf.
 
 **Query optimization**: Enable `session.sql_simplifier_enabled = True` at the start of each stored procedure handler. This flattens nested subqueries generated by chained Snowpark DataFrame operations (filter + project + dedup), improving query plan efficiency ([Top Tips](https://www.snowflake.com/en/developers/guides/snowpark-python-top-tips-for-optimal-performance/)). During development, use `df.explain()` to preview the generated SQL plan and verify partition pruning on time-window filters.
 
@@ -1323,13 +1187,13 @@ Design Rationale:
 
 2. **Python only serializes shaped batches**
   - After Snowpark processing, each chunk is already filtered to a single signal type, projected to the exact columns needed, and deduplicated
-  - Python maps pre-extracted Pandas DataFrame columns → OTLP span/log/metric objects or HEC JSON events per chunk
-  - No Python-side filtering, VARIANT parsing, or type conversion needed — Snowflake already handled it
+  - Python maps pre-extracted Pandas DataFrame columns → OTLP span/log/metric protobuf objects per chunk
+  - No Python-side filtering, VARIANT parsing, or type conversion needed — Snowflake must handled it
 
 3. **Chunked processing controls memory and network**
   - `to_pandas_batches()` streams moderate-size chunks (default chunk size determined by Snowpark, typically 5K–20K rows)
-  - Build OTLP/HEC payloads in vectorized style (list comprehensions over Pandas columns, minimal object churn)
-  - Export each chunk synchronously before fetching the next — prevents Python memory bloat and respects gRPC/HEC message size limits
+  - Build OTLP payloads in vectorized style (list comprehensions over Pandas columns, minimal object churn)
+  - Export each chunk synchronously before fetching the next — prevents Python memory bloat and respects gRPC message size limits
   - No threading needed — the bottleneck is network I/O (export), not CPU
 
 Benefits:
@@ -1354,13 +1218,12 @@ The following checklist maps Snowpark best practices (sourced from Snowflake eng
 
 **BP-2. Initialize expensive objects at module scope, not per handler call** ([Designing Python UDFs](https://docs.snowflake.com/en/developer-guide/udf/python/udf-python-designing), [External Access blog](https://www.snowflake.com/en/engineering-blog/snowpark-network-access-parallel-processing/)).
 - **gRPC/OTLP exporter**: Create the `OTLPSpanExporter` and `OTLPMetricExporter` instances at module scope. Snowflake caches imported modules across invocations on the same warehouse, so the gRPC channel (HTTP/2 persistent connection) persists across task runs, avoiding ~300-500ms cold-start per invocation.
-- **HEC HTTP client**: Create `httpx.Client()` at module scope with connection keep-alive. This reuses TCP connections across `to_pandas_batches()` chunk iterations within a single handler call and across repeated task invocations.
+- **OTLP exporter**: Create the OTel OTLP/gRPC exporter at module scope. This reuses gRPC connections across `to_pandas_batches()` chunk iterations within a single handler call and across repeated task invocations.
 - **Config lookups**: Use `cachetools` (`@cached(cache=TTLCache(...))`) for any repeated reads from config tables or stage files within a handler.
 
 **BP-3. Reuse TCP connections — do not create per-request** ([External Access blog](https://www.snowflake.com/en/engineering-blog/snowpark-network-access-parallel-processing/)).
-- Snowflake imposes limits on TCP connections per sandbox. One `httpx.Client` (with built-in connection pooling) and one OTLP exporter per stored procedure is sufficient. Never create new clients per batch or per chunk.
-- For HEC: the module-scoped `httpx.Client` handles connection pooling automatically.
-- For gRPC: the OTLP exporter maintains a single HTTP/2 multiplexed connection internally.
+- Snowflake imposes limits on TCP connections per sandbox. One OTLP exporter per stored procedure is sufficient. Never create new clients per batch or per chunk.
+- The OTLP exporter maintains a single HTTP/2 multiplexed connection internally (gRPC).
 
 **BP-4. Never use `df.cache_result()` for single-use DataFrames** ([Better Practices](https://medium.com/snowflake/lets-talk-about-some-better-practices-with-snowpark-python-python-udfs-and-stored-procs-903314944402)).
 - Our ACCOUNT_USAGE and Event Table queries are single-use (read, transform, export). `cache_result()` would create unnecessary temp tables and I/O overhead.
@@ -1371,21 +1234,16 @@ The following checklist maps Snowpark best practices (sourced from Snowflake eng
 
 **BP-6. Consider vectorized UDFs for hash computation (post-MVP)** ([Top Three Tips Lab 2](https://www.snowflake.com/en/developers/guides/snowpark-python-top-three-tips-for-optimal-performance/) — 30-40% faster for numerical ops).
 - If XXH3_128 hash computation for zero-copy failure tracking (Section 5.2.1) becomes a bottleneck on large failed batches, refactor to a vectorized UDF processing Pandas Series of concatenated row fields.
-- Do NOT use vectorized UDFs for string-heavy operations (HEC JSON serialization) — benchmarks show they are slower for non-numeric data.
+- Do NOT use vectorized UDFs for string-heavy operations (OTLP protobuf serialization) — benchmarks show they are slower for non-numeric data.
 
-**BP-7. Use `ThreadPoolExecutor` + `httpx.Client` connection pooling for concurrent HEC exports (post-MVP)** ([External Access blog](https://www.snowflake.com/en/engineering-blog/snowpark-network-access-parallel-processing/)).
-- For MVP: synchronous `httpx.Client` with a single connection is sufficient (HEC throughput is ~0.01 req/s).
-- Post-MVP optimization for high-volume accounts: use `concurrent.futures.ThreadPoolExecutor` with a pool of synchronous `httpx.Client` instances for concurrent HEC batch exports within a single chunk iteration. This is the proven pattern demonstrated in Snowflake's official engineering blog for concurrent external network access.
-- **Why not `asyncio` + `httpx.AsyncClient`?** Research findings:
-  - Snowflake's stored procedure sandbox **blocks raw socket creation** ([Security Practices docs](https://docs.snowflake.com/en/developer-guide/udf-stored-procedure-security-practices): "You can't use a handler to create sockets"). All network traffic is routed through the External Access Integration proxy layer.
-  - `asyncio` relies on the `selectors` module (epoll/kqueue/select) for I/O multiplexing over non-blocking sockets — it is **unknown** whether these system calls are compatible with the sandbox's network proxy.
-  - The Snowflake blog mentions `asyncio` and `httpx` only in passing ("can be used to implement asynchronous tasks") but provides **zero working examples** of `asyncio` inside stored procedures or UDFs. Every official Snowflake concurrency example uses `ThreadPoolExecutor` or `joblib.Parallel`.
-  - `ThreadPoolExecutor` is proven to work because Python threads release the GIL during I/O operations (network calls), achieving true concurrency for I/O-bound workloads without needing an event loop or non-blocking sockets.
-  - Official concurrency pattern for stored procedures: `joblib.Parallel` with `threading` backend ([Python stored procedure examples](https://docs.snowflake.com/en/developer-guide/stored-procedure/python/procedure-python-examples)).
+**BP-7. Use `ThreadPoolExecutor` for concurrent OTLP exports (post-MVP)** ([External Access blog](https://www.snowflake.com/en/engineering-blog/snowpark-network-access-parallel-processing/)).
+- For MVP: synchronous OTLP/gRPC exporter with a single connection is sufficient (export throughput is ~0.01 req/s).
+- Post-MVP optimization for high-volume accounts: use `concurrent.futures.ThreadPoolExecutor` for concurrent OTLP batch exports within a single chunk iteration. This is the proven pattern demonstrated in Snowflake's official engineering blog for concurrent external network access.
+- **Why not `asyncio`?** Snowflake's stored procedure sandbox **blocks raw socket creation** ([Security Practices docs](https://docs.snowflake.com/en/developer-guide/udf-stored-procedure-security-practices)). `asyncio` relies on `selectors` (epoll/kqueue/select) for I/O multiplexing over non-blocking sockets — compatibility with the sandbox's network proxy is unverified. `ThreadPoolExecutor` is the proven pattern: Python threads release the GIL during I/O, achieving true concurrency without an event loop. Official concurrency pattern: `joblib.Parallel` with `threading` backend ([Python stored procedure examples](https://docs.snowflake.com/en/developer-guide/stored-procedure/python/procedure-python-examples)).
 - Note: Snowpark's `collect_nowait()` and Snowflake Scripting's `ASYNC` keyword ([async child jobs docs](https://docs.snowflake.com/en/developer-guide/snowflake-scripting/asynchronous-child-jobs)) provide async execution for **Snowflake SQL queries** only — they are not applicable to external HTTP calls.
 
 **BP-8. Structure code for modularity, testing, and CI/CD** ([Infinite Lambda](https://infinitelambda.com/snowpark-for-python-best-practices/)).
-- Separate Python packages: `collectors/` (per-source logic), `exporters/` (OTLP + HEC clients), `ui/` (Streamlit pages), `common/` (config, watermarks, health metrics).
+- Separate Python packages: `collectors/` (per-source logic), `exporters/` (OTLP/gRPC client), `ui/` (Streamlit pages), `common/` (config, watermarks, health metrics).
 - Use `pytest` with Snowpark DataFrame API for integration tests against a dev schema.
 - Use `poetry` or `conda` with `environment.yml` for reproducible dependency management (already pinned — see Python Runtime & Dependencies section).
 - Branch-based environment isolation: feature branches deploy to separate Snowflake schemas; main branch is the single source of truth for production.
@@ -1394,7 +1252,7 @@ The following checklist maps Snowpark best practices (sourced from Snowflake eng
 
 Event Table rows contain VARIANT/OBJECT columns (`RECORD`, `RECORD_ATTRIBUTES`, `RESOURCE_ATTRIBUTES`, `SCOPE`, `TRACE`) that require field extraction before export. The following optimizations push transformation work into Snowflake's columnar engine rather than performing it in Python, based on Snowflake transformation best practices ([Well-Architected Framework](https://www.snowflake.com/en/developers/guides/well-architected-framework-performance/), [Coalesce guide](https://coalesce.io/data-insights/the-complete-guide-to-snowflake-data-transformation/)).
 
-> **Note:** All operations below read from the **stream on the governed view**, not the raw Event Table. This ensures consumer governance policies (masking, row access, projection) are applied before any data processing.
+> **Note:** All operations below read from the **stream on the user-selected source** (custom view or event table). When the user selects a custom view with governance policies, masking/row access/projection policies are applied before any data processing.
 
 **1. Filter by `RECORD_TYPE` first** — Before any projection or extraction, filter the stream by signal type (`SPAN`, `LOG`, `METRIC`, `SPAN_EVENT`) as the first Snowpark DataFrame operation. This enables Snowflake's partition pruning and ensures each signal-specific code path only processes relevant rows:
 
@@ -1403,7 +1261,7 @@ Event Table rows contain VARIANT/OBJECT columns (`RECORD`, `RECORD_ATTRIBUTES`, 
 **1a. Entity discrimination filter** — After `RECORD_TYPE` filtering, apply the entity discrimination filter to target MVP-scope service types (SQL/Snowpark compute). This uses a positive include-list on `RESOURCE_ATTRIBUTES:"snow.executable.type"` — see [Event Table Entity Discrimination Strategy](event_table_entity_discrimination_strategy.md) for the complete filter specification.
 
 ```python
-stream_df = session.table("stream_on_governed_event_table_view")
+stream_df = session.table("stream_on_event_table_source")
 spans_df  = stream_df.filter(col("RECORD_TYPE") == "SPAN")
 logs_df   = stream_df.filter(col("RECORD_TYPE") == "LOG")
 metrics_df = stream_df.filter(col("RECORD_TYPE") == "METRIC")
@@ -1437,7 +1295,7 @@ logs_projected = logs_df.select(
 )
 ```
 
-This is critical for performance: Snowflake's columnar engine handles VARIANT path extraction orders of magnitude faster than Python-side JSON parsing. Python only handles OTLP protobuf / HEC JSON serialization of the pre-shaped Pandas chunks from `to_pandas_batches()`.
+**This is critical for performance:** Snowflake's columnar engine handles VARIANT path extraction orders of magnitude faster than Python-side JSON parsing. Python only handles OTLP protobuf serialization of the pre-shaped Pandas chunks from `to_pandas_batches()`.
 
 **3. Use higher-order functions for array processing** — When processing array-valued VARIANT fields (e.g., if `RECORD_ATTRIBUTES` contains nested arrays), prefer Snowflake's `FILTER`, `TRANSFORM`, and `REDUCE` higher-order functions over `LATERAL FLATTEN`:
 
@@ -1469,61 +1327,53 @@ SELECT * EXCLUDE rn FROM deduped LIMIT :batch_size
 
 ---
 
-## 7A. Data Governance & Governed View Architecture
+## 7A. Data Governance & User-Selected Sources
 
 ### Design Principle: "Leverage, Don't Replicate"
 
-The app does **not** build its own masking, redaction, or access-control logic. Instead, it creates a thin **governed view layer** over every telemetry source and reads exclusively from those views. Consumers use Snowflake's native governance capabilities — dynamic data masking, row access policies, projection policies, and object tagging — to control what data the export pipelines can see. Because the app never bypasses the views, any policy the consumer attaches is honoured automatically.
+The app does **not** build its own masking, redaction, or access-control logic. For each data source, the **user selects** the telemetry source: either their **own custom view** (with masking/row access/projection policies attached) or the **default** view/event table. The app reads or streams from the user-selected source. When the user selects a custom view, Snowflake enforces attached policies transparently. When default views or event tables are selected, the **Data governance** page informs that policies can't be applied and the user must create custom views for governance. The app does not create or maintain views — the user owns governance.
 
-### Governed View Pattern (Pattern C)
+### User-Selected Sources
 
-For each telemetry source the app exposes a `SELECT *`-style view:
+For each telemetry source:
 
-| Source Type | Raw Object | Governed View |
+| Pipeline | User Selects | Data Path |
 |---|---|---|
-| Event Table | `<consumer_event_table>` | `_views.governed_event_table` |
-| ACCOUNT_USAGE view | `SNOWFLAKE.ACCOUNT_USAGE.<VIEW>` | `_views.governed_<view_name>` |
+| **Event Table (event-driven)** | Custom view or event table | Stream (APPEND_ONLY on selected source) → Triggered Task → OTLP/gRPC |
+| **ACCOUNT_USAGE (poll-based)** | Custom view or default ACCOUNT_USAGE view | Independent Scheduled Task (watermark) → OTLP/gRPC |
 
-Consumers attach governance policies to the governed views (not the raw objects). Streams (for Event Tables) and watermark queries (for ACCOUNT_USAGE) operate against the governed views.
+The user selects and attaches governance policies to their custom views (not to default/raw objects). Streams (for Event Tables) and watermark queries (for ACCOUNT_USAGE) operate against the user-selected source.
 
-**Why views, not raw objects?**
+**Why user-selected custom views?**
 - Snowflake blocks masking policies directly on Event Tables and system-managed ACCOUNT_USAGE views.
-- Custom views are fully policy-eligible and support streams.
-- The view acts as a **governed data contract**: the app owns the view DDL; the consumer owns the policies.
+- Custom views created by the user are fully policy-eligible and support streams.
+- The user owns both the view DDL and the policies — the app only reads from it.
 
 > **Operational risk:** `CREATE OR REPLACE VIEW` invalidates any stream attached to it. View DDL changes require careful stream migration. See [Event Table Streams & Governance Research](event_table_streams_governance_research.md) for tested limitations and mitigations.
 
 ### Governance Capabilities Available to Consumers
 
-Consumers can apply any combination of the following on governed views:
+Consumers can apply any combination of the following on their custom views:
 
 - **Dynamic Data Masking** — redact or hash sensitive fields (e.g., `db.user`, query text).
 - **Row Access Policies** — restrict which rows the app can read (e.g., exclude certain databases, roles).
 - **Projection Policies** — prevent specific columns from being selected by the export pipeline.
-- **Object Tagging** — classify governed view columns with `SEMANTIC_CATEGORY` / `PRIVACY_CATEGORY` tags for audit and automated policy assignment.
+- **Object Tagging** — classify custom view columns with `SEMANTIC_CATEGORY` / `PRIVACY_CATEGORY` tags for audit and automated policy assignment.
 
 ### Consumer Governance Workflow
 
-The governed view layer is transparent to the export pipeline but requires deliberate consumer action to realise its full value. The Streamlit UI guides consumers through this process:
+1. **The consumer creates their own custom views** over Event Tables or ACCOUNT_USAGE views using standard Snowflake SQL. The app does not create views.
+2. **The consumer attaches policies to their custom views** — using standard Snowflake SQL, Snowsight, or Trust Center. For example:
+   - `ALTER VIEW my_governed_query_history MODIFY COLUMN QUERY_TEXT SET MASKING POLICY my_schema.redact_query_text;`
+   - `ALTER VIEW my_governed_event_table ADD ROW ACCESS POLICY my_schema.role_filter ON (RESOURCE_ATTRIBUTES);`
+3. **The consumer selects their custom view** as the telemetry source on the **Telemetry sources** page.
+4. **The consumer reviews governance posture** on the **Data governance** page — a read-only table showing enabled sources with status, governance messages, and sensitive columns.
 
-1. **Governed views are created automatically** during infrastructure provisioning (Section 3). The consumer does not create them manually.
-2. **The consumer attaches policies outside the app** — using standard Snowflake SQL, Snowsight, or Trust Center — to the governed views the app exposes (listed in `_views` schema). For example:
-   - `ALTER VIEW _views.governed_query_history MODIFY COLUMN QUERY_TEXT SET MASKING POLICY my_schema.redact_query_text;`
-   - `ALTER VIEW _views.governed_event_table ADD ROW ACCESS POLICY my_schema.role_filter ON (RESOURCE_ATTRIBUTES);`
-3. **The consumer verifies their posture in the app's Governance Compliance panel** — a dedicated Streamlit tab that surfaces which policies and tags are currently attached to each governed view, and whether the consumer's classification profiles are active.
+### Data Governance Page (Streamlit)
 
-### Governance Compliance Panel (Streamlit)
+The Data governance page is a **read-only table of enabled sources only** with columns for status, view name, source type, per-row governance message, and per-row sensitive columns. When default views or event tables are selected, the per-row governance message informs that masking and row access policies cannot be applied and the user must create custom views for governance. When custom views are selected, the message notes that Snowflake policies apply. See the [UX Design Specification](ux-design-specification.md) and [PRD](prd.md) for the full page structure.
 
-The Governance Compliance panel is **not** a configuration screen — consumers do not attach policies through it. It is a **read-only posture dashboard** that builds trust by showing the consumer exactly how the app respects their governance decisions. The panel queries `ACCOUNT_USAGE` governance views (`TAG_REFERENCES`, `POLICY_REFERENCES`, `DATA_CLASSIFICATION_LATEST`, `ACCESS_HISTORY`) and the `SYSTEM$SHOW_SENSITIVE_DATA_MONITORED_ENTITIES()` function.
-
-The panel displays:
-
-- **Classification awareness** — number of databases with active auto-classification, classification profiles detected, semantic categories in use (e.g., `EMAIL`, `SSN`, `IP_ADDRESS`).
-- **Active protection honoured by this app** — count and type of masking policies, row access policies, and projection policies currently attached to the app's governed views.
-- **Per-view governance detail** — for each governed view: attached policies, current masking mode (e.g., `QUERY_TEXT` mode for `governed_query_history`), row access policy status, and (for Event Table views) stream health / `STALE_AFTER` date.
-- **Actionable guidance** — a callout informing the consumer that attaching policies to the listed governed views controls what data the export pipeline can see, with a link to Snowsight Trust Center for full governance management.
-
-For the complete panel wireframe, data source mapping, and `collect_governance_posture()` implementation, see [Data Governance & Privacy Features — §8.5 Governance Compliance Panel](snowflake_data_governance_privacy_features.md#85-governance-compliance-panel) and [§8.7 Implementation](snowflake_data_governance_privacy_features.md#87-implementation--querying-governance-posture).
+*(Post-MVP: Enhanced Data governance page with classification awareness, policy detection, and consumer policy enumeration via `ACCOUNT_USAGE` governance views.)*
 
 ### Detailed References
 
@@ -1558,7 +1408,7 @@ Snowflake Event Table telemetry maps to standard OpenTelemetry semantic conventi
 
 ## 8. Stream Checkpointing (Event-Driven Pipeline Safety)
 
-> **Governed view note:** Streams in this architecture are created on the **governed Event Table view** (`_views.governed_event_table`), not the raw Event Table. This ensures all consumer governance policies are applied to the change data captured by the stream. See [Section 7A](#7a-data-governance--governed-view-architecture) for the rationale and [Event Table Streams & Governance Research](event_table_streams_governance_research.md) for tested confirmation that streams on views correctly propagate masking and row access policies.
+> **User-selected source note:** Streams in this architecture are created on the **user-selected source** (custom view or default Event Table). If the user selects a custom view with masking/row access policies, those policies are applied to the change data captured by the stream. See [Section 7A](#7a-data-governance--user-selected-sources) for the rationale and [Event Table Streams & Governance Research](event_table_streams_governance_research.md) for tested confirmation that streams on views correctly propagate masking and row access policies.
 
 The most critical advantage of using a Stored Procedure for the Event Table collector is transaction control. However, a key Snowflake constraint governs how stream offsets advance:
 
@@ -1626,7 +1476,7 @@ Note: Stream checkpointing applies only to the Event Table pipeline. The ACCOUNT
    ALTER TABLE <event_table> SET MAX_DATA_EXTENSION_TIME_IN_DAYS = 90;
    ```
 
-2. **Monitor `STALE_AFTER` timestamp** via `SHOW STREAMS` or `DESCRIBE STREAM` in the Pipeline Health Dashboard. The `STALE_AFTER` column shows when the stream is predicted to become stale. Add this as a pipeline health metric (see Section 9).
+2. **Monitor `STALE_AFTER` timestamp** via `SHOW STREAMS` or `DESCRIBE STREAM` in the Observability health page. The `STALE_AFTER` column shows when the stream is predicted to become stale. Add this as a pipeline health metric (see Section 9).
 
 3. **Staleness alert**: Fire an alert when `STALE_AFTER` is less than 2 days in the future, displayed prominently in the Streamlit UI.
 
@@ -1635,11 +1485,11 @@ Note: Stream checkpointing applies only to the Event Table pipeline. The ACCOUNT
 5. **Recovery procedure** (documented in README and surfaced in Streamlit UI):
    - If a stream becomes stale, the app must recreate it: `CREATE OR REPLACE STREAM ...`
    - Data between the stale offset and current table state is lost — this is an unrecoverable gap
-   - The Pipeline Health Dashboard should surface stale stream status and guide the consumer through recreation
+   - The Observability health page should surface stale stream status and guide the consumer through recreation
 
-## 9. Pipeline Health Observability
+## 9. Observability Health & Pipeline Monitoring
 
-The app includes a built-in Pipeline Health Dashboard implemented as a Streamlit page using **Plotly** charts (via `st.plotly_chart`) and native Streamlit components (`st.metric`, `st.dataframe`, `st.tabs`, `st.columns`). All visualization libraries are available on the Snowflake Anaconda channel and compatible with the warehouse runtime used by Snowflake Native Apps.
+The app includes built-in pipeline monitoring implemented as a Streamlit page (**Observability health**) using native Streamlit components (`st.metric`, `st.dataframe`, `st.columns`). All visualization libraries are available on the Snowflake Anaconda channel and compatible with the warehouse runtime used by Snowflake Native Apps.
 
 ### 9.1 Internal Metrics Collection
 
@@ -1667,9 +1517,9 @@ Key metrics tracked (MVP — used to power the Overview Tab):
 - **source_lag**: Time difference between the latest available data in a source and the latest exported data (indicates how "behind" the pipeline is).
 - **stream_stale_after**: `STALE_AFTER` timestamp for each Event Table stream (retrieved via `DESCRIBE STREAM`). Used to drive the staleness alert in the Overview Tab (see Section 8.1).
 
-### 9.2 Volume Estimation
+### 9.2 Volume Estimation (Post-MVP)
 
-On initial setup and periodically thereafter, the app runs a **telemetry volume estimator** that queries existing data in each enabled source to project expected throughput. This helps the user understand the data volume their Splunk environment will receive and assists in capacity planning:
+On initial setup and periodically thereafter, the app would run a **telemetry volume estimator** that queries existing data in each enabled source to project expected throughput. This helps the user understand the data volume their Splunk environment will receive and assists in capacity planning:
 
 ```sql
 -- Example: Estimate QUERY_HISTORY volume
@@ -1682,7 +1532,7 @@ FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
 WHERE START_TIME > DATEADD(hour, -24, CURRENT_TIMESTAMP());
 ```
 
-The estimator runs similar queries for each enabled source and presents results in the Pipeline Health Dashboard. Estimated volumes per source (rough baselines for typical accounts):
+The estimator runs similar queries for each enabled source and presents results in the Observability health page. Estimated volumes per source (rough baselines for typical accounts):
 
 | Source | Avg Row Size | Typical Volume (Medium Account) | Typical Volume (Large Enterprise) |
 |---|---|---|---|
@@ -1697,14 +1547,16 @@ The estimator runs similar queries for each enabled source and presents results 
 | COPY_HISTORY | ~0.4 KB | 1K-10K rows/day | 50K-200K rows/day |
 | STORAGE_USAGE | ~0.1 KB | 1 row/day | 1 row/day |
 
-### 9.3 Pipeline Health Dashboard
+### 9.3 Observability Health Page
 
-The dashboard is built using native Streamlit layout components (`st.tabs`, `st.columns`) with Plotly charts (`st.plotly_chart`) and `st.metric` KPI cards.
+**MVP Observability Health Page** (see [PRD](prd.md) FR27 and [UX Design Specification](ux-design-specification.md) for full page structure):
+- **Destination health card** — OTLP endpoint status (healthy/degraded/error), last export timestamp.
+- **4 aggregated KPI cards** — Sources OK (n/total), Rows exported 24h, Failed batches 24h, Avg freshness.
+- **Export throughput trend chart** — rows exported over time with failed batches overlay.
+- **Category health summary table** — per-category status with drill-down to Telemetry sources page.
+- **Recent errors feed** — conditional; shown when errors exist in the last 24h.
 
-**Overview Tab** (MVP):
-- Total rows collected / exported / failed (last 24h) — displayed as `st.metric` KPI cards and a Plotly grouped bar chart by source. Data sourced from `_metrics.pipeline_health` (metrics: `rows_collected`, `rows_exported`, `rows_failed`).
-- Current failed batches awaiting retry — displayed as a prominent `st.metric` card with color coding (green = 0, yellow < 10, red ≥ 10). In MVP, this reflects transport-level retry failures from the current run cycle (not persistent failure tracking).
-- Pipeline up/down status per source — based on last successful run timestamp from `_metrics.pipeline_health`. Color coding: green (< 2× expected interval), yellow (2-5× expected interval), red (> 5× expected interval or never run).
+Data sourced from `_metrics.pipeline_health` (metrics: `rows_collected`, `rows_exported`, `rows_failed`, `export_latency_ms`, `error_count`).
 
 **Post-MVP Dashboard Tabs** (deferred — see MVP Scope):
 
@@ -1724,12 +1576,11 @@ The dashboard is built using native Streamlit layout components (`st.tabs`, `st.
 - Estimated daily/monthly volume per enabled source (`st.dataframe` + Plotly bar chart).
 - Comparison of estimated vs. actual exported volume.
 
-**Rate Limits Tab** (requires rate limit handling):
-- Splunk Observability Cloud (To be defined)
-- Splunk HEC:
-  - hec.requests_sent (HEC API calls per minute)
-  - hec.requests_rate_limited (count of 429 responses)
-  - hec.avg_batch_size (tracks payload efficiency)
+**Rate Limits Tab** (post-MVP, requires rate limit handling):
+- OTLP/gRPC export:
+  - otlp.requests_sent (OTLP export calls per minute)
+  - otlp.requests_rate_limited (count of throttle responses)
+  - otlp.avg_batch_size (tracks payload efficiency)
 
 ---
 
@@ -1822,13 +1673,56 @@ These provide current-state metadata for inventory enrichment and drift detectio
 
 > **Note:** Column lists in Appendix A are **representative** (key columns for monitoring use cases), not exhaustive. Many ACCOUNT_USAGE views contain additional columns. Implementers should consult the per-view documentation for full schemas: [ACCOUNT_USAGE view list](https://docs.snowflake.com/en/sql-reference/account-usage), [COPY_HISTORY](https://docs.snowflake.com/en/sql-reference/account-usage/copy_history), [LOAD_HISTORY](https://docs.snowflake.com/en/sql-reference/account-usage/load_history), etc.
 
+## A.6 Future Monitoring Packs (Post-MVP)
+
+These packs are out of scope for MVP but represent strategic expansion areas aligned with Snowflake's platform evolution and Marketplace Partner Milestone 2 content requirements.
+
+### Cortex AI Pack
+
+**Purpose:** Observability for Snowflake Cortex AI services (Cortex AI Functions, Cortex Agents, Cortex Search).
+
+| Attribute | Details |
+|---|---|
+| **Data Source** | `AI_OBSERVABILITY_EVENTS` table accessed via `GET_AI_OBSERVABILITY_EVENTS()` function |
+| **Data Types** | LOG, SPAN, SPAN_EVENT, METRIC (same structure as Event Table) |
+| **Update Frequency** | Real-time (sub-second writes by Cortex runtime) |
+| **Data Latency** | None — rows appear immediately after AI service execution |
+| **Retention** | Configurable (governed by table retention settings) |
+| **Supports Streams** | Yes — APPEND_ONLY streams supported |
+| **Key Resource Attributes** | `snow.cortex.service.type` (COMPLETE, SEARCH, ANALYST), `snow.cortex.model.name`, `snow.cortex.agent.id`, `db.user`, `snow.warehouse.name` |
+| **OTel Conventions** | `gen_ai.*` semantic conventions for generative AI observability (prompt tokens, completion tokens, model name, response time, error rates) |
+| **Monitoring Use Cases** | AI service performance profiling, token consumption tracking, error rate alerting, prompt engineering insights, agent execution tracing |
+| **Pipeline** | Event-driven (User-selected source → Stream → Triggered Tasks) → OTLP/gRPC |
+
+**Strategic Alignment:** Cortex AI is a Snowflake strategic priority area. This pack positions the app for Marketplace Partner Milestone 2 content requirements and enables observability for emerging AI-driven workloads.
+
+### Openflow Pack
+
+**Purpose:** Observability for Openflow data pipeline orchestration and execution.
+
+| Attribute | Details |
+|---|---|
+| **Data Source** | Event Table telemetry from Openflow pipelines |
+| **Entity Discrimination** | `RESOURCE_ATTRIBUTES:"application" = 'openflow'` |
+| **Data Types** | LOG, SPAN, SPAN_EVENT, METRIC |
+| **Update Frequency** | Real-time (sub-second writes by Openflow runtime) |
+| **Data Latency** | None — rows appear immediately after Openflow task execution |
+| **Retention** | Configurable (governed by Event Table retention settings) |
+| **Supports Streams** | Yes — APPEND_ONLY streams supported |
+| **Key Resource Attributes** | `application` = `openflow`, `snow.database.name`, `snow.schema.name`, `snow.warehouse.name`, `db.user` |
+| **OTel Conventions** | `db.*` semantic conventions for database client operations, `snowflake.*` custom namespace for Openflow-specific attributes |
+| **Monitoring Use Cases** | Openflow pipeline execution traces, task orchestration monitoring, data flow performance profiling, pipeline failure detection |
+| **Pipeline** | Event-driven (User-selected source → Stream → Triggered Tasks) → OTLP/gRPC |
+
+**Implementation Note:** Openflow telemetry shares the same Event Table infrastructure as SQL/Snowpark compute telemetry. The pack extends the entity discrimination filter to include `application=openflow` in addition to the MVP's `snow.executable.type` filter.
+
 ---
 
 # Technical Prerequisites
 
 **Standard Compliance**:
 - Must strictly follow the OpenTelemetry data model for relational-to-OTLP mapping (Event Table data only)
-- Must define clear mapping rules for ACCOUNT_USAGE tabular data to Splunk HEC JSON format
+- Must define clear mapping rules for ACCOUNT_USAGE tabular data to OTLP log records / events
 - Must strictly follow Snowflake Event Table syntax, schema, and querying best practices:
   - Event table overview & common rules: https://docs.snowflake.com/en/developer-guide/logging-tracing/event-table-setting-up
   - Working with event tables: https://docs.snowflake.com/en/developer-guide/logging-tracing/event-table-operations
@@ -1867,7 +1761,7 @@ The app depends on the [OpenTelemetry Python SDK](https://github.com/open-teleme
 |---|---|---|
 | **Traces (Spans)** | ✅ Stable | Event Table SPANs → OTLP/gRPC → Splunk Observability Cloud |
 | **Metrics** | ✅ Stable | Event Table METRICs → OTLP/gRPC → Splunk Observability Cloud |
-| **Logs** | ⚠️ Development (breaking changes expected) | **Not used via OTLP** — Event Table LOGs are routed via HEC HTTP to avoid dependency on the unstable Logs API. If Logs signal reaches Stable in the future, OTLP log export can be reconsidered as a post-MVP optimization. |
+| **Logs** | ⚠️ Development (breaking changes expected) | Event Table LOGs exported via OTLP/gRPC. The Logs signal may have breaking changes; implementation should pin SDK versions carefully and test log export thoroughly. |
 
 ### gRPC Exporter Retry Behavior
 
@@ -1982,9 +1876,8 @@ Requires EAI with network rules allowing egress to `ingest.{realm}.signalfx.com:
 Snowflake's [UDF/procedure design guidance](https://docs.snowflake.com/en/developer-guide/udf/python/udf-python-designing) states: **"Put expensive initialization code into the module scope. There, it will be performed once when the UDF is initialized."** The [Snowpark External Access blog](https://www.snowflake.com/en/engineering-blog/snowpark-network-access-parallel-processing/) reinforces this for network clients: global connection pools initialized at module scope avoid TCP connection creation overhead per handler invocation.
 
 Our stored procedures must follow this pattern:
-- **OTLP exporter** (`OTLPSpanExporter`, `OTLPMetricExporter`): Create at module scope. The gRPC HTTP/2 channel persists across task invocations on the same warehouse. Snowflake caches imported modules, so subsequent calls skip the ~300-500ms `protobuf + grpcio` import overhead.
-- **HEC HTTP client** (`httpx.Client`): Create at module scope with connection keep-alive enabled. Reuses TCP connections across `to_pandas_batches()` chunk iterations and across repeated serverless task invocations.
-- **Snowflake imposes TCP connection limits** per sandbox — never create clients per batch, per chunk, or per handler call. One `httpx.Client` and one OTLP exporter instance per stored procedure module is sufficient.
+- **OTLP exporter** (`OTLPSpanExporter`, `OTLPMetricExporter`, `OTLPLogExporter`): Create at module scope. The gRPC HTTP/2 channel persists across task invocations on the same warehouse. Snowflake caches imported modules, so subsequent calls skip the ~300-500ms `protobuf + grpcio` import overhead.
+- **Snowflake imposes TCP connection limits** per sandbox — never create clients per batch, per chunk, or per handler call. One OTLP exporter instance per stored procedure module is sufficient.
 
 See Section 7.12 (BP-2 and BP-3) for the full best practice checklist.
 
@@ -2274,7 +2167,6 @@ The application package is the distributable container that encapsulates all dat
     ├── event_table_collector.py
     ├── account_usage_source_collector.py
     ├── otlp_export.py
-    ├── hec_export.py
     └── volume_estimator.py
 ```
 
@@ -2305,7 +2197,7 @@ manifest_version: 2
 version:
   name: V1_0
   label: "Splunk Observability for Snowflake — MVP"
-  comment: "Initial release: Event Table telemetry + ACCOUNT_USAGE metrics export to Splunk via OTLP/HEC"
+  comment: "Initial release: Event Table telemetry + ACCOUNT_USAGE metrics export to Splunk via OTLP/gRPC"
 
 # --- Required: artifacts block ---
 artifacts:
@@ -2337,7 +2229,7 @@ privileges:
   - CREATE DATABASE:
       description: "Required to create internal state database for watermarks and configuration"
   - CREATE EXTERNAL ACCESS INTEGRATION:
-      description: "Required to create EAI for egress to Splunk endpoints (OTLP gRPC and HEC HTTP)"
+      description: "Required to create EAI for egress to OTLP endpoint"
 
 # --- Required for our app: references block ---
 # References are consumer-side objects the app needs bound at install or post-install.
@@ -2362,9 +2254,9 @@ references:
       configuration_callback: app_public.get_secret_configuration
       required_at_setup: false
 
-  - SPLUNK_HEC_SECRET:
-      label: "Splunk HEC Token Secret"
-      description: "Snowflake Secret storing the Splunk HEC token for metrics/logs export"
+  - OTLP_PEM_CERTIFICATE_SECRET:
+      label: "OTLP PEM Certificate Secret (Optional)"
+      description: "Snowflake Secret storing the optional PEM certificate for OTLP endpoints using private/self-signed certificates"
       privileges:
         - USAGE
       object_type: SECRET
@@ -2373,8 +2265,8 @@ references:
       required_at_setup: false
 
   - SPLUNK_EAI:
-      label: "Splunk External Access Integration"
-      description: "EAI allowing egress traffic from the app to Splunk endpoints (OTLP gRPC + HEC HTTPS)"
+      label: "OTLP External Access Integration"
+      description: "EAI allowing egress traffic from the app to the OTLP endpoint"
       privileges:
         - USAGE
       object_type: EXTERNAL_ACCESS_INTEGRATION
@@ -2475,7 +2367,6 @@ snowflake-native-splunk-app/              # Project root (git repo)
 │       ├── event_table_collector.py
 │       ├── account_usage_source_collector.py
 │       ├── otlp_export.py
-│       ├── hec_export.py
 │       └── volume_estimator.py
 ├── scripts/                              # Post-deploy SQL hooks (run by snow app run, not staged)
 │   └── shared_content.sql                # Shared data setup run via post_deploy
@@ -2577,7 +2468,7 @@ A single role keeps the permission model simple and avoids unnecessary complexit
 | **Privilege correctness** | Session debug mode (`AS_APPLICATION`) | Verifies procedures can access internal tables, ACCOUNT_USAGE views, EAI, and Secrets with the exact privilege set they'll have in production |
 | **Upgrade safety** | `ALTER APPLICATION ... UPGRADE USING @stage` | Validates that stateful tables survive upgrade, new columns added, versioned objects replaced cleanly |
 | **Event sharing** | Development mode + `AUTHORIZE_TELEMETRY_EVENT_SHARING = TRUE` | Validates that event definitions emit to local event table, simulating provider telemetry |
-| **End-to-end pipeline** | Full install + Streamlit configuration + pipeline execution | Validates complete data flow: Event Table → OTLP export, ACCOUNT_USAGE → HEC export |
+| **End-to-end pipeline** | Full install + Streamlit configuration + pipeline execution | Validates complete data flow: Event Table → OTLP/gRPC export, ACCOUNT_USAGE → OTLP/gRPC export |
 
 **Setup script idempotency** is critical: the script may run multiple times during install or upgrade, especially on failure retry. All `CREATE` statements use `CREATE OR REPLACE` (for versioned objects) or `CREATE IF NOT EXISTS` (for stateful objects). `GRANT` statements are re-applied after `CREATE OR REPLACE` since replacement implicitly revokes prior grants.
 
@@ -2777,7 +2668,7 @@ Configure [event definitions](https://docs.snowflake.com/en/developer-guide/nati
 | `grpcio` or `opentelemetry-*` packages not on Snowflake Anaconda channel | **VERIFIED** — all packages confirmed available (OTel 1.38.0, gRPC 1.74.1). No fallback needed. Re-verify if pinning to newer versions. |
 | gRPC egress blocked in some consumer environments | Document network requirements clearly; provide clear error messaging if connectivity fails. |
 | Security scan rejects due to CVE in dependency | **ACTIVE**: `protobuf==6.33.0` has [CVE-2026-0994](https://nvd.nist.gov/vuln/detail/CVE-2026-0994) (HIGH). Fix is `>=6.33.5`, not yet on Snowflake channel as of 2026-02-11 but expected imminently. Pin `>=6.33.5` and re-verify before submission. Maintain quarterly audit cadence for all deps. |
-| App rejected as "pass-through" because core function sends data externally | Ensure Streamlit UI, pipeline health dashboard, and configuration all deliver substantive in-Snowflake value beyond just forwarding data. |
+| App rejected as "pass-through" because core function sends data externally | Ensure Streamlit UI, Observability health page, and configuration all deliver substantive in-Snowflake value beyond just forwarding data. |
 
 ---
 
@@ -2819,16 +2710,11 @@ All packages must be available on the [Snowflake Anaconda Channel](https://repo.
 - `grpcio==1.74.1` — gRPC transport layer (explicit pin to avoid version conflicts with OTel)
 - `protobuf>=6.33.5` — Protocol Buffers serialization (explicit pin to avoid version conflicts with OTel/gRPC). **CVE-2026-0994 (HIGH)**: versions `<6.33.5` have a DoS vulnerability in `json_format.ParseDict()` ([NVD](https://nvd.nist.gov/vuln/detail/CVE-2026-0994)). Fixed in `6.33.5` ([PR #25239](https://github.com/protocolbuffers/protobuf/pull/25239)). As of 2026-02-11 the Snowflake Anaconda Channel only has `6.33.0`; `6.33.5` is expected imminently ([snowpark-python#4056](https://github.com/snowflakedb/snowpark-python/issues/4056)). Re-verify and pin exact version before first `DISTRIBUTION=EXTERNAL` submission.
 
-**HTTP Client & Retry:**
-- `httpx==0.28.1` — Modern HTTP client with HTTP/2 support for Splunk HEC exports
-- `tenacity==9.1.2` — Unified retry logic for HEC HTTP exports with exponential backoff, jitter, and custom exception handling (OTLP/gRPC uses its own built-in retry). Also replaces the role of `httpx-retry` (not available on Snowflake Anaconda Channel).
-- **Note on rate limiting**: Dedicated rate-limiting libraries (`httpx-ratelimit`, `httpx_ratelimiter`, `httpx-limiter` and their backends `aiolimiter`, `pyrate-limiter`) are **not available** on the Snowflake Anaconda Channel. The app implements a lightweight in-app token-bucket rate limiter — a standard algorithm that refills tokens at a fixed rate and blocks/delays requests when the bucket is empty. Configured at 400 req/s (80% of HEC's 500 req/s limit), it acts as a safety net. Actual HEC throughput during normal operation is ~0.01 req/s, so the limiter rarely activates.
-
 **Zero-Copy Staging:**
 - `python-xxhash==3.5.0` — Fast non-cryptographic hash (XXH3_128) for Event Table row identification in zero-copy failure tracking (computed in Python within stored procedures, not a Snowflake SQL function). **Important**: The Anaconda channel has two packages — `xxhash` (v0.8.0, lacks XXH3) and `python-xxhash` (v3.5.0, includes XXH3_128). The `environment.yml` must specify `python-xxhash`, not `xxhash`.
 
 **Data Serialization:**
-- `orjson==3.9.15` — Fast JSON serialization for ACCOUNT_USAGE data export to HEC
+- `orjson==3.9.15` — Fast JSON serialization for ACCOUNT_USAGE data transformation
 
 ### Key Transitive Dependencies (auto-resolved, listed for reference)
 
@@ -2862,12 +2748,11 @@ Snowflake supports [five methods for creating stored procedures](https://docs.sn
     RUNTIME_VERSION = '3.13'
     PACKAGES = ('snowflake-snowpark-python==1.9.0', 'opentelemetry-sdk==1.38.0',
                 'opentelemetry-exporter-otlp-proto-grpc==1.38.0', 'grpcio==1.74.1',
-                'httpx==0.28.1', 'tenacity==9.1.2', 'orjson==3.9.15')
-    IMPORTS = ('/python/event_table_collector.py', '/python/otlp_export.py', '/python/hec_export.py')
+                'orjson==3.9.15')
+    IMPORTS = ('/python/event_table_collector.py', '/python/otlp_export.py')
     HANDLER = 'event_table_collector.main'
     EXTERNAL_ACCESS_INTEGRATIONS = (reference('splunk_eai_ref'))
-    SECRETS = ('splunk_otlp_token' = reference('splunk_otlp_secret_ref'),
-               'splunk_hec_token' = reference('splunk_hec_secret_ref'))
+    SECRETS = ('otlp_pem_cert' = reference('otlp_pem_certificate_secret_ref'))
     EXECUTE AS OWNER;
   ```
 - Per [setup script best practices](https://docs.snowflake.com/en/developer-guide/native-apps/creating-setup-script#best-practices-when-creating-the-setup-script): use `CREATE OR REPLACE` (idempotent for install/upgrade), always qualify with target schema.
@@ -2892,9 +2777,9 @@ All app procedures are **permanent** (not `TEMP`) and use **`EXECUTE AS OWNER`**
 
 | Procedure | Parameters | Called By | Needs EAI/Secrets | Purpose |
 |---|---|---|---|---|
-| `_internal.event_table_collector` | — | Triggered task (stream-driven) | Yes (OTLP + HEC) | Read Event Table streams, export spans/metrics via OTLP/gRPC, logs via HEC |
-| `_internal.account_usage_source_collector` | `source_name VARCHAR` | Independent scheduled task (one per source) | Yes (HEC) | Query one ACCOUNT_USAGE governed view, export via HEC, record health metrics inline |
-| `_internal.volume_estimator` | — | Streamlit UI (on demand) | No | Estimate daily/monthly data volume per source |
+| `_internal.event_table_collector` | — | Triggered task (stream-driven) | Yes (OTLP) | Read Event Table streams, export all signals via OTLP/gRPC |
+| `_internal.account_usage_source_collector` | `source_name VARCHAR` | Independent scheduled task (one per source) | Yes (OTLP) | Query one user-selected ACCOUNT_USAGE source, export via OTLP/gRPC, record health metrics inline |
+| `_internal.volume_estimator` | — | Streamlit UI (on demand, post-MVP) | No | Estimate daily/monthly data volume per source |
 
 - Procedures that need external network access declare `EXTERNAL_ACCESS_INTEGRATIONS` and `SECRETS` in their DDL (bound at install via the reference mechanism).
 - Procedures that are purely internal (no egress) omit these clauses.
@@ -2938,7 +2823,7 @@ All app tasks use the **serverless compute model** — the `CREATE TASK` DDL omi
 
 **Python/Java support for serverless tasks** ([docs](https://docs.snowflake.com/en/user-guide/tasks-python-jvm)): serverless tasks can invoke Python stored procedures (with Snowpark) and UDFs — this is the pattern our app uses. All task `AS` clauses use `CALL _internal.<procedure>()` which invokes the Python handlers. This has been GA since September 2024.
 
-**Serverless cost tracking**: serverless task costs appear in `METERING_HISTORY` and `METERING_DAILY_HISTORY` views (Account Usage) with `service_type = 'SERVERLESS_TASK'` or `'SERVERLESS_TASK_FLEX'`. Per-task credit breakdown is available via `SERVERLESS_TASK_HISTORY` (both Information Schema table function and Account Usage view). The Pipeline Health Dashboard (Section 9) should surface these for consumer cost awareness.
+**Serverless cost tracking**: serverless task costs appear in `METERING_HISTORY` and `METERING_DAILY_HISTORY` views (Account Usage) with `service_type = 'SERVERLESS_TASK'` or `'SERVERLESS_TASK_FLEX'`. Per-task credit breakdown is available via `SERVERLESS_TASK_HISTORY` (both Information Schema table function and Account Usage view). The Observability health page (Section 9) should surface these for consumer cost awareness.
 
 ### Task Types Used
 
@@ -2969,7 +2854,7 @@ CREATE OR REPLACE TASK _internal.event_table_export_task
 
 #### 2. Serverless Standalone Scheduled Tasks (ACCOUNT_USAGE Pipeline)
 
-**Purpose**: Independently collect and export each enabled ACCOUNT_USAGE governed view on a source-specific schedule, with inline health recording.
+**Purpose**: Independently collect and export each enabled ACCOUNT_USAGE user-selected source on a source-specific schedule, with inline health recording.
 
 **Key characteristics** ([tasks docs](https://docs.snowflake.com/en/user-guide/tasks-intro)):
 - Each source gets its own standalone scheduled task with a `SCHEDULE` aligned to the source's Snowflake latency (see Section 7.8).
@@ -3021,7 +2906,7 @@ Post-MVP sources use their own cadence (e.g., `SCHEDULE = '60 MINUTES'` for LOGI
 Tasks start in the **SUSPENDED** state upon creation ([docs](https://docs.snowflake.com/en/user-guide/tasks-intro#define-schedules-or-triggers)). The `setup.sql` script follows this lifecycle:
 
 1. **Create procedures** — all stored procedures must exist before tasks reference them.
-2. **Create governed views and streams** — governed views over Event Tables (and ACCOUNT_USAGE sources) must exist before streams are created on them; streams must exist before triggered tasks reference them.
+2. **Create streams on user-selected sources** — streams on Event Table sources (and ACCOUNT_USAGE sources) must exist before triggered tasks reference them.
 3. **Create tasks** — `CREATE OR REPLACE TASK` for all tasks (triggered and standalone scheduled). All created in SUSPENDED state.
 4. **Resume each task individually** — each task is resumed independently after creation.
 
@@ -3109,7 +2994,7 @@ A suspended task simply stops running on its schedule. Other sources are unaffec
 
 ### Task Observability
 
-Tasks provide built-in observability that our Pipeline Health Dashboard (Section 9) leverages:
+Tasks provide built-in observability that our Observability health page (Section 9) leverages:
 
 | View/Function | Scope | What It Shows |
 |---|---|---|
@@ -3135,7 +3020,7 @@ Tasks provide built-in observability that our Pipeline Health Dashboard (Section
 
 ### Operational Considerations
 
-**Auto-suspend on consecutive failures**: the `SUSPEND_TASK_AFTER_NUM_FAILURES` parameter (default 10) automatically suspends a task after consecutive failures. This prevents runaway serverless compute costs. The Pipeline Health Dashboard should surface suspended tasks prominently so the consumer can investigate and resume.
+**Auto-suspend on consecutive failures**: the `SUSPEND_TASK_AFTER_NUM_FAILURES` parameter (default 10) automatically suspends a task after consecutive failures. This prevents runaway serverless compute costs. The Observability health page should surface suspended tasks prominently so the consumer can investigate and resume.
 
 **Manual retry**: use `EXECUTE TASK _internal.query_history_collector RETRY LAST` to retry a specific source task from the last failed run ([docs](https://docs.snowflake.com/en/sql-reference/sql/execute-task)). This is useful for operators recovering from transient Splunk outages.
 
