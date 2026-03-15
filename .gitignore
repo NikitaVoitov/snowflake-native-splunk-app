@@ -33,6 +33,7 @@ ENV/
 .cursor/
 .mcp
 mcp.json
+.playwright-mcp/
 .vscode/
 .idea/
 *.swp
