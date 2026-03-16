@@ -4,7 +4,7 @@
 # project_key: NOKEY
 # tracking_system: file-system
 # story_location: _bmad-output/implementation-artifacts
-# total_stories: 25
+# total_stories: 28
 # total_sprints: 8
 
 # STATUS DEFINITIONS:
@@ -39,15 +39,17 @@
 #
 # DEPENDENCY CHAIN (critical path):
 # =================================
-#   Epic 6 (OTLP module) → Epic 5 (collectors import OTLP) → Story 4.3 (activation creates
-#   tasks that call collectors) → Epic 7 (health needs running pipelines)
+#   Epic 4 (OTLP export foundation) → Epic 5 (collectors use OTLP foundation)
+#   → Epic 6 (activation provisions tasks and turns on end-to-end flow) → Epic 7
+#   (health needs running pipelines)
 #
-#   Epics 2 + 3 (UI config) have no dependency on Epics 5 + 6 (backend) and
-#   vice versa — they converge at Story 4.3 (the integration point).
+#   Epics 2 + 3 (UI config) remain independent from Epics 4 + 5 (backend
+#   foundations) until Epic 6, where setup, governance, and active pipelines
+#   converge into the MVP integration point.
 #
-#   Implementation order: 1 → 2 → 3 → 6 → 5 → 4 → 7 → 8
-#   This front-loads user-visible UI so Maya sees progress early, then builds
-#   backend infrastructure, then ties everything together at the MVP milestone.
+#   Implementation order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8
+#   This preserves the intended sprint flow while aligning epic numbering with
+#   the actual dependency order and removing forward-dependency workarounds.
 
 generated: 2026-03-15
 last_updated: 2026-03-16
@@ -145,16 +147,16 @@ sprints:
         retrospective: optional
 
   # ─────────────────────────────────────────────────────────────────────
-  # SPRINT 4: OTLP export pipeline
+  # SPRINT 4: Splunk-compatible OTLP export foundation
   # ─────────────────────────────────────────────────────────────────────
   sprint-4:
     status: planned
-    goal: "OTLP gRPC module can send spans, logs, and metrics to Splunk with retry and failure handling"
+    goal: "Sam and Ravi can rely on a secure OTLP export foundation with correct telemetry contract and deterministic failure handling"
     deliverable: >
-      A reusable OTLP gRPC export module with module-level exporter init,
-      TLS support (including custom PEM), span/log mapping with Splunk-ready
-      OTel conventions, and automatic retry for transient failures with
-      terminal failure recording. Collectors (Sprint 5) will import this module.
+      A reusable OTLP export foundation exists with module-level exporter
+      initialization, TLS support (including custom PEM secrets), Splunk-ready
+      Event Table contract mapping, and deterministic retry or terminal failure
+      handling. Sprint 5 collectors consume this foundation directly.
     acceptance_test: >
       Integration test: initialize exporter with test endpoint → send a batch
       of span data → verify arrival in Splunk with correct db.*/snowflake.*
@@ -162,32 +164,33 @@ sprints:
       permanent error → verify terminal failure recorded in _metrics.pipeline_health.
     depends_on: [sprint-1]
     note: >
-      Backend infrastructure sprint — not user-visible in the UI, but fully
-      testable via integration tests. Required before collectors (Sprint 5) and
-      activation (Sprint 6) can produce end-to-end results.
+      Foundation sprint for secure OTLP delivery and telemetry contract
+      correctness. Primarily integration-tested, but explicitly tied to user
+      outcomes for Sam and Ravi.
     epic:
-      epic-6:
-        name: "OTLP export and Splunk-ready telemetry"
-        tags: [Backend]
+      epic-4:
+        name: "Splunk-compatible OTLP export foundation"
+        tags: [Backend, Integration, Contract]
         status: backlog
         stories:
-          6-1-otlp-grpc-exporter-module: backlog
-          6-2-event-table-span-and-log-mapping: backlog
-          6-3-retry-and-terminal-failure-handling: backlog
+          4-1-secure-otlp-export-foundation: backlog
+          4-2-splunk-compatible-telemetry-contract: backlog
+          4-3-deterministic-otlp-retry-and-terminal-failure-handling: backlog
         retrospective: optional
 
   # ─────────────────────────────────────────────────────────────────────
-  # SPRINT 5: Collection handlers process telemetry
+  # SPRINT 5: Incremental telemetry collection pipelines
   # ─────────────────────────────────────────────────────────────────────
   sprint-5:
     status: planned
-    goal: "ET and AU collector procedures read data, filter, map, export via OTLP module, and record health"
+    goal: "Sam can rely on Event Table and ACCOUNT_USAGE collection pipelines that incrementally prepare and export telemetry"
     deliverable: >
-      Two Python stored-procedure handlers: the Event Table collector reads
-      from a stream, applies entity discrimination, batches via to_pandas_batches(),
-      exports via the OTLP module (Sprint 4), and records health. The
-      ACCOUNT_USAGE collector reads with watermark + overlap, deduplicates,
-      maps to OTLP log/event format, and updates watermark.
+      Two collection pipelines are implemented. The Event Table collector reads
+      from a stream, applies entity discrimination, batches via
+      to_pandas_batches(), exports via the Sprint 4 OTLP foundation, and
+      records health. The ACCOUNT_USAGE collector reads with watermark +
+      overlap, deduplicates, exports via the OTLP foundation, and updates
+      watermark independently per source.
     acceptance_test: >
       Integration test: create test stream with sample ET data → run ET collector →
       verify entity filter applied → verify batch exported → verify stream advanced →
@@ -196,21 +199,21 @@ sprints:
       verify watermark/overlap/dedup → verify OTLP export → verify watermark updated.
     depends_on: [sprint-4]
     note: >
-      Backend infrastructure sprint — not user-visible in the UI, but fully
-      testable via integration tests against a dev Snowflake schema.
-      Story 4.3 (Sprint 6) will create the tasks that invoke these handlers.
+      Pipeline foundation sprint. These procedures are directly testable through
+      integration harnesses before Sprint 6 provisions the Snowflake tasks that
+      invoke them automatically.
     epic:
       epic-5:
-        name: "Collection pipeline handlers"
-        tags: [Backend]
+        name: "Incremental telemetry collection pipelines"
+        tags: [Backend, Data Pipeline]
         status: backlog
         stories:
-          5-1-event-table-collector-procedure: backlog
-          5-2-account-usage-collector-procedure: backlog
+          5-1-incremental-event-table-collection-and-export: backlog
+          5-2-incremental-account-usage-collection-and-export: backlog
         retrospective: optional
 
   # ─────────────────────────────────────────────────────────────────────
-  # SPRINT 6: End-to-end — data flows to Splunk  🎯 MVP MILESTONE
+  # SPRINT 6: Governance review and export activation  🎯 MVP MILESTONE
   # ─────────────────────────────────────────────────────────────────────
   sprint-6:
     status: planned
@@ -228,21 +231,25 @@ sprints:
       verify streams and tasks exist in Snowflake → wait one cycle → verify
       data in Splunk → Getting Started shows 4/4 → navigate away → Getting
       Started removed from sidebar.
-    depends_on: [sprint-2, sprint-3, sprint-5]
+    depends_on: [sprint-2, sprint-3, sprint-4, sprint-5]
     milestone: MVP
     note: >
-      This is the integration point where all prior work converges. After this
-      sprint, the complete first-time setup flow works end-to-end and telemetry
-      is flowing from Snowflake to Splunk.
+      This is the MVP integration sprint where setup, governance, OTLP export,
+      and collector foundations converge. After this sprint, the first-time
+      setup flow works end to end and telemetry is flowing from Snowflake to
+      Splunk.
     epic:
-      epic-4:
-        name: "Data governance review and activation"
+      epic-6:
+        name: "Data governance review and export activation"
         tags: [Full-stack, Integration]
         status: backlog
         stories:
-          4-1-data-governance-page: backlog
-          4-2-governance-disclosure-and-acknowledgement: backlog
-          4-3-activate-export-provisioning: backlog
+          6-1-data-governance-page: backlog
+          6-2-governance-disclosure-and-acknowledgement: backlog
+          6-3-activation-confirmation-ux: backlog
+          6-4-event-table-export-provisioning: backlog
+          6-5-account-usage-task-provisioning: backlog
+          6-6-activation-completion-and-onboarding-transition: backlog
         retrospective: optional
 
   # ─────────────────────────────────────────────────────────────────────
