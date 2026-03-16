@@ -18,10 +18,14 @@ entities:
     stage: stage_content.app_stage
     manifest: app/manifest.yml
     artifacts:
-      - src: app/*
-        dest: ./
-      - src: app/python/*
-        dest: python/
+      - src: app/manifest.yml
+        dest: manifest.yml
+      - src: app/setup.sql
+        dest: setup.sql
+      - src: app/README.md
+        dest: README.md
+      - src: app/environment.yml
+        dest: environment.yml
       - src: app/streamlit/*
         dest: streamlit/
     meta:
@@ -33,4 +37,4 @@ entities:
     type: application
     from:
       target: splunk_observability_dev_pkg
-    debug: true   # Enable debug mode during development
+    debug: false  # manifest_version: 2+ requires session debug mode instead

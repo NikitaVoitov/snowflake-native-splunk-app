@@ -1,11 +1,13 @@
 # Splunk Observability for Snowflake
 
-Export Snowflake-native telemetry to Splunk backends for unified observability.
+Export Snowflake-native telemetry to Splunk via OTLP/gRPC for unified observability.
 
 ## What This App Does
 
-- **Distributed Tracing Pack**: Exports Event Table spans, metrics, and logs to Splunk Observability Cloud (OTLP/gRPC) and Splunk Enterprise/Cloud (HEC HTTP).
-- **Performance Pack**: Exports QUERY_HISTORY, TASK_HISTORY, COMPLETE_TASK_GRAPHS, and LOCK_WAIT_HISTORY to Splunk Enterprise/Cloud (HEC HTTP).
+- **Distributed Tracing Pack**: Exports Event Table spans, metrics, and logs to Splunk Observability Cloud via OTLP/gRPC.
+- **Performance Pack**: Exports QUERY_HISTORY, TASK_HISTORY, COMPLETE_TASK_GRAPHS, and LOCK_WAIT_HISTORY via OTLP/gRPC.
+
+All telemetry is sent to a remote OpenTelemetry Collector (Splunk distribution), which handles routing to Splunk Observability Cloud, Splunk Cloud, or Splunk Enterprise.
 
 ## Setup
 
@@ -18,18 +20,15 @@ Export Snowflake-native telemetry to Splunk backends for unified observability.
 
 | Privilege | Purpose |
 |---|---|
-| `IMPORTED PRIVILEGES ON SNOWFLAKE DB` | Read ACCOUNT_USAGE views |
+| `IMPORTED PRIVILEGES ON SNOWFLAKE DB` | Read ACCOUNT_USAGE views for cost, performance, and security monitoring |
 | `EXECUTE TASK` | Run scheduled and triggered tasks |
-| `EXECUTE MANAGED TASK` | Provision serverless compute |
-| `CREATE DATABASE` | Internal state storage |
-| `CREATE EXTERNAL ACCESS INTEGRATION` | Egress to Splunk endpoints |
+| `EXECUTE MANAGED TASK` | Provision serverless compute for tasks |
+| `CREATE EXTERNAL ACCESS INTEGRATION` | OTLP gRPC egress to Splunk endpoints |
 
-## Stored Procedures
+## Required References
 
-```sql
--- Trigger Event Table export manually (normally runs automatically via triggered task)
-CALL _internal.event_table_collector();
-
--- Estimate data volume for planning
-CALL _internal.volume_estimator();
-```
+| Reference | Type | Purpose |
+|---|---|---|
+| `CONSUMER_EVENT_TABLE` | TABLE | Event Table for reading telemetry data |
+| `SPLUNK_OTLP_SECRET` | SECRET | Splunk Observability access token for OTLP gRPC export |
+| `SPLUNK_EAI` | EXTERNAL_ACCESS_INTEGRATION | Allows OTLP gRPC egress from the app to Splunk |
