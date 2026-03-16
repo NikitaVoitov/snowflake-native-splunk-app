@@ -99,8 +99,9 @@ So that I can install from Marketplace and approve privileges without manual SQL
 
 ### Current state of existing files
 
-- `app/manifest.yml`: **Outdated** — contains CREATE DATABASE privilege, SPLUNK_HEC_SECRET reference, HEC mentions in version comment and descriptions. Treat as a starting point, not source of truth. Rewrite per architecture.
-- `app/setup.sql`: Mostly correct — has role, versioned schema, stateful schemas, grant. Needs callback stub procedures added. No tables (Story 1.2).
+- `app/manifest.yml`: **Done** — manifest_version 2, exactly four privileges (no CREATE DATABASE), three references (CONSUMER_EVENT_TABLE, SPLUNK_OTLP_SECRET, SPLUNK_EAI), zero HEC references. Aligned with architecture.
+- `app/setup.sql`: **Done** — application role `app_admin`, versioned schema `app_public`, stateful schemas `_internal`, `_staging`, `_metrics`, Streamlit placeholder `app_public.main`, three callback stub procedures with grants. Idempotent. No tables (Story 1.2).
+- `app/README.md`: **Done** — consumer-facing readme aligned with OTLP-only architecture; four privileges and required references tables; no HEC mentions.
 
 ### Development environment
 
