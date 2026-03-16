@@ -342,7 +342,7 @@ We design flows for the critical PRD journeys, mapped to our **Multi-Page App (S
 - Subtitle: **"for Snowflake"**
 
 **Sidebar footer:**
-- Version label: **"Native App v1.0.0"**
+- **"About"** link/button that opens a `st.dialog` modal containing: app version (e.g. "v1.0.0"), build info, documentation links, and support contact. No version string displayed directly on the sidebar.
 
 After onboarding is complete, only items 2–5 are shown (Observability health, Telemetry sources, Splunk settings, Data governance).
 
@@ -474,7 +474,7 @@ flowchart TD
 1. **Open app** → App loads with **Getting Started** if incomplete, or **Observability health** as default (home) if onboarding is done. User can switch to **Observability health** from the sidebar at any time; if no pipelines are configured, the empty state message is shown.
 2. **Scan helicopter view:** Observability health shows **destination health card** (OTLP status), **four aggregated KPI cards** (Sources OK, Rows exported 24h, Failed batches 24h, Avg freshness), an **export throughput trend chart**, a **category health summary table** (one row per content pack — Distributed Tracing, Query Performance, etc.), and a **recent errors feed** (if any errors in 24h). All green → Sam closes the app; check complete in ~3 seconds.
 3. **Drill down:** If "Failed batches" > 0 or a category is amber/red, Sam clicks the category row in the summary table → navigates to **Telemetry sources** page filtered to that category, where `st.data_editor` shows per-source status, freshness sparklines, recent-run scores, and error details. For root cause he follows the "View log" drill-down link or queries the app event table in Snowsight. High-level "what failed" on Observability health; per-source "where exactly" on Telemetry sources; "why" in Snowsight logs.
-4. **Optional:** Sam may adjust interval/batch size on **Telemetry sources** or change destinations on **Splunk settings**; typical daily use is Observability health only.
+4. **Optional:** Sam may adjust interval, overlap window, or batch size on **Telemetry sources**, or change destinations on **Splunk settings**; typical daily use is Observability health only.
 
 ```mermaid
 flowchart TD
@@ -553,9 +553,9 @@ The app uses the **Native Streamlit UI (Strict Compliance Mode)** defined in Ste
 - **Status & feedback:** `st.success`, `st.error`, `st.warning`, `st.info`, `st.spinner`, `st.progress`, `st.toast`, `st.balloons`
 - **Other:** `st.badge` for labels
 
-**Components needed for the app (from journeys):** Getting started tiles and hub; **Splunk settings** page with **Export settings** tab (OTLP endpoint, optional PEM certificate, Test connection, Save settings); **Telemetry sources** page (`st.data_editor` with per-source health columns, category headers with roll-up status, editable interval/batch, source discovery for ACCOUNT_USAGE + custom views + Event Tables); **Observability health** page (helicopter view: destination health card, aggregated KPIs via `st.metric`, export throughput trend chart, category health summary table with drill-down, recent errors feed); **Data governance** page (read-only `st.dataframe`: **enabled sources only**, columns Status, View name, Source type, Governance message per row, Sensitive columns per row; same category headers as Telemetry sources, no toggle); empty state.
+**Components needed for the app (from journeys):** Getting started tiles and hub; **Splunk settings** page with **Export settings** tab (OTLP endpoint, optional PEM certificate, Test connection, Save settings); **Telemetry sources** page (`st.data_editor` with per-source health columns, category headers with roll-up status, editable interval/overlap/batch, source discovery for ACCOUNT_USAGE + custom views + Event Tables); **Observability health** page (helicopter view: destination health card, aggregated KPIs via `st.metric`, export throughput trend chart, category health summary table with drill-down, recent errors feed); **Data governance** page (read-only `st.dataframe`: **enabled sources only**, columns Status, View name, Source type, Governance message per row, Sensitive columns per row; same category headers as Telemetry sources, no toggle); empty state.
 
-**Gap analysis:** No new primitive components. Gaps are composition and patterns: reusable Connection Card, Getting Started Tile, Empty State, **`st.data_editor`-based source table** (with category headers, status dots, freshness/recent-runs sparklines, editable interval/batch), **Observability health helicopter layout** (destination cards, KPI row, throughput chart, category summary, errors feed), and a **source discovery query** that enumerates default ACCOUNT_USAGE views plus custom views that reference them, plus Event Tables. Implemented as composed native components plus optional inline UI.
+**Gap analysis:** No new primitive components. Gaps are composition and patterns: reusable Connection Card, Getting Started Tile, Empty State, **`st.data_editor`-based source table** (with category headers, status dots, freshness/recent-runs sparklines, editable interval/overlap/batch), **Observability health helicopter layout** (destination cards, KPI row, throughput chart, category summary, errors feed), and a **source discovery query** that enumerates default ACCOUNT_USAGE views plus custom views that reference them, plus Event Tables. Implemented as composed native components plus optional inline UI.
 
 ---
 
@@ -681,7 +681,7 @@ The Telemetry sources page is the **primary operational view** for source config
 
 **Page header (from Figma):**
 - Title: **"Telemetry Sources"**
-- Subtitle: **"Configure monitoring packs and select data sources from Event Tables and ACCOUNT_USAGE views. Set polling intervals and batch sizes for each source."**
+- Subtitle: **"Configure monitoring packs and select data sources from Event Tables and ACCOUNT_USAGE views. Set polling intervals, overlap windows, and batch sizes for each source."**
 
 **Info banner:** `st.info()` with text: **"Enable categories and individual sources to start collecting telemetry. Custom views allow you to apply Snowflake masking and row-access policies to exported data."**
 
@@ -791,6 +791,16 @@ Each row in the `st.data_editor` represents one telemetry source (view or event 
 - Guardrails: if average run duration ≈ configured interval, show subtle warning icon.
 - Changing interval auto-recomputes SLA heuristics for status/lag thresholds.
 
+**9. Overlap** (editable numeric/text, ACCOUNT_USAGE sources only)
+- Column header: **"Overlap"**
+- Values shown as duration strings: e.g. "50m", "66m".
+- Editable via inline input or select.
+- **Purpose:** Controls the overlap window for watermark-based dedup. The overlap re-scans past the watermark to catch late-arriving rows (ACCOUNT_USAGE latency is variable — "up to X minutes" is a maximum, not a fixed delay). Rows already exported are deduplicated via natural key.
+- **Default:** `documented_max_latency × 1.1` (e.g. 50 min for QUERY_HISTORY with "up to 45 min" max latency).
+- **Guidance:** Admin can decrease if they observe faster latency in their account (minimizes re-scans) or increase as a safety margin. Smaller overlap = less redundant scanning but higher risk of missing late rows. Dedup always runs regardless of overlap size.
+- **Visibility:** Shown only for ACCOUNT_USAGE sources (poll-based pipeline). Hidden for Event Table sources (event-driven pipeline uses streams, no overlap needed).
+- Config key: `source.<source_name>.overlap_minutes`
+
 **Note:** Batch size column is not shown in the Figma design; may be hidden by default or deferred to post-MVP.
 
 **Optional columns** (hidden by default, available via `st.data_editor` built-in column menu):
@@ -802,7 +812,7 @@ Each row in the `st.data_editor` represents one telemetry source (view or event 
 
 ##### 4d. Evaluation timing
 
-Health is computed **only when the page loads or when the user manually refreshes**. No live polling or auto-refresh while the page is open. This keeps behavior predictable and avoids surprise state changes while the user is editing intervals or batch sizes; a reload is needed to see the latest task outcomes.
+Health is computed **only when the page loads or when the user manually refreshes**. No live polling or auto-refresh while the page is open. This keeps behavior predictable and avoids surprise state changes while the user is editing intervals, overlap windows, or batch sizes; a reload is needed to see the latest task outcomes.
 
 ##### 4e. Relationship to Data governance page
 
@@ -810,7 +820,7 @@ The **Data governance** page does **not** duplicate the full Telemetry sources t
 
 ##### 4f. Implementation
 
-- `st.data_editor` with `column_config`: `CheckboxColumn` (Enable poll), `TextColumn` (Status, View name, Source type, Errors), `LineChartColumn` or `BarChartColumn` (Freshness, Recent runs), `SelectboxColumn` (Interval), `NumberColumn` (Batch size).
+- `st.data_editor` with `column_config`: `CheckboxColumn` (Enable poll), `TextColumn` (Status, View name, Source type, Errors), `LineChartColumn` or `BarChartColumn` (Freshness, Recent runs), `SelectboxColumn` (Interval), `NumberColumn` (Overlap — ACCOUNT_USAGE only, hidden for Event Table rows), `NumberColumn` (Batch size).
 - Status dot and source-type chip can use inline HTML/CSS via `st.markdown(unsafe_allow_html=True)` in a custom cell renderer, or text + emoji as fallback.
 - Category headers: `st.expander` wrapping each category's `st.data_editor`; header text includes status dot (inline HTML or emoji), category name, count (n/m enabled), and `st.toggle` for the category enable/disable.
 - Source discovery: query `INFORMATION_SCHEMA.EVENT_TABLES` / `SHOW EVENT TABLES` for Distributed Tracing; query `INFORMATION_SCHEMA.VIEWS` + view definition parsing for ACCOUNT_USAGE custom views.
@@ -1319,7 +1329,7 @@ Now shows (Getting started permanently hidden after user navigates away):
 - **Top-level items:** Icon + text label. Active state has blue vertical border on the left.
 - **Active state:** Highlighted background + vertical blue border on the left (4px wide).
 - **Order:** Getting started (until complete, with "X/4" badge) → Observability health → Telemetry sources → Splunk settings → Data governance.
-- **Footer:** "Native App v1.0.0" version label at the bottom.
+- **Footer:** "About" link that opens a `st.dialog` modal with version, build info, and docs links.
 
 #### Getting Started progress (Wix-style)
 

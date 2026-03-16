@@ -1,8 +1,10 @@
 ---
-stepsCompleted: [step-01-init, step-02-discovery, step-03-success, step-04-journeys, step-05-domain, step-06-innovation, step-07-project-type, step-08-scoping, step-09-functional, step-10-nonfunctional, step-11-polish, step-12-complete]
+workflowType: 'prd'
+workflow: 'edit'
+stepsCompleted: [step-e-01-discovery, step-e-02-review, step-e-03-edit]
 status: complete
 inputDocuments:
-  - _bmad-output/planning-artifacts/product-brief-snowflake-native-splunk-app-2026-02-15.md
+  - _bmad-output/planning-artifacts/product-brief.md
   - _bmad-output/planning-artifacts/ux-design-specification.md
   - _bmad-output/planning-artifacts/splunk_snowflake_native_app_vision.md
   - _bmad-output/planning-artifacts/streamlit_component_compatibility_snowflake.csv
@@ -10,11 +12,12 @@ inputDocuments:
   - _bmad-output/planning-artifacts/event_table_streams_governance_research.md
   - _bmad-output/planning-artifacts/otel_semantic_conventions_snowflake_research.md
   - _bmad-output/planning-artifacts/event_table_entity_discrimination_strategy.md
-workflowType: 'prd'
+  - _bmad-output/planning-artifacts/prd-validation-report.md
+  - _bmad-output/planning-artifacts/Native_App_Approval_Process_Guide.md
 documentCounts:
   briefs: 1
   research: 4
-  projectDocs: 5
+  projectDocs: 7
   projectContext: 0
 classification:
   projectType: saas_b2b (Snowflake Native App)
@@ -22,6 +25,10 @@ classification:
   complexity: high
   projectContext: greenfield
 date: 2026-02-15
+lastEdited: 2026-03-15
+editHistory:
+  - date: 2026-03-15
+    changes: "Aligned PRD to validation findings, added Tom persona, normalized scope/journeys/requirements, and prepared Product Brief sync."
 ---
 
 # Product Requirements Document - snowflake-native-splunk-app
@@ -31,74 +38,90 @@ date: 2026-02-15
 
 ## Executive Summary
 
-**Splunk Observability for Snowflake** is a Snowflake Native App distributed via the Snowflake Marketplace that exports Snowflake telemetry — distributed traces, metrics, logs, and operational events — to Splunk Observability Cloud and Splunk Enterprise with zero external infrastructure. Install from Marketplace, configure in Streamlit, observe in Splunk — in under 15 minutes.
+**Splunk Observability for Snowflake** is a Snowflake Native App delivered through the Snowflake Marketplace that brings Snowflake telemetry into Splunk without requiring customers to stand up separate collection infrastructure. The MVP focuses on two capabilities: a **Distributed Tracing Pack** for Snowflake Event Table telemetry relevant to SQL and Snowpark compute, and a **Performance Pack** for selected `ACCOUNT_USAGE` telemetry, so teams can investigate Snowflake behavior inside the same Splunk workflows they already use for application and platform operations.
 
-**Product Differentiator:** The only observability bridge that runs entirely inside the consumer's Snowflake account using serverless compute, user-selected sources with clear governance guidance, and additive OTel semantic convention enrichment — replacing external OTel Collectors, DB Connect pipelines, and custom ETL with a single Marketplace install.
+**Product Differentiator:** The product does not invent a new telemetry protocol. It provides a better operating model: installation, configuration, and core execution stay on Snowflake; customers can export from either governed custom sources or default Snowflake sources; and the app makes governance implications explicit when default sources are chosen. This reduces operational toil, shortens time to first telemetry, and keeps the experience aligned with Snowflake Marketplace approval expectations.
 
-**Target Users:** Snowflake Administrators (Maya) who manage Snowflake accounts and need telemetry in Splunk, SREs (Ravi) who need distributed traces through the Snowflake boundary, and DevOps engineers (Sam) who monitor pipeline health.
+**Target Users:** **Maya** (Snowflake Administrator) activates the app and manages source selection, **Ravi** (SRE) uses exported telemetry to troubleshoot Snowflake-related incidents inside Splunk, **Sam** (DevOps / Operations Engineer) monitors pipeline health and diagnoses failures, and **Tom** (Security & Compliance / Marketplace Approval lead) validates release readiness, governance posture, and Marketplace approval readiness.
 
-**MVP Scope:** Distributed Tracing Pack (Event Table → OTLP/gRPC) and Performance Pack (ACCOUNT_USAGE → OTLP), with user-selected sources, Streamlit configuration UI (Getting Started, Observability health view, Telemetry sources, Splunk settings with OTLP export, Data governance page), and app operational logging.
+**MVP Scope:** Deliver first-value telemetry quickly, keep the core product experience on Snowflake, preserve Splunk relevance for traces and operational events, and make governance and approval constraints explicit rather than implicit.
 
-## Existing players
-
-
+**Architecture Note:** MVP remains constrained by Snowflake Native App and Marketplace rules: the core experience stays in Snowflake, Event Table and `ACCOUNT_USAGE` remain the primary source families, and exported telemetry must stay compatible with Splunk through an OTLP-capable delivery path.
 
 ## Success Criteria
 
-### User Success
+### User Outcomes
 
-| Criteria | Target | How We Know |
+| Outcome | Target | Measurement Method |
 |---|---|---|
-| **Time to first telemetry** | < 15 minutes from Marketplace install to first data visible in Splunk | Measured end-to-end: "Get" click → privilege binding → pack selection → first span/event in Splunk |
-| **Zero manual pipelines** | Replaces all manual Snowflake-to-Splunk data pipelines (DB Connect, custom ETL, OTel Collector scraping) | Customer self-reported before/after comparison |
-| **MTTR reduction** | 50% reduction in Mean Time to Resolution for Snowflake-related issues | Enabled by Splunk's cross-system correlation — Snowflake telemetry correlated with application, service, and infrastructure data |
-| **Context-switching eliminated** | SREs investigate Snowflake issues entirely within Splunk APM/Enterprise along with the rest of their non-Snowflake infra | Qualitative: end-to-end traces through Snowflake boundary visible in single Splunk view |
-| **Pipeline parity** | Export latency and reliability at least equal to equivalent OTel Collector-based pipelines | Benchmarked: Event Table → Splunk latency vs external OTel Collector → Splunk latency |
+| **Time to first telemetry** | `< 15 minutes` from Marketplace install to first data visible in Splunk | End-to-end install-to-first-data validation |
+| **No manual Snowflake-to-Splunk pipeline for MVP use cases** | Replaces DB Connect, custom ETL, or collector-only work for MVP tracing and performance use cases | Customer before/after comparison |
+| **Faster incident resolution** | `50%` reduction in MTTR for Snowflake-related incidents | Incident comparison for teams using the app |
+| **Unified investigation flow** | Snowflake context is visible inside Splunk alongside application and infrastructure signals | Validated through traced incident scenarios |
 
-**Emotional Success Moments:**
-- **Ravi (SRE):** Clicks a slow span in Splunk APM and sees it's a Snowflake UDF — with warehouse name, query ID, and execution context in span attributes. The Snowflake black box is gone.
-- **Maya (Admin):** Receives a Splunk alert at 10:15 AM about a 3x warehouse credit spike before anyone on the analytics team notices. She right-sizes the warehouse before finance sees the bill.
+### Business Outcomes
 
-### Business Success
+These remain business and GTM outcomes, not user journeys.
 
-| Metric | Target | Timeframe |
+| Outcome | Target | Timeframe | Measurement Method |
+|---|---|---|---|
+| **Marketplace listing live** | App listed and approved on Snowflake Marketplace | MVP launch | Review Marketplace listing status and Snowflake approval record |
+| **Active installs** | `5+` accounts with active pipelines | 6 months post-launch | Count consumer accounts with at least one enabled source and one successful pipeline run in the trailing 30 days |
+| **New customer acquisition** | At least `1` new Splunk customer via Snowflake Marketplace | 12 months post-launch | Review Marketplace-attributed closed-won account records |
+| **Marketplace partner milestones** | Milestone 1 and Milestone 2 deliverables completed | 3 months and 9 months post-listing | Verify milestone acceptance against the Snowflake partner program checklist |
+
+### Technical Outcomes
+
+| Outcome | Target | Measurement Method |
 |---|---|---|
-| **Marketplace listing live** | App listed and approved on Snowflake Marketplace | MVP launch |
-| **Active installs** | 5+ accounts with active pipelines | 6 months post-launch |
-| **New customer acquisition** | At least 1 new Splunk customer via Snowflake Marketplace channel | 12 months post-launch |
-| **Marketplace Partner Milestone 1** | Complete all deliverables → unlock Snowflake marketing support | 3 months post-listing |
-| **Marketplace Partner Milestone 2** | Complete all deliverables → unlock marketing funding + co-marketing | 9 months post-listing |
+| **Export success rate** | `>= 99.5%` successful batches | Pipeline health telemetry |
+| **Event Table export latency** | `< 60 seconds` from write to visibility in Splunk | End-to-end benchmark |
+| **`ACCOUNT_USAGE` freshness** | Within one polling cycle of the source's inherent latency | Source-to-Splunk validation |
+| **Pipeline uptime** | `99.9%` per enabled source | Uptime tracking |
+| **Happy-path completeness** | `100%` of rows exported when the destination is reachable | Reconciliation checks |
+| **Collector-path parity** | Latency and reliability at least equal to a comparable collector-based export path | Benchmark report from a side-by-side comparison against a comparable collector-based export path |
 
-### Technical Success
+`Collector-path parity` is a technical benchmark validated by benchmark evidence and is not treated as a standalone user journey outcome.
 
-| Criteria | Target | Measurement |
+### Release Readiness & Quality Gates
+
+These gates trace to **Tom** and define when the MVP is approval-ready.
+
+| Gate | Target | Measurement Method |
 |---|---|---|
-| **Export success rate** | >= 99.5% batches exported successfully (transport retries included) | `_metrics.pipeline_health` — rows_exported vs rows_collected |
-| **Event Table export latency** | < 60 seconds from Event Table write to data visible in Splunk | Stream trigger (30s) + export processing. Parity with OTel Collector. |
-| **ACCOUNT_USAGE freshness** | Data in Splunk within 1 polling cycle of Snowflake's inherent view latency | e.g., QUERY_HISTORY (45 min latency) in Splunk within ~75 min |
-| **Pipeline uptime** | 99.9% (< 8.7 hours downtime/year) | Per-source via last successful run timestamp |
-| **Zero data loss (happy path)** | 100% telemetry rows exported when Splunk endpoints are reachable | Stream checkpointing + watermark tracking |
-| **Security scan** | APPROVED status on all versions submitted for Marketplace | Automated scan via DISTRIBUTION=EXTERNAL |
-| **Zero P1/P2 bugs** | No Priority 1/2 defects open at Marketplace submission | Issue tracker |
-| **No critical/high CVEs** | All dependencies CVE-free at Critical/High severity | Dependency audit |
+| **Automated security review** | `APPROVED` on the submitted version | Snowflake security review status |
+| **Functional review readiness** | Reviewer can install, configure, and use the app from a separate consumer account without setup or privilege blockers | External consumer-account dry run |
+| **On-Snowflake core experience** | Majority of setup, configuration, and core functionality remains on Snowflake | Release checklist against Marketplace approval guidance |
+| **Release quality** | `0` open P1/P2 defects at submission | Defect review |
+| **Dependency hygiene** | `0` critical/high CVEs at submission | Dependency audit |
+| **Reviewer enablement** | README, test steps, sample data, and any required test credentials are complete and usable | Submission readiness checklist |
 
 ### Measurable Outcomes
 
 **3-Month Outcomes (MVP Launch):**
-- App live on Snowflake Marketplace with APPROVED security scan
-- Distributed Tracing Pack and Performance Pack fully operational
-- E2E user workflow verified across cross-account test installs
-- Marketplace Partner Milestone 1 content piece published
+
+| Outcome | Target | Measurement Method |
+|---|---|---|
+| Marketplace launch | App live on Snowflake Marketplace with an approved security review | Review listing status and Snowflake approval record |
+| MVP pack readiness | Distributed Tracing Pack and Performance Pack operational in consumer-account testing | Review consumer-account test report |
+| Workflow validation | End-to-end install, approval, configuration, and export workflows verified in a separate consumer-style account | Review external validation checklist |
+| Partner milestone content | Marketplace Partner Milestone 1 content piece published | Review published partner-marketing asset |
 
 **6-Month Outcomes:**
-- 5+ active installs with at least 1 Monitoring Pack enabled
-- 3 Joint Customer Win Wires submitted to Snowflake
-- Export latency benchmarked and documented vs OTel Collector baseline
+
+| Outcome | Target | Measurement Method |
+|---|---|---|
+| Active installs | `5+` installs with at least one Monitoring Pack enabled | Review active-pipeline account counts |
+| Joint wins | `3` Joint Customer Win Wires submitted to Snowflake | Count submitted win-wire records |
+| Competitive benchmark | Export latency benchmarked and documented against a comparable collector-based export path | Review published benchmark report from a side-by-side comparison |
 
 **12-Month Outcomes:**
-- At least 1 new Splunk customer acquired through Marketplace channel
-- Publicly referenceable Customer Success Story submitted
-- Post-MVP packs (Cost, Security) in development or released
+
+| Outcome | Target | Measurement Method |
+|---|---|---|
+| New customer acquisition | At least `1` new Splunk customer acquired through the Marketplace channel | Review Marketplace-attributed closed-won account records |
+| Customer story | Publicly referenceable Customer Success Story submitted | Review approved customer-story submission |
+| Post-MVP expansion | Post-MVP packs such as Cost or Security in development or released | Review product roadmap approval or released pack record |
 
 ## Product Scope
 
@@ -107,201 +130,121 @@ date: 2026-02-15
 **Target Ship Date:** Mid-March 2026 (1 month)
 
 **Core Deliverables:**
-1. **Distributed Tracing Pack** — Event Table telemetry scoped to **SQL/Snowpark compute** (stored procedures, UDFs/UDTFs, SQL queries) via entity filter (`snow.executable.type IN ('procedure','function','query','sql')`). Spans/metrics/logs → OTLP/gRPC to a remote OpenTelemetry collector (e.g. Splunk distribution). OTel DB Client `db.*` semantic conventions + custom `snowflake.*` namespace.
-2. **Performance Pack** — QUERY_HISTORY, TASK_HISTORY, COMPLETE_TASK_GRAPHS, LOCK_WAIT_HISTORY → OTLP/gRPC to the same remote OpenTelemetry collector. The collector routes data to Splunk Observability Cloud (traces/metrics) and Splunk Enterprise/Cloud (logs).
-3. **User-Selected Sources** — For each data source (Event Tables and ACCOUNT_USAGE), the user selects the telemetry source: either their own custom view (with masking/row access policies attached) or the default view/event table. The app does not create or maintain any views. Serverless tasks read or stream from the user selected sources. When the user selects a default ACCOUNT_USAGE view or event table, the **Data governance page** informs them that masking and row access policies cannot be applied to those sources and that they must create their own custom views to enforce governance.
-4. **Streamlit Configuration UI** — Five main pages via `st.navigation`: (1) **Getting Started** (tile hub with drill-down, visible until onboarding complete), (2) **Observability health** (helicopter view with destination health, aggregated KPIs, throughput chart, category summary, errors feed), (3) **Telemetry sources** (`st.data_editor` with category headers, per-source health columns, editable interval/batch), (4) **Splunk settings** (Export settings tab with single OTLP endpoint, optional PEM certificate, Test connection), (5) **Data governance** (read-only table of enabled sources with Status, View name, Source type, Governance message, Sensitive columns).
-5. **Observability Health Dashboard** — Helicopter view with destination health card (OTLP status), 4 aggregated KPI cards (Sources OK, Rows exported 24h, Failed batches 24h, Avg freshness), export throughput trend chart, category health summary table with drill-down to Telemetry sources, and recent errors feed. Per-source detail lives on Telemetry sources page. *(Volume estimator deferred to post-MVP.)*
-6. **App Operational Logging** — The app writes structured operational logs (errors, warnings, info, debug) to the consumer's account-level event table using Snowflake's Native App [event definition](https://docs.snowflake.com/en/developer-guide/native-apps/event-definition) framework (`log_level` and `trace_level` configured in `manifest.yml`). Consumers query the event table directly via Snowsight for pipeline debugging and error analysis. *(Streamlit Logging tab — verbosity selector, scrollable display, keyword search — deferred to post-MVP.)*
-7. **Dual-Pipeline Architecture** — Event-driven (User-Selected Source → Stream → Serverless Triggered Task) for Event Tables (stream on user's view or on event table); poll-based (User-Selected Source → Independent Serverless Scheduled Tasks + Watermarks) for ACCOUNT_USAGE (read from user's view or default view). Each ACCOUNT_USAGE source gets its own independent task with a source-specific schedule. Stale Event Table streams are auto-recovered by the app (drop/recreate stream on the selected source — data gap recorded in pipeline_health). All telemetry is exported via **single OTLP/gRPC endpoint** to a remote Splunk OTEL collector or Splunk Observability Cloud.
-8. **Marketplace-Ready Packaging** — manifest.yml v2, marketplace.yml, setup.sql, README.md, environment.yml, security scan APPROVED (manual scan on test build per Snowflake Marketplace [automated security scan workflow](https://docs.snowflake.com/en/developer-guide/native-apps/security-run-scan)).
+1. **Distributed Tracing Pack** — Export Snowflake Event Table telemetry relevant to SQL and Snowpark compute so Snowflake work can appear in Splunk investigations.
+2. **Performance Pack** — Export selected `ACCOUNT_USAGE` telemetry for query, task, and lock visibility in Splunk.
+3. **Source selection with governance clarity** — Let admins enable sources, choose either governed custom sources or default Snowflake sources, and understand the implications of each choice.
+4. **In-Snowflake configuration and activation** — Support install, approval, destination setup, source activation, and first-data validation from inside Snowflake.
+5. **Operational visibility** — Expose enough health and logging evidence for teams to monitor export health and troubleshoot failures.
+6. **Marketplace readiness** — Ship the packaging, documentation, testing evidence, and approval readiness needed for Snowflake security and functional review.
 
-**MVP Go/No-Go Gates:** 
-- GO gates:Functional (E2E workflows), Performance (latency parity with OTel Collector), Quality (zero P1/P2), Marketplace Compliance (security scan, enforced standards).
-- No-GO gates: slow telemetry data processing/export performance.
+**MVP Go/No-Go Gates:**
+- **Functional:** End-to-end install, approval, configuration, activation, export, governance disclosure, and pipeline monitoring workflows succeed in a separate consumer-style account.
+- **Performance:** Event Table and `ACCOUNT_USAGE` telemetry meet the latency and reliability targets defined in Success Criteria.
+- **Quality:** Tom confirms zero open P1/P2 defects and zero critical/high dependency CVEs at submission time.
+- **Marketplace Compliance:** Tom confirms the submitted version satisfies Snowflake security review, enforced standards, and reviewer-readiness requirements.
+
+### Out of Scope for MVP
+
+- Cost, Security, Data Pipeline, Openflow, and Cortex AI packs
+- Event Table telemetry outside MVP SQL and Snowpark compute scope, including SPCS and Streamlit service categories
+- In-app governance authoring, policy management, or an app-owned masking or classification engine
+- In-app log console, advanced governance intelligence, and volume estimation
+- Durable replay and zero-copy recovery for prolonged destination outages
+- A primary setup or control-plane experience that depends on leaving Snowflake
+- Direct destination families beyond the OTLP-compatible export path used for Splunk-aligned delivery
 
 ### Growth & Vision (Post-MVP)
 
 *Detailed phased roadmap with priorities and dependencies is documented in [Project Scoping & Phased Development](#project-scoping--phased-development).*
 
-**Phase 2 — Growth:** Streamlit Logging tab, enhanced Data governance page (classification awareness, policy detection), volume estimator, Cost Pack, Security Pack, zero-copy failure tracking, advanced Observability health dashboard.
+**Phase 2 — Growth:** Richer governance visibility, in-app log exploration, volume estimation, Cost Pack, Security Pack, Data Pipeline Pack, zero-copy failure tracking, and deeper operational reporting.
 
-**Phase 3 — Expansion:** Additional Event Table service categories (SPCS, Streamlit), Openflow Pack (Event Table telemetry with `RESOURCE_ATTRIBUTES:"application" = 'openflow'`), Cortex AI Pack (dedicated `AI_OBSERVABILITY_EVENTS` table with `gen_ai.*` conventions), bi-directional integration (Splunk alerts → Snowflake actions), multi-tenant scale (100+ concurrent installs). Integration with Cortex AI services.
+**Phase 3 — Expansion:** Additional Event Table service categories, Openflow Pack, Cortex AI Pack, broader integration patterns, and scale validation for larger install counts.
+
+**Architecture Note:** The app does not create or manage governed views; consumers decide whether to use custom governed sources or default Snowflake sources. MVP deliberately preserves two source families and one interoperability boundary: Event Table for tracing-oriented telemetry, `ACCOUNT_USAGE` for performance-oriented telemetry, and OTLP-compatible export into Splunk-aligned downstream flows.
+
+**UX Note:** Narrative sections describe the outcomes users achieve. Detailed page structure, widgets, and interaction patterns belong in the UX specification.
 
 ## User Journeys
 
-### Journey 1: Maya's First Day — Install, Configure, Observe (Happy Path)
+### Journey 1: Maya Activates the App and Reaches First Value
 
-**Persona:** Maya — Senior Snowflake Administrator, 50+ warehouses, hundreds of users across analytics, data engineering, ML, and application development teams.
+**Persona:** Maya — Snowflake Administrator responsible for setup, source selection, and governance choices.
 
-**Opening Scene:** It's Monday morning. Maya's inbox has three tickets from the analytics team about slow queries over the weekend, and her manager just forwarded an email from finance asking why last month's Snowflake bill was 40% higher than projected. She sighs — her morning ritual of manually querying ACCOUNT_USAGE views in Snowsight begins. She opens QUERY_HISTORY, filters for long-running queries, exports to CSV, and pastes the results into a ticket. Then she opens WAREHOUSE_METERING_HISTORY and repeats the process for cost data. None of this reaches the Splunk dashboards her ops team actually monitors.
+1. Maya installs the app from the Snowflake Marketplace and completes the required approvals inside Snowflake.
+2. She configures the Splunk destination, enables the MVP packs she needs, and selects either governed custom sources or default Snowflake sources for each enabled feed.
+3. The app makes the governance tradeoff explicit: default sources are fast to activate, while custom sources are how her organization applies masking or row-level controls.
+4. Maya confirms first telemetry in Splunk and hands the resulting operational views to the teams that depend on them.
 
-**Rising Action:**
-1. Maya navigates to the Snowflake Marketplace and searches for "Splunk observability." She finds **Splunk Observability for Snowflake** and clicks "Get." The app installs in her account in seconds — no region restrictions, no external infrastructure.
-2. On first launch, the Streamlit UI shows the **Getting Started** page — a tile hub with progress indicator (e.g. "0/4 completed") in the sidebar. The Python Permission SDK presents native Snowsight privilege prompts — she clicks "Grant" for IMPORTED PRIVILEGES ON SNOWFLAKE DB.
-3. Maya drills into the **Splunk settings** tile → **Export settings** tab. She enters her **OTLP endpoint** (gRPC URL with port) pointing to her remote OpenTelemetry collector (e.g. Splunk distribution). Optionally she pastes a **PEM certificate** for a collector using a private/self-signed cert. **Test connection** validates OTLP reachability.
-4. Maya drills into the **Telemetry sources** tile. She sees the `st.data_editor` table grouped by category (Distributed Tracing, Query Performance & Execution). She enables sources, selects custom views or defaults, and adjusts intervals as needed.
-5. Behind the scenes: the app provisions networking (EAI + Network Rule) and creates **independent serverless scheduled tasks** — one per ACCOUNT_USAGE source, each reading from the **source Maya selected** (her custom view or the default ACCOUNT_USAGE view). Maya sees the **Observability health** page update — green status indicators appear in the category summary.
-6. The **Data governance** page shows the selected source per category (e.g. her custom view or default QUERY_HISTORY). When a default view is selected, the per-row governance message **informs** her that masking and row access policies cannot be applied to that source and that to enforce governance she must create her own custom view and select it as the source. When she has selected a custom view, policies on that view are honored automatically.
+**Outcome:** Snowflake telemetry becomes usable in Splunk within the onboarding window, without Maya building or operating a separate export pipeline.
 
-**Climax:** Seven minutes after clicking "Get," Maya opens Splunk. QUERY_HISTORY data is already flowing via her OTEL collector. She creates an alert for queries exceeding 5 minutes and a dashboard for warehouse credit consumption trends. The data that was trapped in Snowsight is now in her team's primary operational platform.
-
-**Resolution:** Maya's morning manual review is replaced by proactive Splunk alerts. The cost report that took her 45 minutes every Monday is now a live Splunk dashboard that updates automatically. When the next warehouse spike happens, she gets a Splunk alert at 10:15 AM — before anyone else notices — and right-sizes the warehouse in minutes.
-
-**Capabilities Revealed:** Marketplace install, Streamlit privilege binding (Permission SDK), Getting Started hub with drill-down, Telemetry sources `st.data_editor` with category headers and per-source health, per-source selection (custom view or default), per-source schedule interval display and inline modification, OTLP destination configuration (Splunk settings → Export settings tab), independent scheduled task provisioning (reading from user-selected source), Data governance page (per-row governance message when default selected), Observability health helicopter view.
+**UX Note:** Onboarding should emphasize approval, destination setup, source choice, governance clarity, and first-value confirmation.
 
 ---
 
-### Journey 2: Ravi Traces Through the Snowflake Boundary (Happy Path)
+### Journey 2: Ravi Traces an Incident Through the Snowflake Boundary
 
-**Persona:** Ravi — SRE on a platform engineering team. Responsible for the reliability of business-critical applications that depend on Snowflake — ML pipelines, real-time analytics APIs, Snowpark stored procedures.
+**Persona:** Ravi — SRE responsible for debugging business-critical systems that depend on Snowflake.
 
-**Opening Scene:** 2:47 AM. PagerDuty fires. The ML scoring API is returning 504s. Ravi opens Splunk Observability Cloud and pulls up the trace for a failed request. He follows the trace from the API gateway → Kubernetes service → ... and then the trace just stops. The next hop is a Snowflake stored procedure that runs a critical ML scoring UDF, but its spans are in a Snowflake Event Table — invisible from Splunk. Ravi context-switches to Snowsight, manually queries the Event Table by timestamp, and tries to correlate. It takes him 35 minutes to find the root cause: the UDF hit a warehouse queuing bottleneck.
+1. Ravi investigates a slow or failing service in Splunk and follows the trace into the Snowflake portion of the request path.
+2. He uses the exported Snowflake context to identify the slow query, stored procedure, or warehouse-related bottleneck without switching to a separate manual telemetry workflow.
+3. He confirms the cause, routes remediation to the right owner, and closes the incident faster.
 
-**Rising Action:**
-1. After the postmortem, Ravi's team installs **Splunk Observability for Snowflake** from the Marketplace (Maya, their admin, handled the install and privilege binding).
-2. Ravi opens the app and navigates to **Telemetry sources** (via sidebar). He sees the `st.data_editor` table with category headers. Under **Distributed Tracing**, he enables the Event Table (`SNOWFLAKE.TELEMETRY.EVENTS`). The UI displays an informational banner: "This release processes **SQL/Snowpark compute telemetry** (SQL queries, stored procedures, UDFs, UDTFs). Telemetry from other Snowflake services (SPCS, Streamlit, Cortex AI) is filtered out." The Event Table source shows its **default stream polling interval** (e.g., 30 seconds) — Ravi can modify it inline in the Interval column.
-3. Ravi navigates to **Splunk settings** → **Export settings** tab. He enters the **OTLP endpoint** (gRPC URL with port) pointing to their remote OTEL collector. **Test connection** validates reachability.
-4. Ravi selects the telemetry source on **Telemetry sources** — either **his team's governed view** (a custom view over the Event Table with policies attached) or the **event table** directly. The app creates an **append-only stream** on the selected source (view or table) and provisions a **serverless triggered task**. The pipeline's entity filter targets `snow.executable.type IN ('procedure','function','query','sql')` — only SQL/Snowpark compute telemetry is collected and transformed. Within minutes, spans begin flowing via OTLP/gRPC with OTel DB Client semantic conventions (`db.system.name = "snowflake"`, `db.namespace`, `db.operation.name`, `db.stored_procedure.name`, `snowflake.warehouse.name`, `snowflake.query.id`). If he selected the event table directly, the **Data governance** page per-row message informs him that masking cannot be applied on event tables and he can use a custom view for governance.
-5. Ravi opens Splunk APM. For the first time, he sees Snowflake stored procedure spans stitched into the same traces as the rest of his application — the Snowflake boundary is transparent. The spans carry `db.system.name = "snowflake"` and Splunk's DB monitoring views recognize them natively.
+**Outcome:** Snowflake is no longer a blind spot in end-to-end investigations; the same Splunk workflow covers both application and Snowflake context.
 
-**Climax:** Two weeks later, 3:12 AM. PagerDuty fires again. Ravi opens Splunk APM, pulls up the trace, and this time the trace continues *through* Snowflake. He clicks on the slow span — it's a Snowflake UDF. The span attributes show `snowflake.warehouse.name: ML_SCORING_WH`, `snowflake.query.id`, `db.operation.name: CALL`, `db.stored_procedure.name: ML_SCORING_UDF`, and duration breakdown. He sees the UDF waited 8 seconds in warehouse queue. Root cause identified in under 3 minutes — no Snowsight context-switching, no manual Event Table queries.
-
-**Resolution:** Ravi's MTTR for Snowflake-related incidents drops from 35+ minutes to under 5 minutes. The Snowflake black box is gone. His team adds Snowflake-side SLOs in Splunk APM — if any stored procedure exceeds its latency budget, they know immediately and can see exactly why.
-
-**Capabilities Revealed:** Telemetry sources `st.data_editor` with category headers and per-source health, per-source selection (user's governed view or event table), entity discrimination (SQL/Snowpark compute scope), stream polling interval display and inline modification, OTel DB Client convention enrichment (`db.*` + `snowflake.*`), Distributed Tracing Pack configuration, OTLP/gRPC destination setup (Splunk settings → Export settings tab), stream creation on selected source (view or table), triggered task provisioning, span export to Splunk via OTLP.
+**Architecture Note:** MVP Event Table coverage is intentionally limited to SQL and Snowpark compute telemetry that supports this tracing use case.
 
 ---
 
-### Journey 3: Maya & Ravi — When Things Go Wrong (Edge Cases)
+### Journey 3: Sam Monitors Health and Handles Failure States
 
-**Persona:** Maya and Ravi, now regular users of the app, face critical failure scenarios.
+**Persona:** Sam — DevOps / Operations Engineer responsible for day-to-day pipeline reliability.
 
-#### Scenario A — OTLP Endpoint Down (All Telemetry)
+1. Sam reviews app health to see whether enabled sources are current and whether the destination is healthy.
+2. When exports slow down or fail, he distinguishes between source freshness issues, destination problems, and recoverable pipeline incidents.
+3. He uses Snowflake-native operational evidence to troubleshoot the issue, document any resulting data gap, and restore confidence in the export path.
 
-**Opening Scene:** The remote OpenTelemetry collector (e.g. Splunk distribution) undergoes scheduled maintenance. The OTLP/gRPC endpoint is unreachable for 2 hours. All telemetry export is affected — both Performance Pack (ACCOUNT_USAGE) and Distributed Tracing Pack (Event Table spans/metrics/logs).
-
-**Rising Action:**
-1. The `account_usage_source_collector` for QUERY_HISTORY reads from the **selected source** (Maya's custom view or default ACCOUNT_USAGE.QUERY_HISTORY) and attempts to export via OTLP/gRPC. The OTel SDK's built-in gRPC retry kicks in — exponential backoff (1s, 2s, 4s, 8s, 16s, 32s — ~6 retries over ~63s) for transient gRPC errors (UNAVAILABLE, DEADLINE_EXCEEDED). All retries exhaust.
-2. Simultaneously, the `event_table_collector` reads from the stream on the **selected source** (user's view or event table) and attempts to export spans/metrics/logs via OTLP. Same OTel SDK retry pattern. All retries exhaust.
-3. Both failures are logged in `_metrics.pipeline_health` with error details (gRPC UNAVAILABLE or connection refused, timestamps, row counts, source name).
-4. **Critical MVP trade-off:** For the poll-based pipeline, the watermark advances — the ACCOUNT_USAGE batch is lost. For the event-driven pipeline, the stream offset advances (zero-row INSERT pattern) — the Event Table batch is lost.
-5. The **Observability health** page updates: the "Failed Batches" KPI card increments; the destination health card shows OTLP status as red; category summary shows affected categories with amber/red status.
-
-**Recovery:** OTLP endpoint recovers. Next scheduled runs succeed. Data from the outage window is permanently missing in MVP. Post-MVP: zero-copy failure tracking will record references for failed batches and a dedicated retry task will re-export them.
-
-**Climax:** Maya documents the data gaps and the MVP trade-off in her runbook. She sets up Splunk alerts on the `_metrics.pipeline_health` table to detect export failures in real time — so the team knows immediately rather than discovering gaps during incident investigation.
-
-**Resolution:** The team understands the MVP boundary: transport-level retries handle transient blips (seconds), but sustained outages (minutes to hours) create data gaps. The **Observability health** helicopter view is their early warning system. Post-MVP failure tracking will close this gap.
-
-#### Scenario B — Event Table Stream Goes Stale
-
-**Opening Scene:** Ravi's team temporarily suspends the app's triggered task during a major Snowflake migration. The suspension lasts longer than expected — 16 days. The append-only stream on the **selected source** (user's view or event table) exceeds `MAX_DATA_EXTENSION_TIME_IN_DAYS` (14 days) and goes stale.
-
-**Rising Action:**
-1. When the task is resumed, the triggered task detects the stale stream condition (`SYSTEM$STREAM_HAS_DATA()` returns an error).
-2. **Automatic recovery:** The app's task logic catches the staleness error, drops the stale stream, and recreates a new append-only stream on the **same selected source** (view or event table). The new stream starts from the current table state. (Only the stream is dropped and recreated — no view is created or altered by the app.)
-3. The task logs the recovery event (stream name, staleness detected timestamp, data gap window) to the app's event table log. The `_metrics.pipeline_health` table records the incident with `recovery_type = 'stream_auto_recreate'` and the data gap window.
-4. On the next task trigger, the new stream picks up new Event Table data and the pipeline resumes exporting to Splunk normally.
-
-**Climax:** The pipeline self-heals without manual intervention. The next time Ravi opens the Streamlit UI, the Observability health page shows a past incident note: "Stream auto-recreated on [date]. Data gap: [last consumed offset] → [stream recreation timestamp]." The detailed recovery log entry is queryable in the app's event table via Snowsight.
-
-**Resolution:** The app treats stream staleness as an **automatic recovery event**, not a manual intervention scenario. A task suspended for longer than `MAX_DATA_EXTENSION_TIME_IN_DAYS` results in a data gap that is acknowledged in the pipeline health record, but the stream is restored automatically — no user action required. The design assumes it is unrealistic to have a task suspended for 14+ days in normal operations, making this a rare edge case handled transparently.
-
-**Capabilities Revealed:** Transport-level retry (OTel SDK for gRPC), failure logging to pipeline_health, watermark/stream advancement on failure, status visualization in Observability health (destination card, KPIs, category summary), automatic stream staleness recovery (drop/recreate stream on selected source — no app-created views), data gap recording in pipeline_health, app event table logging for recovery events.
+**Outcome:** Operational issues become visible early, and the team can explain whether telemetry is delayed, partially missing, or fully healthy.
 
 ---
 
-### Journey 4: Ops Engineer — Monitoring App Health (Pipeline Debugging)
+### Journey 4: Maya Governs Sensitive Data and Owns Source Boundaries
 
-**Persona:** Sam — DevOps engineer on Maya's team. Not the installer or primary user, but responsible for ensuring the app's pipelines run reliably as part of the team's operational infrastructure.
+**Persona:** Maya — Snowflake Administrator responsible for governance choices on exported telemetry.
 
-**Opening Scene:** Sam's morning dashboard review includes a check on the Splunk Observability Native App. He opens the Streamlit UI — the app loads with **Observability health** as the default home page.
+1. Maya reviews which enabled sources can rely on default Snowflake access and which require consumer-governed custom sources.
+2. Her team applies masking, row access, or projection policies to custom sources when sensitive fields or rows must be controlled before export.
+3. When an underlying source schema changes, Maya updates the custom source her team owns and accepts any operational implications of that change.
 
-**Rising Action:**
-1. **Quick health check (Observability health — helicopter view):** Sam scans the page in 3 seconds:
-   - **Destination health card:** OTLP endpoint shows green status, last export 2 min ago.
-   - **Four aggregated KPI cards:** Sources OK (12/14), Rows exported 24h (45,198), Failed batches 24h (0), Avg freshness (0.3h). All green.
-   - **Export throughput trend chart:** Steady line, no dips.
-   - **Category health summary:** Distributed Tracing ● Green (3/5), Query Performance ● Green (6/9). All categories healthy.
-   - **Recent errors feed:** Empty (no errors in 24h). Good.
-2. **Investigating a dip:** Sam notices the "Rows exported 24h" KPI is lower than usual. He clicks the **Query Performance & Execution** row in the category summary → drills down to **Telemetry sources** page filtered to that category. The `st.data_editor` shows per-source detail: TASK_HISTORY exported only 12 rows. He checks the Freshness chart (flat near zero) and Recent runs (+10/10). Not an export problem — simply low task activity. Normal.
-3. **Investigating an export failure:** One morning, Sam sees a non-zero "Failed Batches (24h)" KPI and the destination card shows OTLP status as amber. The **Recent errors feed** shows: "OTLP export failed · 14:23 · gRPC UNAVAILABLE". He knows *what* failed, but needs *why*.
-4. **Diagnosing the root cause via Snowsight:** The app writes structured operational logs to the consumer's account-level event table using Snowflake's Native App [event definition](https://docs.snowflake.com/en/developer-guide/native-apps/event-definition) framework (`log_level`, `trace_level` configured in `manifest.yml`). Sam clicks "View all in Snowsight" from the errors feed (or opens a Snowsight worksheet) and queries the app's log entries, filtering by severity = ERROR. He finds: `"OTLP export failed: TLS handshake error — certificate verify failed for endpoint https://collector.corp.example.com:4317. Check that the OTLP endpoint uses a CA-signed certificate trusted by Snowflake's EAI network rule, or configure a custom PEM certificate in Splunk settings."` Root cause found in seconds.
+**Outcome:** Governance stays in Snowflake, source ownership stays with the consumer, and the app does not become a second policy engine.
 
-*(Post-MVP: A dedicated Streamlit Logging tab will provide an in-app experience — verbosity selector, scrollable log display, keyword search — so Sam won't need to leave the Streamlit UI for log analysis. Post-MVP: A volume estimator will help Sam project monthly throughput and plan capacity.)*
-
-**Concrete errors the app operational logs surface:**
-- OTLP failures: gRPC UNAVAILABLE, DEADLINE_EXCEEDED, TLS handshake error, connection reset, rate limiting, authentication failures
-- Processing failures: Snowpark DataFrame transformation errors, schema mismatch on selected view/source, unexpected NULL columns (projection policy), entity discrimination filter yielding zero rows
-- Stream/task issues: stream auto-recreated (staleness recovery), task auto-suspended after consecutive failures (`SUSPEND_TASK_AFTER_NUM_FAILURES`), task resumed after manual intervention
-
-**Climax:** Sam resolves the certificate issue by navigating to **Splunk settings** → **Export settings** tab and pasting the correct PEM certificate. **Test connection** succeeds. The next task run exports successfully. He documents the root cause in the team's runbook — no escalation to Maya required.
-
-**Resolution:** The combination of the **Observability health** helicopter view (what failed — destination card, KPIs, category summary, errors feed) and the app's structured event table logs queryable via Snowsight (why it failed) gives Sam a complete debugging workflow. **Observability health** is his 3-second daily health check; **Telemetry sources** drill-down shows per-source detail; Snowsight log queries are his go-to when something goes red.
-
-**Capabilities Revealed:** Observability health helicopter view (destination health card, 4 KPI cards, throughput chart, category summary with drill-down, recent errors feed), Telemetry sources `st.data_editor` with per-source health columns, `_metrics.pipeline_health` table queryability, app operational logging via Snowflake Native App event definitions (`manifest.yml` log_level/trace_level), structured log queries via Snowsight (severity filtering, keyword search). *(Post-MVP: Streamlit Logging tab, volume estimator.)*
+**Architecture Note:** The app never creates, refreshes, or repairs consumer-owned governance objects. It reads from the selected source and reports the consequences of that choice.
 
 ---
 
-### Journey 5: Seamless App Upgrade
+### Journey 5: Maya Upgrades the App Without Re-Starting from Scratch
 
-**Persona:** Maya — the app admin. Splunk publishes version V1_1 with the Cost Pack and bug fixes.
+**Persona:** Maya — Snowflake Administrator responsible for ongoing version adoption.
 
-**Opening Scene:** Maya receives a notification (or discovers during her next Streamlit UI visit) that a new version of the Splunk Observability app is available. Her Snowflake account's maintenance policy allows auto-upgrades during the configured maintenance window (weekdays 2:00-4:00 AM).
+1. Maya receives a new version through the consumer's Snowflake maintenance policy.
+2. The app upgrades without forcing her to re-enter configuration, rebuild source choices, or lose pipeline health history.
+3. She confirms that upgraded workflows are available and that telemetry collection resumes with expected continuity.
 
-**Rising Action:**
-1. At 2:15 AM, Snowflake auto-upgrades the app from V1_0 to V1_1. The setup script (`setup.sql`) re-executes. The app logs an INFO message: `"Upgrade started: V1_0 → V1_1"`.
-2. **Stateless objects rebuilt:** `CREATE OR ALTER VERSIONED SCHEMA app_public` cleanly replaces all stored procedures, UDFs, and the Streamlit UI with the new version. Snowflake's version pinning ensures any in-flight task executions complete against the old procedure code — no mid-execution code swap. Logged: `"Versioned schema app_public rebuilt"`.
-3. **Stateful objects preserved:** `_internal.config`, `_internal.export_watermarks`, `_metrics.pipeline_health` tables survive the upgrade — `CREATE TABLE IF NOT EXISTS` is idempotent. `ALTER TABLE ADD COLUMN IF NOT EXISTS` adds any new columns required by V1_1 (e.g., new config keys for the Cost Pack) without touching existing data. Logged: `"Stateful tables preserved. New columns added: [list]"` (or `"No schema changes"` if none).
-4. **Tasks recreated:** The app does not create or rebuild governed views — consumers select their own views or default sources. `CREATE OR REPLACE TASK` rebuilds each independent scheduled task with any new tasks (Cost Pack sources). Each task is resumed after creation — other sources are only briefly interrupted during their own replacement. Logged: `"Tasks recreated and resumed: [list]"`.
-5. **Application roles preserved:** Roles are never dropped, only augmented. Existing grants survive. New procedures receive grants from the setup script. Logged: `"Roles preserved. New grants applied: [list]"`.
-
-**Climax:** At 2:17 AM, the upgrade completes. The app logs: `"Upgrade complete: V1_1. Duration: 2m 3s. All pipelines resumed."` The pipelines resume with zero data loss — watermarks pick up exactly where they left off. The Streamlit UI now shows a new "Cost Pack" toggle in Monitoring Pack Selection.
-
-**Resolution:** Maya arrives at work, opens the Streamlit UI, and sees the Cost Pack is now available. She enables it, and METERING_HISTORY/WAREHOUSE_METERING_HISTORY data starts flowing to Splunk. Her existing Performance Pack and Distributed Tracing Pack pipelines were uninterrupted. Zero consumer action was required for the upgrade itself — only pack enablement for new features.
-
-**Capabilities Revealed:** Auto-upgrade via release directive, idempotent setup.sql design, versioned schema for stateless objects, version pinning for in-flight tasks, stateful table preservation (IF NOT EXISTS + ADD COLUMN IF NOT EXISTS), per-task recreation, watermark continuity across upgrades, consumer maintenance policy respect, structured upgrade logging (per-step INFO messages to app event table). (No app-created governed views — upgrade does not create or alter consumer views.)
+**Outcome:** Version adoption is operationally safe and low-friction for Maya.
 
 ---
 
-### Journey 6: Maya Configures Data Governance (Privacy & Compliance)
+### Journey 6: Tom Clears Security, Compliance, and Marketplace Approval
 
-**Persona:** Maya — Snowflake Administrator. Her security team has classified sensitive data across the account using Snowflake's automated classification and applied masking policies to PII columns. Maya needs to ensure the Splunk export pipeline respects these governance measures.
+**Persona:** Tom — Security & Compliance / Marketplace Approval lead responsible for release readiness.
 
-**Opening Scene:** Maya's CISO asks: "That new Splunk app — does it export raw QUERY_TEXT? Our queries contain customer email addresses and SSNs in WHERE clauses." Maya opens the Streamlit UI to investigate.
+1. Tom verifies that the core setup, configuration, and user experience remain on Snowflake and that the app's requested privileges match its actual behavior.
+2. He confirms the release passes a separate consumer-account install and configuration test, with complete README guidance, reviewer steps, and any required test data or credentials ready for functional review.
+3. He reviews governance messaging for default versus custom sources, ensures known quality and security gates are green, and only then submits the release for Marketplace approval.
 
-**Rising Action:**
-1. **Data governance page:** Maya navigates to the **Data governance** page via the sidebar. The page shows a read-only table of **enabled sources only** with five columns: **Status**, **View name**, **Source type**, **Governance message** (per row), and **Sensitive columns** (per-row list of columns that may contain sensitive info and should be masked/redacted via policy). When she has selected **default views or event tables**, the per-row governance message **informs** her clearly: "Default source — masking and row access policies cannot be applied; use a custom view for governance." When she has selected **her own custom views**, the message notes: "Custom view — Snowflake masking/row policies apply."
-2. **QUERY_TEXT privacy:** For QUERY_HISTORY, Maya sees the **Sensitive columns** column lists `QUERY_TEXT`, `USER_NAME`, `CLIENT_IP` — columns that may contain PII. She can select her organization's **custom view** (e.g. one with a masking policy on QUERY_TEXT) as the source on **Telemetry sources** — then no raw SQL leaves Snowflake. If she selects the default ACCOUNT_USAGE.QUERY_HISTORY view, the Data governance page per-row message informs her that policies cannot be applied to that view and she should create a custom view to enforce governance. She shows the page to her CISO; trust is established when she uses a custom view with masking.
-3. **Custom masking for QUERY_TEXT:** Maya's security team creates a custom view over QUERY_HISTORY, applies a regex-based masking policy to strip emails and SSNs from QUERY_TEXT, and Maya **selects that view** as the source on **Telemetry sources**. The app reads from it; Snowflake enforces the mask. No app-owned view or toggle.
-4. **Event Table governance:** For the Distributed Tracing Pack, if Maya (or Ravi) selects a **custom view** over the Event Table with masking on RECORD, RECORD_ATTRIBUTES, and/or VALUE, the app streams from that view and policies are honored. If they select the event table directly, the Data governance page per-row message informs that masking cannot be applied on event tables and they should use a custom view for value-level redaction. The **Sensitive columns** column shows which Event Table columns may contain sensitive data. Maya flags this for the security team.
-5. **Row-level filtering:** Maya's compliance team creates a custom view over QUERY_HISTORY with a row access policy that excludes internal service accounts, and Maya selects that view as the source on **Telemetry sources**. The app exports only rows that pass the filter. No app changes required.
+**Outcome:** Marketplace approval readiness is treated as a first-class product workflow, not a last-minute packaging task.
 
-**Climax:** Maya walks the CISO through the governance model: the app reads or streams from the **source the user selected** (custom view or default). When she uses her team's custom views with masking and row access policies, Snowflake enforces them at the platform layer. When default views or event tables are selected, the **Data governance** page clearly states per row that policies can't be applied and that custom views are required for governance. The **Sensitive columns** column helps identify which columns need masking policies. The CISO approves the app for production use.
-
-**Resolution:** Maya's team controls what data leaves Snowflake by creating custom views with Snowflake-native policies and selecting those views as the app's source. The app never creates or maintains views — it only informs when default sources are selected that governance policies cannot be applied there. "Leverage, Don't Replicate" — the app relies on the consumer's views and policies created using Snowflake built-in features.
-
-**Capabilities Revealed:** Data governance page (read-only table of enabled sources with Status, View name, Source type, per-row Governance message, per-row Sensitive columns), user-selected source per category (custom view or default) on Telemetry sources, consumer-created views with masking/RAP as source, "Leverage, Don't Replicate" design philosophy.
-
----
-
-### Journey 7: Event Table Schema Change — User-Owned View Responsibility
-
-**Persona:** Maya — Snowflake Administrator. Her development team adds a new column to their custom Event Table. The app uses a **user-selected source** (either the event table directly or the user's custom view over it).
-
-**Opening Scene:** Maya's dev team notifies her: "We just added a `deployment_environment` column to our Event Table to track prod vs staging spans. The Splunk export should pick this up automatically, right?"
-
-**Rising Action:**
-1. The dev team runs `ALTER TABLE custom_events ADD COLUMN deployment_environment VARCHAR`. The Event Table schema changes.
-2. **If the app's telemetry source is the event table directly:** The app streams from the table; the new column is included in the stream. The pipeline may need to handle the new column in transformation (schema evolution). No view to update — the app does not create views.
-3. **If the app's telemetry source is the user's custom view:** The user (or their DBA) is responsible for updating that view to include the new column (e.g. `CREATE OR REPLACE VIEW my_events_export AS SELECT *, deployment_environment FROM custom_events`). Note: `CREATE OR REPLACE VIEW` on the user's view will break any stream on that view — the user must drop/recreate the stream or the app's staleness recovery will do so, with a data gap. The app does not create, alter, or refresh the user's view; it only reads/streams from whatever source the user selected.
-
-**Climax:** Maya confirms with the DBA: when they use a custom view over the Event Table, they own schema changes to that view. The Data governance page and docs state that the app does not create or maintain views — if the underlying table schema changes, the user updates their view and re-applies policies as needed.
-
-**Resolution:** Clear ownership: the app never auto-creates or auto-refreshes governed views. Schema evolution of the Event Table is handled by streaming from the table directly (new columns flow through) or by the user updating their view and accepting stream drop/recreate if they use a view. No app-managed governed view registry or automatic view recreation.
-
-**Capabilities Revealed:** User-owned view responsibility for schema changes, no app-created views (no auto-refresh), stream on selected source (table or user's view), documentation/panel guidance that user must update their view if underlying table schema changes.
+**Architecture Note:** This journey is the explicit trace path for the security scan, functional review readiness, zero P1/P2 bug gate, critical/high CVE gate, and published collector-path benchmark used in release validation. Business growth targets remain non-journey outcomes.
 
 ---
 
@@ -309,14 +252,12 @@ date: 2026-02-15
 
 | Journey | Key Capabilities Required |
 |---|---|
-| **Maya Happy Path** | Marketplace install, Permission SDK privilege binding, Getting Started tile hub with drill-down, Telemetry sources `st.data_editor` with category headers and per-source health, per-source selection (custom view or default), per-source schedule interval display/modification, OTLP destination config (Splunk settings → Export settings tab), independent scheduled task provisioning (read from user-selected source), Data governance page (per-row governance message when default selected), Observability health helicopter view |
-| **Ravi Happy Path** | Telemetry sources `st.data_editor` with category headers, per-source selection (user's governed view or event table), entity discrimination (SQL/Snowpark scope), stream polling interval display/modification, OTel DB Client convention enrichment (`db.*` + `snowflake.*`), OTLP destination config (Splunk settings → Export settings tab), stream creation on selected source (view or table), triggered task provisioning, OTLP/gRPC span export |
-| **Edge Case: OTLP Down** | OTLP/gRPC transport-level retry (OTel SDK), pipeline reads from selected source, failure logging to pipeline_health, watermark advancement on failure, stream offset advancement on failure, status visualization in Observability health (destination card, KPIs, category summary) |
-| **Edge Case: Stale Stream** | Automatic stream staleness detection and auto-recovery (drop/recreate stream on selected source — no app-created views), data gap recording in pipeline_health, recovery event logging to app event table |
-| **Observability Health Monitoring** | Observability health helicopter view (destination health card, 4 KPIs, throughput chart, category summary with drill-down, recent errors feed), Telemetry sources per-source detail, pipeline_health table, app operational logging via Native App event definitions, structured log queries via Snowsight. *(Post-MVP: Streamlit Logging tab, volume estimator.)* |
-| **Seamless Upgrade** | Idempotent setup.sql, versioned schema, version pinning, stateful table preservation, per-task recreation, watermark continuity, application role preservation, structured upgrade logging (per-step INFO messages to app event table). No app-created governed views. |
-| **Data Governance** | Data governance page (read-only table of enabled sources with Status, View name, Source type, per-row Governance message, per-row Sensitive columns), user-selected source per category (custom view or default), consumer-created views with masking/RAP as source, "Leverage, Don't Replicate". *(Post-MVP: Full Governance tab with classification awareness, policy detection, consumer policy enumeration.)* |
-| **Event Table Schema Change** | User-owned view responsibility; app does not create or refresh views; when user's view is source, user updates view if underlying table schema changes; stream on selected source (table or user's view) |
+| **Maya First Value** | Marketplace install, privilege approval, destination setup, source selection, governance review, activation, first-value confirmation |
+| **Ravi Incident Investigation** | Event Table export for SQL/Snowpark compute, Splunk-compatible context enrichment, preserved source attributes, searchable Snowflake spans in Splunk |
+| **Sam Health & Recovery** | Destination health visibility, source freshness visibility, per-source inspection, structured operational logs, retry behavior, data gap reporting, automatic recovery signals |
+| **Maya Governance & Source Ownership** | Custom-source selection, governance disclosure, policy-respecting export behavior, user-owned source maintenance guidance |
+| **Maya Upgrade Continuity** | Upgrade continuity, preserved configuration and progress, upgrade event visibility |
+| **Tom Release Readiness** | Security review readiness, functional review readiness, enforced standards compliance, reviewer enablement, submission go/no-go authority |
 
 ## Technical & Platform Requirements
 
@@ -345,7 +286,7 @@ This product is a **Snowflake Native App** distributed via the Snowflake Marketp
 
 | Role | Name | Scope | Rationale |
 |---|---|---|---|
-| **App Admin** | `app_admin` | Full access to all app capabilities: configuration, pack management, destination setup, data governance, observability health, logging tab | A Snowflake administrator who installs a Marketplace app is inherently a privileged user. Adding viewer/operator roles adds complexity without clear value for MVP — the admin can share observability dashboards via Splunk instead. |
+| **App Admin** | `app_admin` | Full access to all app capabilities: configuration, pack management, destination setup, data governance, observability health, logging tab | A Snowflake administrator who installs a Marketplace app is inherently a privileged user. Adding viewer/operator roles adds complexity without clear value for MVP — Maya can share observability dashboards via Splunk instead. |
 
 **Privilege binding (via Python Permission SDK):**
 
@@ -360,7 +301,7 @@ This product is a **Snowflake Native App** distributed via the Snowflake Marketp
 
 | Context | Execution Model | Implication |
 |---|---|---|
-| Pipeline collectors (ACCOUNT_USAGE, Event Table) | `EXECUTE AS OWNER` (owner's rights) | Procedures run with app's privileges, not caller's. Governed view policies are enforced by Snowflake at the platform layer — the owner role sees masked data (safe default). |
+| Pipeline collectors (ACCOUNT_USAGE, Event Table) | `EXECUTE AS OWNER` (owner's rights) | Procedures run with app's privileges, not caller's. Policies on the selected custom source are enforced by Snowflake at the platform layer, so the owner role sees the governed result (safe default). |
 | Streamlit UI callbacks | Caller's rights | UI procedures run as the interactive user (admin). |
 
 #### 1.3 Subscription & Pricing Model
@@ -375,39 +316,48 @@ This product is a **Snowflake Native App** distributed via the Snowflake Marketp
 
 ### 2. Compliance & Regulatory
 
-#### 2.1 Snowflake Marketplace Compliance
+#### 2.1 Snowflake Marketplace Compliance & Release Readiness
 
-The app follows the Snowflake Marketplace application lifecycle — no independent compliance attestation (SOC 2, ISO 27001, etc.) is required for the app itself. Compliance requirements:
+This subsection is the canonical source for release constraints, approval mechanics, and Marketplace submission gates.
 
-| Requirement | How We Comply |
+| Requirement | Canonical Constraint / Decision |
 |---|---|
-| **Security scan (APPROVED)** | Manual scan on test build before submission, per Marketplace publishing workflow guidelines |
-| **DISTRIBUTION = EXTERNAL** | App package configured for Marketplace distribution; triggers automated security scan on every version |
-| **No hardcoded credentials** | All secrets stored in Snowflake Secrets (SECRET object); OTLP access tokens and PEM certificates never in code |
-| **Enforced standards compliance** | manifest.yml v2, setup.sql idempotent, no blocked functions in shared content |
-| **Content Security Policy (CSP)** | Streamlit UI complies with Snowflake's CSP restrictions — no external JS/CSS/fonts/images, no `unsafe_allow_html`, no third-party components |
+| **Security review gate** | Every release candidate must pass Snowflake's security review before Marketplace submission. If the automated scan is rejected, findings must be resolved and any required manual review completed before the version can proceed. |
+| **Functional review gate** | Only a security-approved application package or version may be attached to the Marketplace listing and submitted via **Submit for approval**. Marketplace Operations then validates installation, configuration, and end-to-end functionality from a new-consumer perspective. |
+| **Manifest and app-spec compliance** | `manifest.yml` uses `manifest_version: 2` and explicitly declares all required privileges. Any External Access Integration or other app-spec request must be surfaced through Snowflake's native consumer approval flow during install or upgrade. |
+| **Enforced build standards** | `setup.sql` must remain idempotent, shared content must avoid blocked functions, `DISTRIBUTION = EXTERNAL` must be set for Marketplace distribution, and the Streamlit UI must comply with Snowflake CSP restrictions. |
+| **Submission evidence** | Before submission, the candidate must be validated end-to-end in a consumer-style account, including install or upgrade flow, privilege approval flow, source selection, Event Table and/or `ACCOUNT_USAGE` pipeline execution, and OTLP export to Splunk. Reviewer credentials, sample data, and configuration steps must be prepared if functional review requires them. |
+| **Release-readiness owner** | **Tom is the owner of release readiness and approval submission.** Tom owns the go or no-go decision for `Submit for approval`, confirms the approved package or version, verifies enforced-standard checks, ensures listing metadata and contact details are current, and confirms the reviewer handoff material is complete. |
+| **Rejected review path** | If security review or functional review is rejected, the team must fix the issues in a new version or patch, re-run the required review gates, update the release directive to the approved version, and resubmit the listing. |
+| **Secret handling** | OTLP access tokens, certificates, and related connection material must be stored in Snowflake-approved secret mechanisms. No hardcoded credentials are permitted in app code, sample content, or listing artifacts. |
 
-#### 2.2 Data Privacy & Governance — "Leverage, Don't Replicate"
+#### 2.2 Data Privacy & Governance — User-Selected Source Model
 
-The app does NOT implement its own data classification or privacy enforcement engine. This is a **foundational design decision.** Snowflake's governance policies are enforced at the **platform layer** — below our application code. The app leverages Snowflake Horizon Catalog capabilities:
+The app does not create, manage, refresh, or recreate governed views. Governance is enforced at the Snowflake platform layer on the **user-selected source**.
 
-| Snowflake Capability | How the App Leverages It |
-|---|---|
-| **Automated sensitive data classification** (ML-based, semantic/privacy category tags) | *(Post-MVP)* App queries classification metadata (`TAG_REFERENCES`, `DATA_CLASSIFICATION_LATEST`) to populate the enhanced Data governance page. MVP: Data governance page shows enabled sources with per-row governance messages and sensitive columns. When default views/event tables are selected, informs that policies can't be applied. |
-| **Dynamic data masking** (column-level, role-based, tag-based) | When the user selects a **custom view** as the source, Snowflake enforces masking on that view automatically. The app does not create views or apply default masking. User creates views with masking and selects them as the source. |
-| **Row access policies** (row-level filtering) | When the user selects a custom view with RAP attached, Snowflake enforces it. User creates views with RAP and selects them as the source. Example: exclude internal service account queries. |
-| **Projection policies** (column blocking) | Consumer attaches projection policies to block specific columns from export. |
-| **Tag-based policy assignment** (scalable governance) | Policies assigned to tags propagate to all tagged columns automatically. The app reads `POLICY_REFERENCES` to show which policies are active. |
+| Source Type | What the App Supports | Governance Responsibility |
+|---|---|---|
+| **Custom source** | The consumer selects their own custom view over a supported Snowflake source, such as an `ACCOUNT_USAGE` view or Event Table. The app creates streams and tasks only against that selected source. | The consumer owns masking, row access, projection, tagging, and schema maintenance on the custom source. |
+| **Default source** | The consumer selects the default Snowflake source directly, such as `SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY` or `SNOWFLAKE.TELEMETRY.EVENTS`. | The app reads the default source as exposed by Snowflake and displays explicit governance guidance that policy enforcement requires a consumer-created custom source when the default source cannot carry the needed controls. |
+| **App-managed objects** | The app manages only its own operational objects: streams on the selected source, tasks, internal state tables, secrets, EAI objects, and OTLP export configuration. | The app never creates or alters consumer governance objects. |
 
-**Key constraint — blocked context functions:** In the Native App Framework, `IS_ROLE_IN_SESSION()`, `CURRENT_ROLE()`, and `CURRENT_USER()` return NULL in shared content and owner's-rights stored procedures. Masking policies that use role-based conditions always evaluate the NULL branch. This is actually the **desired behavior** for export use cases — the app always sees the masked data (safe default). Consumer guidance in the Streamlit UI explains this.
+**Blocked context-function constraint:** In Native App shared content and `EXECUTE AS OWNER` procedures, `IS_ROLE_IN_SESSION()`, `CURRENT_ROLE()`, and `CURRENT_USER()` may evaluate to `NULL`. Consumers must validate that masking and row-access logic on their custom source behaves correctly under that execution model. The app relies on Snowflake to enforce the resulting policy outcome; it does not replicate governance logic.
 
 #### 2.3 QUERY_TEXT Privacy (ACCOUNT_USAGE)
 
-`QUERY_TEXT` in QUERY_HISTORY is the highest-risk field — may contain literal PII values embedded in SQL (email addresses, SSNs, passwords in WHERE clauses). The app does not create views or apply default masking. **User selects the source:** a **custom view** (with masking on QUERY_TEXT) or the **default** ACCOUNT_USAGE.QUERY_HISTORY view. When the default is selected, the Data governance page informs the user that masking/row policies cannot be applied and they must create a custom view to enforce governance.
+`QUERY_TEXT` remains the highest-risk `ACCOUNT_USAGE` field because SQL text may contain literal PII, secrets, or business-sensitive values. The app never applies masking itself and never creates a governed view. For `QUERY_HISTORY` and similar exports, the supported patterns are:
 
-#### 2.4 Event Table Span/Log Attribute Privacy
+- **Custom source:** the consumer selects a custom view that masks, excludes, or otherwise governs `QUERY_TEXT` before export.
+- **Default source:** the consumer selects the default `ACCOUNT_USAGE` view and explicitly accepts that the app exports what Snowflake exposes. The Data governance page must state that governance controls for `QUERY_TEXT` require selecting a custom source.
 
-Span and log attributes (RECORD, RECORD_ATTRIBUTES, VALUE columns in Event Tables) are OBJECT/VARIANT type and may contain PII logged by consumer applications. Masking policies are **blocked on event tables directly**. If the user selects a **custom view** over the Event Table and attaches masking to RECORD, RECORD_ATTRIBUTES, and/or VALUE, Snowflake enforces it when the app streams from that view. If the user selects the event table directly, the Data governance page informs them that masking cannot be applied and they should use a custom view for value-level redaction.
+#### 2.4 Event Table Span / Log Attribute Privacy
+
+Event Table fields such as `RECORD`, `RECORD_ATTRIBUTES`, and `VALUE` may contain application-level PII or other sensitive payloads. Masking cannot be attached directly to the Event Table itself, so the supported patterns are:
+
+- **Custom source:** the consumer selects a custom view over the Event Table with any required masking, projection, or row filtering already applied by Snowflake.
+- **Default source:** the consumer selects the Event Table directly for low-latency streaming, with explicit Data governance guidance that value-level redaction requires a consumer-created custom source.
+
+The app may create an append-only stream on the selected source and export via OTLP, but it never creates, refreshes, or re-applies governance views or policies on the consumer's behalf.
 
 ### 3. Technical Constraints
 
@@ -422,7 +372,7 @@ The app **does not create or maintain governed views**. For each data source, th
 
 **When user uses their own view + stream (Event Table):** `CREATE OR REPLACE VIEW` on the user's view **breaks all streams** on it — offset is lost. Consumer documentation explains that policy changes should use `ALTER VIEW`; if they recreate the view, the app's stream staleness recovery (drop/recreate stream) will run with a data gap. The app never creates or alters the user's view.
 
-**Event Table schema changes:** If the user's view is the source and the underlying Event Table schema changes, the **user** is responsible for updating their view. The app does not implement governed view auto-refresh or a governed view registry.
+**Event Table schema changes:** If the user's view is the source and the underlying Event Table schema changes, the **user** is responsible for updating their view. The app does not implement custom-source auto-refresh or any app-managed source registry.
 
 #### 3.2 Entity Filtering — Event Table Telemetry Scope
 
@@ -568,13 +518,13 @@ The app does not configure downstream routing — that is the collector's respon
 
 ### 5. Risk Mitigations
 
-#### 5.1 Stream Breakage — Event Table Governed View
+#### 5.1 Stream Breakage — Consumer-Selected Event Table Custom Source
 
 | Risk | Severity | Mitigation |
 |---|---|---|
-| `CREATE OR REPLACE VIEW` on governed Event Table view breaks all streams (offset lost, unrecoverable) | **CRITICAL** | App upgrade process uses `ALTER VIEW` only. Consumer documentation prominently warns against view recreation. If stream becomes stale, app auto-recovers (drop/recreate stream, data gap recorded). |
-| First stream creation locks underlying Event Table (one-time change tracking setup) | **MEDIUM** | Schedule during low-activity period. One-time cost per Event Table. Documented in consumer setup guide. |
-| Secure views do NOT auto-extend retention (faster staleness) | **MEDIUM** | App uses non-secure views. Consumer guidance advises against `CREATE SECURE VIEW`. |
+| `CREATE OR REPLACE VIEW` on a consumer-selected custom source over the Event Table breaks all streams on that source (offset lost, unrecoverable) | **CRITICAL** | Consumer guidance requires `ALTER VIEW` for compatible changes. The app never creates or alters the consumer's custom source. If the stream becomes stale or broken, the app recreates the stream on the selected source, records the resulting data gap, and surfaces the incident in pipeline health. |
+| First stream creation enables change tracking on the underlying Event Table and may create a one-time operational lock or overhead event | **MEDIUM** | Schedule initial enablement during a low-activity window and document the one-time operational effect in setup guidance. |
+| Consumer selects a secure custom source over the Event Table, reducing effective stream retention and increasing staleness risk | **MEDIUM** | Recommend a non-secure custom source unless secure-view semantics are explicitly required. If a secure custom source is used, document the shorter retention and higher staleness risk. |
 
 #### 5.2 Stream Staleness
 
@@ -583,12 +533,13 @@ The app does not configure downstream routing — that is the collector's respon
 | Default Event Table staleness window (~14 days) | **MEDIUM** | Set `MAX_DATA_EXTENSION_TIME_IN_DAYS = 90` on user-created Event Tables during setup. For default Event Table (`SNOWFLAKE.TELEMETRY.EVENTS`), consume stream frequently (triggered task with 30s minimum interval). |
 | Task suspension longer than staleness window | **LOW** | **Automatic recovery:** The app detects the stale stream at task execution, drops and recreates the stream on the **selected source** (user's view or event table), records the data gap in `_metrics.pipeline_health`, and logs the recovery event to the app's event table. No manual user action required. The design assumes task suspension > 14 days is an exceptional edge case. |
 
-#### 5.3 Marketplace Delisting
+#### 5.3 Marketplace Approval / Release Readiness
 
 | Risk | Severity | Mitigation |
 |---|---|---|
-| Security scan failure on submitted version | **HIGH** | Manual security scan on test build before submission (allowed by Marketplace workflow). Fix all findings before formal submission. |
-| Non-compliance with Marketplace enforced standards | **MEDIUM** | Automated checks in CI: manifest.yml v2 validation, blocked function detection, `DISTRIBUTION=EXTERNAL` scan. |
+| Release candidate fails Snowflake security review | **HIGH** | **Tom owns release readiness.** No version is submitted until the candidate has passed the required security gate and all enforced-standard checks are green: `manifest_version: 2`, explicit privilege declarations, required app-spec approval flow, idempotent `setup.sql`, blocked-function compliance, `DISTRIBUTION = EXTERNAL`, and approved secret handling. |
+| Marketplace Operations functional review fails due to install, configuration, or reviewer-handoff gaps | **HIGH** | Tom owns the submission bundle: security-approved package or version, consumer-style install or upgrade test evidence, reviewer credentials or sample data if needed, accurate Marketplace contacts, and clear instructions for configuring Event Table and `ACCOUNT_USAGE` sources and OTLP destinations before `Submit for approval`. |
+| Review rejection delays launch | **MEDIUM** | Tom coordinates remediation, creates a new version or patch, re-runs the required Snowflake review gates, updates the release directive to the approved version, and resubmits the listing. |
 
 #### 5.4 Data Loss (MVP Trade-off)
 
@@ -601,11 +552,11 @@ The app does not configure downstream routing — that is the collector's respon
 
 | Risk | Severity | Mitigation |
 |---|---|---|
-| Consumer's role-based masking policies always hit NULL branch (blocked context functions in Native App) | **LOW** | This is the **desired behavior** for export — app always sees masked data when reading from consumer's view. Consumer guidance: use unconditional masking (regex scrubbing) on their custom view, not role-based conditions. |
-| Consumer applies `CREATE OR REPLACE VIEW` to their view (breaking streams) | **MEDIUM** | Documentation warns that view recreation breaks streams. App auto-recovers stale/broken streams (drop/recreate stream on selected source, data gap recorded). App does not create or alter consumer views. |
-| Projection policy blocks a column the pipeline needs | **LOW** | Pipeline gracefully handles NULL columns. Logs warning to `_metrics.pipeline_health`. |
-| Governed view auto-refresh drops consumer-applied policies | **MEDIUM** | Streamlit UI displays schema change notification when recreation occurs. Consumer acknowledges and re-applies policies. Hourly detection interval limits notification frequency. Stream auto-recovery handles broken streams automatically. |
-| DML operations trigger false positive schema changes | **LOW** | MD5 hash fingerprinting detects only DDL changes (column add/remove/rename). DML operations (data inserts) do not change column structure and do not trigger recreation. |
+| Consumer masking or row-access logic depends on `CURRENT_ROLE()`, `CURRENT_USER()`, or `IS_ROLE_IN_SESSION()` and evaluates unexpectedly under Native App owner's-rights execution | **LOW** | Document that these context functions may resolve to `NULL` in shared content and `EXECUTE AS OWNER` procedures. Consumers should validate the `NULL` branch and prefer policy logic that yields the intended export-safe result on their custom source. |
+| Consumer uses `CREATE OR REPLACE VIEW` on a selected custom source | **MEDIUM** | Documentation warns that view recreation breaks streams. The app can recreate the stream on the selected source and record any resulting data gap, but it never recreates or repairs the consumer's custom source. |
+| Underlying schema changes and the consumer-owned custom source is not updated | **MEDIUM** | The consumer owns schema maintenance for custom sources. The app surfaces source or stream failures and guidance, but it does not auto-refresh, rebuild, or re-apply policies to custom sources. |
+| Projection or masking on the custom source removes a field required for enrichment or export | **LOW** | Pipelines must tolerate `NULL` or missing fields where possible, log the impact to `_metrics.pipeline_health`, and document the minimum required fields per source. |
+| DML operations trigger false-positive schema change detection | **LOW** | Schema fingerprints are based on structural metadata only; data churn does not trigger custom-source maintenance logic. |
 
 #### 5.6 Innovation-Specific Risks
 
@@ -619,26 +570,20 @@ The app does not configure downstream routing — that is the collector's respon
 
 ### Detected Innovation Areas
 
-**1. Governed View as Universal Data Contract**
-No existing Snowflake Native App or connector makes **user-selected sources** (custom governed views or default views/tables) the explicit contract for observability export with clear governance guidance. The standard pattern is direct reads from ACCOUNT_USAGE or Event Tables. Our design addresses the gap: you can't apply masking, row access, or projection policies to system ACCOUNT_USAGE views or Event Tables directly — so we let the user **select** their own custom view (with policies) as the source, or the default, and we **inform** them when the default is selected that policies can't be applied and they must create custom views for governance. The app does not create or maintain views; the user owns governance. This is a simplified, user-responsible approach that works for both pipeline types (event-driven and poll-based).
+**1. Governed source selection as the product contract**  
+The app treats the customer's chosen source, whether a governed custom source or a default Snowflake source, as the export contract. That keeps governance inside Snowflake instead of recreating policy logic in the app.
 
-**2. Convention-Transparent Telemetry Relay with Additive Enrichment**
-Most telemetry pipelines strip, rename, or reshape attributes during processing. This app preserves ALL original Event Table attributes from producers and enriches additively with OTel semantic convention layers (`db.*`, `snowflake.*`, `service.*`, `cloud.*`). The "preserve everything, enrich only" pattern is an architectural differentiator — it respects the producer's telemetry while making it Splunk-native. No original context is lost.
+**2. Marketplace-native observability bridge**  
+The core install, configuration, and execution experience remains on Snowflake, turning a historically external integration pattern into a Marketplace-native product experience.
 
-**3. Zero-Infrastructure Observability Bridge**
-Shipping an observability pipeline as a Marketplace-installable Snowflake Native App (zero external infrastructure, zero agents, zero collectors) is fundamentally different from the OTel Collector pattern used by every other Snowflake observability solution. The pipeline runs inside the customer's Snowflake account using serverless compute — no VMs, no containers, no network infrastructure to manage. Install-to-first-data in minutes, not hours.
+**3. Convention-transparent export with additive enrichment**  
+The app preserves original telemetry context and enriches it only enough to make the data more useful in Splunk.
 
-**4. "Leverage, Don't Replicate" Governance Philosophy**
-Instead of building its own data classification, masking, or privacy engine, the app deliberately delegates to Snowflake's existing Horizon Catalog governance stack. This philosophy-level design decision reduces attack surface, eliminates maintenance burden for governance logic, and prevents governance policy drift. The app inherits every current and future governance feature Snowflake ships — without code changes.
+**4. Scoped Event Table use rather than generic ingestion**  
+MVP intentionally focuses on Event Table telemetry relevant to SQL and Snowpark compute, giving a precise first use case and a clean path to later expansion.
 
-**5. Entity Filtering — Scoped Telemetry from Shared Multi-Service Sink**
-Snowflake's Event Table is a shared telemetry sink for all Snowflake services. Filtering it with a positive include-list on `RESOURCE_ATTRIBUTES:"snow.executable.type"` to scope MVP telemetry to SQL/Snowpark compute — while remaining inherently resilient to new entity types Snowflake adds in the future. The positive include-list pattern means new service categories are safely excluded until explicitly registered. Post-MVP expansion includes SPCS (`snow.executable.type = 'spcs'`), Streamlit (`snow.executable.type = 'streamlit'`), and Openflow (`RESOURCE_ATTRIBUTES:"application" = 'openflow'`) via the service category registry. The Cortex AI Pack uses a separate dedicated data source (`AI_OBSERVABILITY_EVENTS` table) rather than Event Tables.
-
-**6. Self-Healing Pipelines**
-Stale stream detection with automatic drop/recreate recovery — including data gap logging to both `_metrics.pipeline_health` and the app's event table — makes the pipeline self-healing without manual intervention. Combined with `SUSPEND_TASK_AFTER_NUM_FAILURES` for export errors and `TASK_AUTO_RETRY_ATTEMPTS`, the app handles failure modes transparently. No manual "fix it" buttons.
-
-**7. Single OTLP Export with Collector-Based Routing**
-All telemetry (spans, metrics, logs, events) is exported via a single OTLP/gRPC endpoint to a remote OpenTelemetry collector. The collector handles routing to Splunk Observability Cloud (traces/metrics) and Splunk Enterprise/Cloud (logs). This architecture simplifies app configuration (one endpoint) while leveraging the collector's flexibility for downstream routing, filtering, and transformation.
+**5. Operational transparency as a product feature**  
+Health signals, logging evidence, and approval-ready documentation make reliability and compliance visible to admins, operators, and approvers rather than hiding them in implementation detail.
 
 ### Market Context & Competitive Landscape
 
@@ -663,186 +608,156 @@ All telemetry (spans, metrics, logs, events) is exported via a single OTLP/gRPC 
 
 *Innovation-specific risks are consolidated in Technical & Platform Requirements § 5.6.*
 
+**Architecture Note:** The novelty is in the product contract and operating model, not in inventing a new governance engine or telemetry protocol. The design stays Snowflake-native, preserves Splunk relevance, and uses an OTLP-compatible export path instead of creating a separate control plane.
+
 ## Project Scoping & Phased Development
 
-### MVP Strategy & Philosophy
+### Phase 1 — MVP
 
-**MVP Approach:** Platform MVP — prove that a Snowflake Native App can serve as a zero-infrastructure observability bridge with comparable telemetry export performance to external OTel Collector pipelines.
+**Goal:** Prove that a Snowflake Native App can deliver Snowflake telemetry to Splunk quickly enough, clearly enough, and safely enough to earn Marketplace approval and real operational use.
 
-**Core Learning Goal:** Can a single Marketplace-installable app, running entirely inside the consumer's Snowflake account, deliver telemetry to Splunk with latency parity or better than external collectors — with zero consumer infrastructure?
+**Includes:**
+- Distributed Tracing Pack for Event Table telemetry in MVP scope
+- Performance Pack for selected `ACCOUNT_USAGE` sources
+- In-Snowflake onboarding, destination setup, source selection, governance guidance, health visibility, and operational logging
+- Marketplace submission readiness across packaging, testing, documentation, and reviewer enablement
 
-**Key Scoping Decisions:**
+**Go / No-Go gates owned by Tom:**
+- Automated security review returns `APPROVED`
+- Separate consumer-account install and configuration test passes end to end
+- README, reviewer steps, sample data, and any required test credentials are ready for functional review
+- Zero open P1/P2 defects and no critical/high CVEs remain at submission
 
-| Decision | Rationale |
-|---|---|
-| **Keep streams for Event Table pipeline** | Polling an unclustered Event Table with millions of rows is fundamentally different from polling pre-filtered ACCOUNT_USAGE views. Streams give efficient delta processing, < 60s latency, cost efficiency (triggered task), and exactly-once row guarantees. The staleness and breakage risks are already mitigated (auto-recovery, ALTER VIEW only). |
-| **Simplify Data governance page** | MVP: Data governance page — read-only table showing enabled sources with Status, View name, Source type, per-row Governance message, per-row Sensitive columns. When default views or event tables are selected, clearly informs that masking/row policies can't be applied and user must create their own custom views for governance. No policy detection, no classification awareness in MVP. Full governance UI deferred to post-MVP. |
-| **Defer Logging tab (Streamlit UI)** | MVP: app logs to the consumer's event table via Native App event definitions (structured logs with severity, source, error details). Debugging via direct event table queries in Snowsight. Streamlit Logging tab (verbosity selector, search, scrollable display) deferred to post-MVP. |
-| **Defer volume estimator** | Not essential for core export workflow. Deferred to post-MVP. |
-| **Keep CIM normalization** | Low effort — just correct JSON field naming per CIM conventions. Essential for Splunk-side value (ES dashboards, data model acceleration). |
+**Explicit MVP out of scope:**
+- Additional monitoring packs beyond Distributed Tracing and Performance
+- Advanced governance intelligence, in-app log explorer, and volume estimation
+- Durable replay for prolonged destination outages
+- Broader Event Table coverage for SPCS, Streamlit, Openflow, or Cortex AI telemetry
+- Off-Snowflake primary setup or control-plane experiences
 
-### MVP Feature Set (Phase 1)
+### Phase 2 — Growth
 
-**Core Journeys Supported:** All 7 journeys are supported, with scoping simplifications noted.
+Focus on expanding operational depth and governance confidence after MVP validation.
 
-| Journey | MVP Coverage | Simplifications |
-|---|---|---|
-| **1. Maya Install/Configure** | Full | Getting Started tile hub, Telemetry sources `st.data_editor`, Splunk settings Export settings tab |
-| **2. Ravi Traces** | Full | None |
-| **3. Edge Cases (OTLP Down, Stale Stream)** | Full | Auto-recovery included |
-| **4. Pipeline Debugging (Sam)** | Full | Observability health helicopter view (4 KPIs, destination card, category summary, errors feed). Telemetry sources per-source detail. Logging tab deferred — Sam queries event table via Snowsight for error details. |
-| **5. Seamless Upgrade** | Full | None |
-| **6. Data Governance (Maya)** | Full | Data governance page — read-only table of enabled sources with Status, View name, Source type, per-row Governance message, per-row Sensitive columns. No app-created views. |
-| **7. Event Table Schema Change** | Full | None |
+- Richer governance visibility and policy awareness
+- In-app log exploration and volume estimation
+- Additional packs such as Cost, Security, and Data Pipeline
+- Better failure handling and replay for sustained destination outages
 
-**Must-Have Capabilities:**
-1. Marketplace install + Permission SDK privilege binding
-2. User-Selected Sources Architecture (custom views or default views/event tables)
-3. Distributed Tracing Pack (Event Table → Stream → Triggered Task → OTLP/gRPC)
-4. Performance Pack (ACCOUNT_USAGE → Scheduled Tasks → OTLP/gRPC)
-5. Streamlit Configuration UI via `st.navigation`: Getting Started tile hub, Observability health helicopter view, Telemetry sources `st.data_editor` with category headers, Splunk settings (Export settings tab with OTLP endpoint + optional PEM certificate), Data governance page (read-only, 5 columns)
-6. Observability health helicopter view (destination health card, 4 KPI cards, throughput chart, category summary with drill-down, recent errors feed)
-7. Telemetry sources per-source health (Status, Freshness chart, Recent runs, Errors, editable Interval/Batch size)
-8. App Operational Logging (event definitions → consumer event table, queryable via Snowsight)
-9. Transport retries (OTLP) with failure logging to `_metrics.pipeline_health`
-10. Auto-recovery for stale Event Table streams
-11. Marketplace-ready packaging (manifest.yml v2, setup.sql, security scan)
+### Phase 3 — Expansion
 
-### Post-MVP Features (Phase 2 — Growth)
+Focus on broader source coverage and strategic platform reach.
 
-| Feature | Priority | Dependency |
-|---|---|---|
-| **Streamlit Logging tab** (verbosity selector, search, scrollable display) | High | App logging already in place — UI only |
-| **Enhanced Data governance page** (classification awareness, policy detection, consumer policy enumeration) | High | Governance metadata queries already available |
-| **Volume estimator** | Medium | Pipeline health data already collected |
-| **Cost Pack** (METERING_HISTORY, WAREHOUSE_METERING_HISTORY, …) | Medium | New sources (user selects custom view or default) + scheduled tasks |
-| **Security Pack** (LOGIN_HISTORY, ACCESS_HISTORY, SESSIONS, GRANTS_TO_USERS, GRANTS_TO_ROLES, NETWORK_POLICIES) | Medium | New sources (user-selected) + CIM mappings |
-| **Data Pipeline Pack** (COPY_HISTORY, LOAD_HISTORY, PIPE_USAGE_HISTORY) | Medium | New sources (user-selected) + CIM mappings |
-| **Zero-copy failure tracking** (reference-based retry for data gaps) | Medium | New retry task + failure reference table |
-| **Advanced Observability health dashboard** (Throughput, Errors, Volume tabs) | Low | Extends existing Observability health |
-| **In-app rate limiting** (token-bucket, Retry-After parsing) | Low | Optimization |
+- Additional Event Table service categories and new telemetry packs
+- Cortex AI and Openflow-oriented coverage
+- Broader integration patterns and higher install scale
 
-### Post-MVP Features (Phase 3 — Expansion)
+Business growth outcomes such as active installs, customer acquisition, and Marketplace milestone completion are tracked across these phases, but they are not themselves user journeys.
 
-| Feature | Dependency |
-|---|---|
-| Additional Event Table service categories (SPCS: `snow.executable.type = 'spcs'`, Streamlit: `snow.executable.type = 'streamlit'`) | Convention extensions + service category registry |
-| **Openflow Pack** (Event Table telemetry with `RESOURCE_ATTRIBUTES:"application" = 'openflow'`) | Entity discrimination filter + service category registry |
-| **Cortex AI Pack** (Cortex Services telemetry via `AI_OBSERVABILITY_EVENTS` table accessed through `GET_AI_OBSERVABILITY_EVENTS()` function, enriched with OTel `gen_ai.*` conventions for Cortex AI Functions, Cortex Agents, Cortex Search) | Separate data source + convention enricher + governed view for AI_OBSERVABILITY_EVENTS |
-| Bi-directional integration (Splunk alerts → Snowflake actions) | New inbound integration |
-| Multi-tenant scale (100+ concurrent installs) | Performance testing + optimization |
-
-### Risk-Based Scoping
-
-**Technical Risk (highest):** Event Table pipeline end-to-end (user-selected source → stream → triggered task → OTLP export). Touches the most Snowflake primitives and has the tightest latency requirement (< 60s). **Mitigation:** Build and test this pipeline first. If it works, everything else is lower risk.
-
-**Solo-engineer Risk:** Single point of failure for a 1-month timeline. **Mitigation:** Prioritize backend pipelines first (weeks 1-2), Streamlit UI second (week 3), Marketplace packaging and testing last (week 4). If time runs short, the Data governance page and Observability health can ship with minimal UI polish.
-
-**Market Risk:** Low — the Snowflake + Splunk joint customer base is well-established. The risk is execution speed, not market fit. **Mitigation:** MVP go/no-go gates (latency parity, zero P1/P2, security scan) are binary — ship or don't ship. No soft launches.
-
-**Streams vs Polling Decision (documented):** Streams were evaluated against watermark-based polling for Event Tables. Streams kept for MVP due to: efficient delta processing on unclustered high-volume tables, < 60s latency achievable, cost-efficient triggered tasks, exactly-once row guarantees. Polling would degrade with Event Table volume and require additional dedup logic.
+**Architecture Note:** Each phase extends the same core model rather than replacing it: Snowflake-native execution, governed source selection, Event Table and `ACCOUNT_USAGE` as the primary source families, and OTLP-compatible delivery into Splunk-aligned downstream systems.
 
 ## Functional Requirements
 
-UX/UI behavior, layout, and interaction details (pages, components, flows) are specified in the [UX Design Specification](_bmad-output/planning-artifacts/ux-design-specification.md). The requirements below state *what* the system must do; the UX spec defines *how* it is presented and operated.
+Detailed UX behavior plus integration, processing, and release implementation mechanics belong in the companion UX and architecture artifacts. The requirements below define the required capabilities and observable outcomes.
 
 ### Installation & Setup
 
-- **FR1:** Admin can install the app from the Snowflake Marketplace with zero external infrastructure provisioning
-- **FR2:** Admin can grant required privileges through native Snowflake permission prompts during first launch
-- **FR3:** Admin can complete initial setup through a **Getting Started tile hub** with drill-down to task-specific pages (Splunk settings, Telemetry sources, Data governance, Activate) and progress tracking in the sidebar
+- **FR1:** Maya can install the app from the Snowflake Marketplace without provisioning vendor-managed infrastructure outside Snowflake.
+- **FR2:** Maya can review and approve the Snowflake privileges the app requires during install or upgrade flows.
+- **FR3:** Maya can complete first-time setup in the app so that an OTLP destination is saved, at least one telemetry source is selected, governance review is acknowledged, and export activation is enabled.
 
 ### Source Configuration
 
-- **FR4:** Admin can discover available ACCOUNT_USAGE views and Event Tables in their Snowflake environment
-- **FR5:** Admin can enable or disable Monitoring Packs (Distributed Tracing Pack, Performance Pack) independently
-- **FR6:** Admin can view the default schedule interval for each selected data source
-- **FR7:** Admin can modify the schedule interval for any individual data source
-- **FR8:** Admin can configure a single **OTLP/gRPC endpoint** (Splunk settings → Export settings tab) pointing to a remote OpenTelemetry collector
-- **FR9:** Admin can optionally configure a **PEM certificate** for OTLP endpoints using private/self-signed certificates; admin can validate the certificate before saving; when no certificate is provided, the system uses Snowflake's default trust store (Mozilla/certifi CA bundle) which includes major public CAs (DigiCert, Let's Encrypt, GlobalSign, etc.)
-- **FR10:** Admin can **Test connection** to validate OTLP endpoint reachability before saving configuration
-- **FR11:** Admin can view and modify the Event Table triggered task interval on Telemetry sources
+- **FR4:** Maya can discover which supported `ACCOUNT_USAGE` views and Event Tables are available for selection in the current Snowflake account when operating with the required Snowflake privileges.
+- **FR5:** Maya can enable or disable each Monitoring Pack independently.
+- **FR6:** Maya can view the default execution interval for each selected telemetry source before activation.
+- **FR7:** Maya can change the execution interval for any supported telemetry source without reinstalling the app.
+- **FR8:** Maya can configure the OTLP export destination used to send telemetry to Splunk or another OTLP-compatible collector.
+- **FR9:** Maya can provide any certificate material required for a private or self-signed OTLP destination and receive a pass-or-fail trust validation before saving the configuration.
+- **FR10:** Maya can run a connection test and receive a pass or fail result before saving an OTLP destination.
+- **FR11:** Maya can view and change the execution interval used for Event Table collection after initial setup within the supported minimum and maximum interval bounds published for the app.
 
 ### Data Governance & Privacy
 
-- **FR12:** Admin can select, per data source on **Telemetry sources**, the telemetry source: either a custom view (with masking/row access policies) or the default ACCOUNT_USAGE view / event table
-- **FR13:** The **Data governance** page shows a read-only table of **enabled sources only** with columns for status, view name, source type, governance message, and sensitive columns; admin can acknowledge governance implications during onboarding
-- **FR14:** When default views or event tables are selected, the per-row Governance message informs the admin that masking and row access policies cannot be applied to those sources and that they must create their own custom views to enforce governance
-- **FR15:** When the admin selects a custom view as the source, the system reads or streams from that view and Snowflake enforces any masking/row access/projection policies attached to it
-- **FR16:** Consumer DBA can create custom views with Snowflake-native masking policies and the admin selects those views as the source on Telemetry sources; the export pipeline honors the policies automatically
-- **FR17:** Consumer DBA can attach row access policies to their custom views; when the admin selects such a view as the source, the export pipeline exports only rows that pass the filter
-- **FR18:** Consumer DBA can attach projection policies to their custom view columns; when selected as source, the pipeline gracefully handles resulting NULL columns
+- **FR12:** Maya can choose, for each supported telemetry source, either the default Snowflake source or a custom source she controls.
+- **FR13:** Maya can review, for each enabled source, whether it is a default or custom source and whether masking, row access, and projection controls will be preserved, and must record acknowledgement before export is enabled.
+- **FR14:** Maya can receive a blocking disclosure when a default `ACCOUNT_USAGE` view or Event Table is selected that Snowflake masking and row access controls require a custom source, and must acknowledge that disclosure before export is enabled.
+- **FR15:** Maya can select a custom source and have exported data reflect the Snowflake masking, row access, and projection policies enforced on that source.
+- **FR16:** Maya can select a custom source with masking policies applied and have masked values preserved in exported telemetry.
+- **FR17:** Maya can select a custom source with row access policies applied and have only permitted rows included in exported telemetry.
+- **FR18:** Maya can select a custom source with projection policies applied and have export continue with blocked columns emitted as `NULL` and a warning recorded for the affected run.
 
 ### Telemetry Collection
 
-- **FR19:** The system collects Event Table telemetry incrementally using change data capture (new rows only)
-- **FR20:** The system filters Event Table telemetry to SQL/Snowpark compute scope (stored procedures, UDFs/UDTFs, SQL queries) via entity filtering
-- **FR21:** The system collects each enabled ACCOUNT_USAGE source independently on its own schedule using watermark-based incremental reads
-- **FR22:** Admin can view and edit per-source configuration (enable/disable polling, interval, batch size) on **Telemetry sources** page
+- **FR19:** Sam can export new Event Table telemetry produced after activation without re-exporting records already delivered successfully.
+- **FR20:** Maya can scope Event Table export to the MVP telemetry categories supported by enabled Monitoring Packs: Snowflake SQL and Snowpark compute telemetry.
+- **FR21:** Sam can run each enabled `ACCOUNT_USAGE` source on an independent collection schedule so one source can be delayed, changed, or recovered without blocking others.
+- **FR22:** Maya can view and edit per-source operational settings, including enabled state, execution interval, overlap window (for `ACCOUNT_USAGE` sources), and batch size.
+- **FR22a:** Maya can adjust the overlap window for each `ACCOUNT_USAGE` source to control how far back the watermark query re-scans for late-arriving rows. The default is set to the documented maximum latency for that view plus a small safety margin. Decreasing the overlap reduces redundant re-scanning; the app always deduplicates using natural keys regardless of the configured overlap.
 
 ### Telemetry Export
 
-- **FR23:** The system exports all telemetry (Event Table spans, metrics, logs; ACCOUNT_USAGE events) via **single OTLP/gRPC endpoint** to a remote OpenTelemetry collector
-- **FR24:** The system enriches Event Table spans with OTel DB Client semantic conventions (`db.*`) and custom Snowflake conventions (`snowflake.*`)
-- **FR25:** The system preserves all original Event Table attributes from producers and enriches additively (no attribute stripping or renaming)
-- **FR26:** The system retries failed export batches at the transport level using OTel SDK built-in gRPC retry with exponential backoff
+- **FR23:** Sam can deliver all enabled Event Table and `ACCOUNT_USAGE` telemetry through the configured OTLP destination for downstream use in Splunk.
+- **FR24:** Ravi can analyze exported Event Table spans in Splunk using query or executable identity, database and schema context, warehouse context, and trace correlation fields.
+- **FR25:** Ravi can rely on original Event Table attributes remaining intact in exported telemetry, with any app-added attributes added without renaming or removing source attributes.
+- **FR26:** Sam can rely on retryable OTLP delivery failures being retried automatically and on non-retryable failures being recorded as terminal batch failures without endless retry.
 
 ### Pipeline Operations & Health
 
-- **FR27:** Ops engineer can view **Observability health** helicopter view showing: destination health card (OTLP status), 4 aggregated KPI cards (Sources OK, Rows exported 24h, Failed batches 24h, Avg freshness), export throughput trend chart, category health summary table with drill-down, and recent errors feed
-- **FR28:** Ops engineer can view per-source pipeline status on **Telemetry sources** page including status, freshness, recent run history, errors, and editable configuration
-- **FR29:** The system logs structured operational events (errors, warnings, info, debug) to the consumer's account-level event table using Native App event definitions
-- **FR30:** Ops engineer can query the app's operational logs via Snowsight to diagnose pipeline errors (OTLP failures, processing errors, stream recovery events)
-- **FR31:** The system automatically detects and recovers stale Event Table streams by dropping and recreating the stream on the user-selected source
-- **FR32:** The system records data gaps resulting from stream recovery or sustained destination outages in the pipeline health metrics
-- **FR33:** The system auto-suspends a failing source after consecutive failures without affecting other sources with appropriate status change for this source
-- **FR34:** The system records per-run metrics (rows collected, rows exported, failures, latency) for each pipeline source
+- **FR27:** Sam can view a health summary that shows destination status, source freshness, export throughput, failures, and recent operational issues.
+- **FR28:** Sam can inspect each telemetry source to see current status, freshness, recent runs, current errors, and its editable configuration.
+- **FR29:** Sam can access structured app operational events in the consumer's Snowflake event table via Snowsight.
+- **FR30:** Sam can query app operational events in Snowsight to diagnose OTLP delivery failures, processing failures, and recovery actions.
+- **FR31:** Sam can see Event Table collection resume automatically after a recoverable Event Table collection interruption within the recovery window defined by `NFR16`, without manually repairing the pipeline.
+- **FR32:** Sam can identify any data gap caused by a recoverable collection interruption or sustained destination outage, including the affected source and time window.
+- **FR33:** Sam can have a repeatedly failing source automatically suspended without stopping healthy sources, and can see the suspended status for that source.
+- **FR34:** Sam can review per-run pipeline metrics for each source, including records collected, records exported, failures, and processing latency.
 
 ### App Lifecycle & Marketplace
 
-- **FR35:** The system supports auto-upgrades via Snowflake release directives, respecting the consumer's maintenance policy
-- **FR36:** The system preserves all stateful data (configuration, watermarks, pipeline health metrics) across version upgrades
-- **FR37:** The system rebuilds stateless objects (procedures, UDFs, Streamlit UI) cleanly during upgrades without interrupting in-flight task executions
-- **FR38:** The system logs structured upgrade progress messages (per-step start, completion, errors) to the app's event table
-- **FR39:** The system passes Snowflake Marketplace security scanning requirements for all submitted versions
+- **FR35:** Tom can publish supported app upgrades through Snowflake Marketplace so consumers receive them under their maintenance policy.
+- **FR36:** Maya can retain configuration, source progress, and pipeline health history across supported version upgrades.
+- **FR37:** Maya can upgrade the app without re-entering configuration, and in-flight scheduled work either completes or resumes automatically with no more than one missed scheduled run per source.
+- **FR38:** Sam can access structured upgrade progress events in the Snowflake event table for each upgrade attempt.
+- **FR39:** Tom can submit a release candidate for Snowflake Marketplace approval after install, configuration, export, and upgrade workflows pass in a clean consumer account and reviewer guidance is complete.
 
 ## Non-Functional Requirements
 
 ### Performance
 
-- **NFR1:** Event Table telemetry is visible in Splunk within 60 seconds of being written to the Event Table (stream trigger + processing + export)
-- **NFR2:** ACCOUNT_USAGE data is visible in Splunk within one polling cycle of Snowflake's inherent view latency (e.g., QUERY_HISTORY with ~45 min Snowflake latency appears in Splunk within ~75 min)
-- **NFR3:** Streamlit UI pages load and render within 5 seconds under normal conditions (Snowflake serverless compute startup included)
-- **NFR4:** Observability health KPI cards reflect data no older than the most recent completed task run
-- **NFR5:** Export batch processing (data transformation + network send) completes within 30 seconds per batch for OTLP destination
+- **NFR1:** Criterion: Event Table telemetry reaches Splunk promptly. Metric: p95 end-to-end latency is `<= 60 seconds` from Event Table write time to visibility in Splunk. Method: compare source timestamps to Splunk ingest timestamps in an instrumented reference flow. Context: normal operation with a reachable OTLP destination.
+- **NFR2:** Criterion: `ACCOUNT_USAGE` telemetry arrives soon after Snowflake makes it available. Metric: p95 latency from source availability to visibility in Splunk is `<= one configured polling cycle`. Method: compare Snowflake source availability timestamps to Splunk ingest timestamps. Context: supported `ACCOUNT_USAGE` sources under normal operation.
+- **NFR3:** Criterion: Core app pages are responsive for admins and operators. Metric: p95 load-to-render time is `<= 5 seconds` for setup, telemetry sources, governance, and health pages. Method: scripted page-load timing in a reviewer account. Context: supported data volume, including initial Snowflake app startup.
+- **NFR4:** Criterion: Health views reflect current pipeline state. Metric: `100%` of sampled KPI values use data no older than the most recent completed run for the represented source or category. Method: compare displayed timestamps to recorded run timestamps. Context: after at least one successful run has completed.
+- **NFR5:** Criterion: Batch export processing completes quickly enough to sustain near-real-time delivery. Metric: p95 time from batch start to OTLP send result is `<= 30 seconds`. Method: timing instrumentation around export execution. Context: supported batch sizes with a reachable OTLP destination.
 
 ### Security
 
-- **NFR6:** All credentials (optional PEM certificates) are stored exclusively in Snowflake Secrets — never in code, config tables, or logs
-- **NFR7:** All outbound connections (OTLP) use TLS encryption 
-- **NFR8:** All outbound connections are strictly governed by Snowflake External Access Integrations and Network Rules — no outbound network traffic occurs outside of what is explicitly defined and approved by the consumer
-- **NFR9:** The app never bypasses Snowflake-native governance policies — all data reads flow through user-selected sources where platform-layer policies are enforced
-- **NFR10:** All app versions pass Snowflake Marketplace automated security scanning with zero Critical or High findings
-- **NFR11:** No credential material appears in app operational logs, pipeline health metrics, or Streamlit UI displays
-- **NFR12:** All dependencies are free of Critical/High CVEs at the time of Marketplace submission
+- **NFR6:** Criterion: Sensitive OTLP connection material is stored only in approved Snowflake secret storage. Metric: `0` instances of credentials or certificate material in code, config tables, app metadata tables, or logs. Method: static review plus runtime table and log inspection. Context: release candidates and failure-path testing.
+- **NFR7:** Criterion: All outbound OTLP transport is encrypted. Metric: `100%` of successful OTLP sessions use encrypted transport, and plaintext OTLP connection attempts fail. Method: transport inspection and positive or negative connection tests. Context: all outbound OTLP connections.
+- **NFR8:** Criterion: Outbound connectivity is limited to consumer-approved destinations. Metric: `0` successful outbound connections occur to destinations not explicitly approved by the consumer for this app. Method: positive and negative network-access tests against approved and unapproved destinations. Context: configured consumer account.
+- **NFR9:** Criterion: The app does not bypass Snowflake governance controls. Metric: `100%` of exported records originate from the Snowflake sources Maya selected, and policy-protected test fields and rows remain governed in exports. Method: controlled datasets with masking, row access, and projection policies. Context: custom-source operation.
+- **NFR10:** Criterion: Every version Tom submits satisfies Snowflake Marketplace security review requirements. Metric: `100%` of submitted versions pass the automated Marketplace security scan with `0` Critical or High findings. Method: review Marketplace scan results before submission. Context: Tom's pre-submission release gate.
+- **NFR11:** Criterion: Secret material never appears in operational surfaces. Metric: `0` secret or credential findings across event tables, pipeline health outputs, and UI renders in normal and failure scenarios. Method: automated secret scanning plus manual inspection. Context: supported error flows.
+- **NFR12:** Criterion: Tom submits only release candidates that meet quality and third-party component hygiene gates. Metric: `0` open P1 or P2 defects and `0` Critical or High unresolved third-party component vulnerabilities at release cut. Method: issue tracker review and component-vulnerability audit. Context: Tom's Marketplace submission gate.
 
 ### Reliability
 
-- **NFR13:** Pipeline uptime >= 99.9% per source (< 8.7 hours unplanned downtime per year), measured by consecutive successful task runs
-- **NFR14:** Export success rate >= 99.5% of batches exported successfully (transport retries included), measured via `_metrics.pipeline_health`
-- **NFR15:** A single failing source does not impact the availability or scheduling of any other source's pipeline
-- **NFR16:** Stale Event Table streams are recovered without manual intervention — pipeline resumes autonomously
-- **NFR17:** App upgrades complete with zero data loss — watermarks and stream offsets resume from their pre-upgrade positions
-- **NFR18:** Transport retries handle transient destination failures (network blips, brief rate limiting) without data loss for outages lasting up to 60 seconds
+- **NFR13:** Criterion: Each enabled source remains highly available. Metric: scheduled availability is `>= 99.9%` per source over a rolling 30-day window. Method: compare successful runs to planned runs from pipeline health records. Context: deployed supported accounts.
+- **NFR14:** Criterion: Export remains dependable after automatic retries. Metric: `>= 99.5%` of batches complete successfully after retry handling over a rolling 7-day window. Method: calculate terminal success rate from pipeline health records. Context: enabled sources with reachable destinations outside declared fault windows.
+- **NFR15:** Criterion: A single source failure stays isolated. Metric: in induced single-source failure tests, `100%` of unaffected sources still start and complete within their next scheduled interval. Method: fault-injection test with multiple enabled sources. Context: at least two sources enabled.
+- **NFR16:** Criterion: Stale Event Table stream conditions recover autonomously. Metric: `100%` of induced stale stream conditions are detected and export resumes within `10 minutes` or `2 scheduled executions`, whichever is longer, without manual action. Method: controlled stale-stream recovery test. Context: Event Table collection.
+- **NFR17:** Criterion: Supported upgrades preserve data continuity. Metric: `0` missing or duplicate records in controlled upgrade reconciliation and `100%` retention of configuration and source progress across supported upgrade paths. Method: before-and-after reconciliation test. Context: version-to-version upgrades supported for release.
+- **NFR18:** Criterion: Brief OTLP destination outages do not cause data loss. Metric: `0` permanently lost batches for induced destination outages lasting up to `60 seconds`. Method: outage injection and batch reconciliation. Context: destination outage only, with Snowflake services otherwise healthy.
 
 ### Scalability
 
-- **NFR19:** The Event Table pipeline processes up to 1 million rows per triggered task execution without timeout or memory failure
-- **NFR20:** The system supports up to 10 concurrent independent ACCOUNT_USAGE scheduled tasks without resource contention
-- **NFR21:** Pipeline throughput scales linearly with serverless task compute allocation — no architectural bottlenecks that prevent vertical scaling
+- **NFR19:** Criterion: Event Table processing supports the target burst size. Metric: a triggered execution completes with `1,000,000` representative Event Table rows without timeout or unrecoverable memory failure. Method: benchmark load test. Context: supported compute allocation and representative telemetry mix.
+- **NFR20:** Criterion: The app supports concurrent scheduled collection across multiple `ACCOUNT_USAGE` sources. Metric: with `10` enabled sources, `>= 99%` of scheduled runs start within one interval and complete successfully. Method: concurrent load test. Context: representative source mix and supported scheduling settings.
+- **NFR21:** Criterion: Throughput improves materially with additional supported compute. Metric: doubling supported task compute yields at least `1.7x` throughput until destination saturation or the `NFR19` workload ceiling is reached. Method: benchmark the same workload across adjacent supported compute levels. Context: controlled performance environment.
 
 ### Integration Quality
 
-- **NFR22:** All OTLP-exported spans conform to OTel DB Client semantic conventions (`db.*` namespace) and pass Splunk APM's span validation (visible in Tag Spotlight, trace waterfall)
-- **NFR23:** All OTLP-exported telemetry includes appropriate resource and span attributes for downstream routing by the OpenTelemetry collector
-- **NFR24:** The app correctly handles OTLP error responses (gRPC status codes) with appropriate retry or failure-logging behavior per response type
+- **NFR22:** Criterion: OTLP-exported Event Table spans interoperate with Splunk APM. Metric: `100%` of sampled spans include the database and Snowflake context required by the telemetry contract, pass OTLP schema validation, and are searchable as traces in Splunk APM. Method: contract validation plus end-to-end ingest testing. Context: release validation for Event Table spans.
+- **NFR23:** Criterion: Exported telemetry supports downstream routing and attribution. Metric: `100%` of exported spans, metrics, and logs from Event Table and `ACCOUNT_USAGE` include the mandatory routing fields for source identity, Snowflake account identity, telemetry type, and service or resource identity. Method: collector-side contract assertions during integration tests. Context: all enabled telemetry types.
+- **NFR24:** Criterion: OTLP error handling is deterministic and observable. Metric: `100%` of retryable OTLP errors trigger automatic retry, and `100%` of non-retryable OTLP errors generate a terminal failure record within `1 minute` with no endless retry loop. Method: simulated OTLP error-class testing. Context: reachable destination returning protocol or application errors.
