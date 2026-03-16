@@ -228,7 +228,7 @@ This interaction relies on applying **established patterns in a novel, highly co
 **2. Interaction (hub and drill-down):**
 - **Hub:** The Getting Started page shows tiles for: Configure Splunk Settings, Select Telemetry Sources, Review Data Governance, Activate Export. Progress (e.g. completed vs pending) is visible per tile and in the sidebar (e.g. "2/4"). Users complete tasks by **drilling down** from a tile (or via the sidebar) into the corresponding page — they do *not* move through one long linear form.
 - **Recommended task order** (the sequence users typically complete, but they can jump via tiles):  
-  - *Task 1 — Splunk settings (Export settings tab):* User enters **OTLP endpoint** (gRPC URL with port) pointing to a remote OpenTelemetry collector. Optionally pastes or uploads a **PEM certificate**. **Test connection** verifies OTLP reachability; result via `st.status`.  
+  - *Task 1 — Splunk settings (Export settings tab):* User enters **OTLP endpoint** (gRPC URL with port) pointing to a remote OpenTelemetry collector. Optionally pastes a **PEM certificate**. **Test connection** verifies OTLP reachability; result via `st.status`.  
   - *Task 2 — Telemetry sources:* User selects packs and sources (ACCOUNT_USAGE views / custom views, Event Tables), intervals.  
   - *Task 3 — Governance review:* Read-only display of **selected sources**; app **informs** when default view/event table is selected that masking/row policies require custom views.  
   - *Task 4 — Activate:* User clicks "Enable Auto-Export" (or equivalent); app provisions objects; progress via `st.spinner` or callouts.
@@ -404,7 +404,7 @@ We recommend a **permanent Getting Started page** (Equals-, GitLab-, and Cake-st
 1. **Discover & Install** (outside app): Maya finds the app in Marketplace → "Get" → app installs in her account.
 2. **Open app** → App detects unconfigured state and presents **Getting Started**: sidebar shows "Getting started" with progress badge (e.g. "0/4"); main area shows the **Getting Started** page with **big tiles** (Configure Splunk Settings, Select Telemetry Sources, Review Data Governance, Activate Export). User drills into a tile to complete that task (recommended order: connection first, then sources, then governance, then activate).
 3. **Privilege binding:** Getting Started shows native Snowsight permission prompts (Permission SDK). Maya clicks "Grant" for required privileges. No manual SQL.
-4. **Splunk settings (Export settings tab):** Maya drills into **Splunk settings** (from Getting started or via sidebar) and sees the **Export settings** tab. She enters the **OTLP endpoint** (gRPC URL with port) pointing to her remote OTEL collector (e.g. Splunk distribution). Optionally she pastes or uploads a **PEM certificate** for a collector using a private/self-signed cert. **Test connection** for OTLP; she cannot proceed until the test succeeds.
+4. **Splunk settings (Export settings tab):** Maya drills into **Splunk settings** (from Getting started or via sidebar) and sees the **Export settings** tab. She enters the **OTLP endpoint** (gRPC URL with port) pointing to her remote OTEL collector (e.g. Splunk distribution). Optionally she pastes a **PEM certificate** for a collector using a private/self-signed cert. **Test connection** for OTLP; she cannot proceed until the test succeeds.
 5. **Telemetry sources (packs and sources):** Maya drills into **Telemetry sources**. **Performance Pack** = ACCOUNT_USAGE: she selects from default and custom views that reference ACCOUNT_USAGE. **Distributed Tracing Pack** = Event Tables: she binds one or more Event Tables and selects **custom view or event table** per source (app does not create views). Per-source intervals and sourcetypes are shown. She can enable **multiple packs in one run**.
 6. **Governance review:** Read-only display of **selected sources**. When a default view or event table is selected, the app **informs** that masking and row access policies cannot be applied and that she must create and select custom views to enforce governance. Maya confirms and continues.
 7. **Activate:** Maya clicks "Enable Auto-Export" (or equivalent). App provisions tasks, streams, and network/secret objects (no app-created views). Progress feedback via `st.spinner` or status callouts.
@@ -665,7 +665,7 @@ Custom components are **composed patterns** (native Streamlit + optional inline 
 
 **Content:** OTLP endpoint `st.text_input`; Test connection / Clear buttons; optional PEM certificate (`st.text_area`, paste only — no file uploader); Validate certificate button; `st.status` for connection and certificate feedback; Save settings button.
 
-**Actions:** Enter endpoint → Test connection → (optionally) paste or upload certificate → Validate certificate → Save settings.
+**Actions:** Enter endpoint → Test connection → (optionally) paste certificate → Validate certificate → Save settings.
 
 **States:** Default (not configured), connecting (`st.spinner`), success (connected), error (failed), certificate-valid, certificate-invalid, certificate-absent (system trust store).
 

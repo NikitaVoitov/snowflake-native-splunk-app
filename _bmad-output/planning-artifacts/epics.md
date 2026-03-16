@@ -13,7 +13,7 @@ inputDocuments:
 
 This document provides the complete epic and story breakdown for snowflake-native-splunk-app, decomposing the requirements from the PRD, UX Design, and Architecture into implementable stories.
 
-**Implementation order note:** Epics are grouped by user value, but technical dependencies require interleaving. Story 4.3 (Activate) provisions DDL objects (streams, tasks, EAI) that reference stored procedures implemented in Epic 5, which depend on the OTLP module from Epic 6. The recommended sprint order is: Sprint 1 (Epic 1) → Sprint 2 (Epic 2) → Sprint 3 (Epic 3) → Sprint 4 (Epic 6) → Sprint 5 (Epic 5) → Sprint 6/MVP (Epic 4) → Sprint 7 (Epic 7) → Sprint 8 (Epic 8). See `sprint-status.yaml` for the full sprint plan with deliverables and acceptance tests.
+**Implementation order note:** Epics are ordered to match the intended dependency flow and preserve the existing sprint sequence without forward dependencies. The recommended sprint order is: Sprint 1 (Epic 1) → Sprint 2 (Epic 2) → Sprint 3 (Epic 3) → Sprint 4 (Epic 4) → Sprint 5 (Epic 5) → Sprint 6/MVP (Epic 6) → Sprint 7 (Epic 7) → Sprint 8 (Epic 8). Technical implementation details are retained as implementation tasks under user-facing stories rather than being treated as standalone technical epics.
 
 ## Requirements Inventory
 
@@ -133,21 +133,21 @@ FR9: Epic 2 — Provide and validate certificate for private/self-signed OTLP
 FR10: Epic 2 — Run connection test before saving
 FR11: Epic 3 — View and change Event Table collection interval within bounds
 FR12: Epic 3 — Choose default or custom source per telemetry source
-FR13: Epic 4 — Review default vs custom and masking/row access per source; acknowledge before export
-FR14: Epic 4 — Blocking disclosure when default source selected; acknowledge before export
-FR15: Epic 4 — Custom source exports reflect Snowflake policies
-FR16: Epic 4 — Custom source with masking preserves masked values in export
-FR17: Epic 4 — Custom source with row access exports only permitted rows
-FR18: Epic 4 — Custom source with projection: blocked columns NULL, warning recorded
+FR13: Epic 6 — Review default vs custom and masking/row access per source; acknowledge before export
+FR14: Epic 6 — Blocking disclosure when default source selected; acknowledge before export
+FR15: Epic 6 — Custom source exports reflect Snowflake policies
+FR16: Epic 6 — Custom source with masking preserves masked values in export
+FR17: Epic 6 — Custom source with row access exports only permitted rows
+FR18: Epic 6 — Custom source with projection: blocked columns NULL, warning recorded
 FR19: Epic 5 — Export new Event Table telemetry incrementally (no re-export)
 FR20: Epic 5 — Scope Event Table export to MVP categories (SQL/Snowpark compute)
 FR21: Epic 5 — Each ACCOUNT_USAGE source on independent schedule
 FR22: Epic 3 — View and edit per-source settings (enabled, interval, overlap, batch size)
 FR22a: Epic 3 — Adjust overlap window per ACCOUNT_USAGE source
-FR23: Epic 6 — Deliver all enabled telemetry through OTLP to Splunk
-FR24: Epic 6 — Analyze exported spans in Splunk (identity, context, trace correlation)
-FR25: Epic 6 — Original Event Table attributes intact; app-added only additive
-FR26: Epic 6 — Retryable OTLP retried; non-retryable recorded as terminal
+FR23: Epic 6 — Deliver all enabled telemetry through OTLP to Splunk after activation
+FR24: Epic 4 — Analyze exported spans in Splunk (identity, context, trace correlation)
+FR25: Epic 4 — Original Event Table attributes intact; app-added only additive
+FR26: Epic 4 — Retryable OTLP retried; non-retryable recorded as terminal
 FR27: Epic 7 — View health summary (destination, freshness, throughput, failures, issues)
 FR28: Epic 7 — Inspect each source (status, freshness, runs, errors, config)
 FR29: Epic 7 — Access structured app operational events in Snowflake event table via Snowsight
@@ -176,17 +176,17 @@ Maya can complete first-time setup by configuring the OTLP export destination (e
 Maya can discover available Event Tables and ACCOUNT_USAGE (and custom views), enable or disable Monitoring Packs, choose default or custom source per supported source, view and change execution intervals and per-source settings (interval, overlap for ACCOUNT_USAGE, batch size), and persist source configuration; the Telemetry sources page provides category-based st.data_editor with enable/interval/overlap and source discovery.
 **FRs covered:** FR4, FR5, FR6, FR7, FR11, FR12, FR22, FR22a
 
-### Epic 4: Data governance review and activation
-Maya can review governance implications per enabled source (default vs custom, masking/row access/projection), receive and acknowledge blocking disclosure when default sources are selected, and activate export so the app provisions tasks, streams, and network/secret objects; the Data governance page shows enabled sources with Status, View name, Source type, Governance message, and Sensitive columns; the Activate Export modal confirms and triggers provisioning.
-**FRs covered:** FR13, FR14, FR15, FR16, FR17, FR18
+### Epic 4: Splunk-compatible OTLP export foundation
+Sam can rely on a secure, reusable OTLP export foundation and Ravi can rely on Splunk-compatible telemetry shaping before activation wiring is added; the app can establish TLS-only OTLP exporters, preserve original Event Table attributes, enrich with db.* and snowflake.* conventions, and handle retryable versus terminal delivery failures deterministically.
+**FRs covered:** FR24, FR25, FR26
 
-### Epic 5: Collection pipeline handlers
-Sam (via the app’s automated pipelines) gets incremental Event Table export without re-exporting delivered records, with MVP entity scoping (SQL/Snowpark compute); each enabled ACCOUNT_USAGE source runs on its own independent schedule. DDL provisioning (streams, tasks, EAI) is handled by Story 4.3; this epic implements the Python stored-procedure handlers that those tasks call.
+### Epic 5: Incremental telemetry collection pipelines
+Sam can rely on Snowflake-native collection pipelines to read only new telemetry, apply MVP scope and dedup rules, and hand batches to the OTLP export foundation on independent schedules for Event Table and `ACCOUNT_USAGE` sources.
 **FRs covered:** FR19, FR20, FR21
 
-### Epic 6: OTLP export and Splunk-ready telemetry
-Sam can deliver all enabled Event Table and ACCOUNT_USAGE telemetry through the configured OTLP destination; Ravi can analyze exported spans in Splunk with correct identity, database/schema/warehouse context, and trace correlation; original Event Table attributes are preserved with additive enrichment only; retryable OTLP failures are retried automatically and non-retryable failures are recorded as terminal without endless retry.
-**FRs covered:** FR23, FR24, FR25, FR26
+### Epic 6: Data governance review and export activation
+Maya can review governance implications per enabled source, acknowledge required disclosure, and activate export end-to-end so the app provisions Snowflake streams, tasks, and OTLP egress objects using the already-delivered export and collection foundations; once activation succeeds, onboarding completes cleanly and telemetry begins flowing to Splunk.
+**FRs covered:** FR13, FR14, FR15, FR16, FR17, FR18, FR23
 
 ### Epic 7: Pipeline operations and observability health
 Sam can view a health summary (destination status, source freshness, export throughput, failures, recent issues), inspect each telemetry source for status, freshness, recent runs, errors, and editable configuration, access structured app operational events in the consumer’s Snowflake event table via Snowsight, and benefit from automatic Event Table stream recovery and per-source auto-suspend; Observability health page provides destination card, KPI metrics, throughput chart, category summary with drill-down, and conditional recent errors; empty state when no pipelines are configured.
@@ -216,11 +216,11 @@ So that I can install from Marketplace and approve privileges without manual SQL
 **And** setup.sql creates app_public (CREATE OR ALTER VERSIONED SCHEMA), _internal, _staging, _metrics (CREATE SCHEMA IF NOT EXISTS)  
 **And** no DDL fails when run a second time (idempotent)
 
-### Story 1.2: Config and state tables
+### Story 1.2: Durable config and state persistence
 
-As a developer (app backend),
-I want _internal.config and related state tables to exist and be writable by the app,
-So that destination and source settings can be persisted and read by pipelines and UI.
+As a Snowflake administrator (Maya),
+I want the app to preserve my configuration and pipeline state in durable Snowflake tables,
+So that setup choices, health history, and pipeline progress survive reruns and upgrades.
 
 **Acceptance Criteria:**
 
@@ -229,6 +229,13 @@ So that destination and source settings can be persisted and read by pipelines a
 **Then** the tables exist and accept inserts/updates  
 **And** config keys follow the convention (otlp.*, pack_enabled.*, source.<name>.*)  
 **And** _staging.stream_offset_log exists (empty, for zero-row INSERT pattern)
+
+**Implementation Tasks:**
+
+- Create `_internal.config` for durable app settings.
+- Create `_internal.export_watermarks` for per-source incremental progress.
+- Create `_metrics.pipeline_health` for operational metrics history.
+- Create `_staging.stream_offset_log` for the zero-row INSERT stream-advancement pattern.
 
 ### Story 1.3: Streamlit shell and navigation
 
@@ -348,11 +355,135 @@ So that I do not lose changes and know when the app state matches the UI.
 
 ---
 
-## Epic 4: Data governance review and activation
+## Epic 4: Splunk-compatible OTLP export foundation
 
-Maya can review governance per source, acknowledge disclosure when using default sources, and activate export so the app provisions tasks, streams, and network objects.
+Sam can rely on a secure, reusable OTLP export foundation and Ravi can rely on Splunk-compatible telemetry shaping before activation wiring is added.
 
-### Story 4.1: Data governance page
+### Story 4.1: Secure OTLP export foundation
+
+As an operator (Sam),
+I want the app to establish a secure, reusable OTLP export foundation for all telemetry signals,
+So that later activation and pipeline runs can send data to the configured collector without duplicating transport logic.
+
+**Acceptance Criteria:**
+
+**Given** The app has `otlp.endpoint` and an optional PEM secret reference in config  
+**When** the export layer initializes in a task sandbox  
+**Then** module-level OTLP exporters are created for the required signals (Span, Metric, Log for Event Table; Log for `ACCOUNT_USAGE`) using TLS credentials from the default CA bundle or the configured PEM secret  
+**And** export uses gRPC over TLS only, with no plaintext OTLP path  
+**And** the span processor choice is compatible with the stored-procedure lifecycle so export completes within the request window
+
+**Implementation Tasks:**
+
+- Initialize OTLP exporters at module scope for connection reuse within the sandbox.
+- Resolve default trust-store versus custom PEM-secret credentials safely.
+- Enforce TLS-only transport and reject plaintext misconfiguration paths.
+- Encapsulate exporter construction so collector stories consume a stable export API.
+
+### Story 4.2: Splunk-compatible telemetry contract
+
+As an SRE (Ravi),
+I want exported Event Table telemetry to preserve original attributes and add the required db.* and snowflake.* context,
+So that I can search and troubleshoot Snowflake activity in Splunk with the right semantics and no attribute loss.
+
+**Acceptance Criteria:**
+
+**Given** Event Table rows are passed to the mapping layer  
+**When** they are converted to OTLP spans, logs, or metrics  
+**Then** required `db.*` and `snowflake.*` attributes are added according to the architecture and telemetry contract  
+**And** original Event Table attributes are preserved with additive enrichment only, with no renaming or removal  
+**And** mandatory routing fields are present for source identity, Snowflake account identity, telemetry type, and service or resource identity
+
+**Implementation Tasks:**
+
+- Map Event Table fields into the stable `db.*` and project `snowflake.*` namespaces.
+- Preserve original producer attributes exactly as pass-through fields.
+- Validate mandatory routing-field coverage for downstream collector routing and Splunk searchability.
+
+### Story 4.3: Deterministic OTLP retry and terminal failure handling
+
+As an operator (Sam),
+I want retryable OTLP errors to be retried automatically and non-retryable errors to be recorded as terminal without endless retry,
+So that transient failures recover while permanent failures remain visible and bounded.
+
+**Acceptance Criteria:**
+
+**Given** the OTLP export foundation is sending a batch  
+**When** a retryable transport or protocol error occurs  
+**Then** the configured retry policy retries automatically and records the final outcome deterministically  
+**When** retries are exhausted or a non-retryable error occurs  
+**Then** the failure is logged through Native App event definitions and recorded as a terminal batch failure in `_metrics.pipeline_health` within the expected observability window  
+**And** the caller receives an explicit terminal result so the surrounding pipeline can advance or record the failure without entering an endless resend loop
+
+**Implementation Tasks:**
+
+- Classify retryable versus non-retryable OTLP failures consistently.
+- Surface retry exhaustion as an explicit terminal outcome to caller code.
+- Record terminal failures in structured logs and pipeline-health tables without leaking secrets.
+
+---
+
+## Epic 5: Incremental telemetry collection pipelines
+
+Sam can rely on Snowflake-native collection pipelines to read only new telemetry, apply MVP scope and dedup rules, and hand batches to the OTLP export foundation on independent schedules.
+
+### Story 5.1: Incremental Event Table collection and export
+
+As an operator (Sam),
+I want Event Table telemetry to be collected incrementally, scoped to MVP entity types, and handed to the export foundation,
+So that only relevant new SQL and Snowpark compute telemetry is delivered without re-exporting old rows.
+
+**Acceptance Criteria:**
+
+**Given** the Event Table collector procedure is executed against a selected Event Table source  
+**When** the procedure runs from an integration harness or from the activated triggered task  
+**Then** it sets `session.sql_simplifier_enabled = True`, loads config from `_internal.config`, and opens an explicit `BEGIN/COMMIT` transaction  
+**And** it reads from the stream using a Snowpark DataFrame and applies the entity-discrimination include list (`procedure`, `function`, `query`, `sql`) as the first pushdown operation  
+**And** it uses `to_pandas_batches()` for bounded memory and hands each batch to the Epic 4 export foundation  
+**And** it advances the stream via zero-row `INSERT` into `_staging.stream_offset_log` within the same transaction  
+**And** it records run metrics to `_metrics.pipeline_health` and emits structured Native App log events  
+**And** when the selected source is a governed custom view, exported data reflects Snowflake-enforced masking, row access, and projection outcomes  
+**And** if a field required for enrichment is missing or `NULL`, the pipeline continues and records a warning for that run
+
+**Implementation Tasks:**
+
+- Read Event Table stream data with Snowpark pushdown-first transformations.
+- Apply entity discrimination before non-filter processing.
+- Batch serialization via `to_pandas_batches()` and invoke the Epic 4 export foundation.
+- Advance stream offsets transactionally and record health/log outcomes.
+
+### Story 5.2: Incremental `ACCOUNT_USAGE` collection and export
+
+As an operator (Sam),
+I want each `ACCOUNT_USAGE` source to collect incrementally with watermark, overlap, and dedup logic and hand rows to the export foundation,
+So that performance telemetry is exported reliably on independent per-source schedules.
+
+**Acceptance Criteria:**
+
+**Given** the `ACCOUNT_USAGE` collector procedure is executed for a configured source  
+**When** the procedure runs from an integration harness or from an activated scheduled task  
+**Then** it sets `session.sql_simplifier_enabled = True`, loads config from `_internal.config`, and reads the current source watermark from `_internal.export_watermarks`  
+**And** it queries the selected source with the configured overlap window, latency cutoff, dedup rule, and batch limit  
+**And** it uses `to_pandas_batches()` to map rows into OTLP log or event payloads with the required routing fields and hands each batch to the Epic 4 export foundation  
+**And** it updates the watermark after successful export for that source  
+**And** it records run metrics to `_metrics.pipeline_health` and emits structured Native App log events  
+**And** the design remains one independent scheduled task per enabled source, with no shared coordinator required for successful collection  
+**And** when governed custom sources remove or null out fields through policy, the pipeline continues and records the impact as a warning
+
+**Implementation Tasks:**
+
+- Read source-specific config including `view_fqn`, `overlap_minutes`, and `batch_size`.
+- Apply watermark, overlap, latency cutoff, and dedup rules in Snowpark or SQL pushdown.
+- Serialize batches and invoke the Epic 4 export foundation.
+- Update per-source watermarks and health/log records independently.
+
+---
+
+## Epic 6: Data governance review and export activation
+
+Maya can review governance implications per source, acknowledge required disclosure, and activate export end to end so telemetry begins flowing to Splunk using the already-delivered export and collection foundations.
+
+### Story 6.1: Data governance page
 
 As a security or compliance reviewer,
 I want to see a read-only list of enabled sources with governance message and sensitive columns per row,
@@ -364,10 +495,10 @@ So that I can verify governance posture without editing anything.
 **When** I open the Data governance page  
 **Then** A read-only table shows enabled sources only with columns: Status, View name, Source type, Governance (per-row message), Sensitive columns (per-row list)  
 **And** Category headers match Telemetry sources (with status dot, no toggle)  
-**And** Governance message states for default source that masking/row access require a custom view; for custom source that Snowflake policies apply  
-**And** An "Agree" button is shown to record governance acknowledgement (required during Getting Started flow; re-confirmable later)
+**And** Governance message states for default source that masking and row-access controls require a custom view; for custom source that Snowflake policies apply  
+**And** An "Agree" button is shown to record governance acknowledgement (required during Getting Started flow and re-confirmable later)
 
-### Story 4.2: Governance disclosure and acknowledgement
+### Story 6.2: Governance disclosure and acknowledgement
 
 As a Snowflake administrator (Maya),
 I want to see a blocking disclosure when I have selected a default source and must acknowledge before export is enabled,
@@ -375,125 +506,97 @@ So that I understand governance implications before activating.
 
 **Acceptance Criteria:**
 
-**Given** At least one enabled source is a default ACCOUNT_USAGE view or Event Table  
+**Given** At least one enabled source is a default `ACCOUNT_USAGE` view or Event Table  
 **When** I attempt to activate export (or complete the governance task in Getting Started)  
-**Then** The app shows a blocking disclosure that masking and row access policies cannot be applied to default sources and that a custom source is required for governance  
-**And** I must explicitly acknowledge (e.g. "Agree" or checkbox) before activation can proceed  
-**And** The acknowledgement is recorded (e.g. in config or session_state)
+**Then** The app shows a blocking disclosure that masking and row-access policies cannot be applied to default sources and that a custom source is required for governance  
+**And** I must explicitly acknowledge before activation can proceed  
+**And** The acknowledgement is recorded in durable app state
 
-### Story 4.3: Activate export provisioning
+### Story 6.3: Activation confirmation UX
 
 As a Snowflake administrator (Maya),
-I want to click "Enable Auto-Export" and have the app create tasks, streams, and network/secret objects,
-So that telemetry starts flowing without me running SQL or scripts.
+I want a clear activation confirmation experience that shows what the app will create before I approve it,
+So that I understand the operational consequences before enabling export.
 
 **Acceptance Criteria:**
 
 **Given** OTLP destination is configured, at least one source is enabled, and governance is acknowledged  
-**When** I open the Activate Export modal (st.dialog) from the Getting Started tile or equivalent  
-**Then** The modal shows header "Activate Telemetry Export" with rocket icon, an info box ("What will happen"), a bullet list of objects to be created (scheduled tasks, streams, network rules, secret objects), a "Cancel" (secondary) button, and "Enable Auto-Export" (primary) button  
-**When** I click "Enable Auto-Export"  
-**Then** The app provisions the following Snowflake objects from the saved source configuration:  
-**And** For each enabled Event Table source: an APPEND_ONLY stream on the user-selected source (view or event table) with naming convention _splunk_obs_stream_<source_name>, and a triggered task (WHEN SYSTEM$STREAM_HAS_DATA) that calls the Event Table collector procedure, named _splunk_obs_task_<source_name>  
-**And** For each enabled ACCOUNT_USAGE source: an independent serverless scheduled task with source-specific interval that calls the ACCOUNT_USAGE collector procedure, named _splunk_obs_task_<source_name>; an initial watermark row in _internal.export_watermarks  
-**And** EAI + Network Rules for OTLP egress, and optional Snowflake Secret reference for custom PEM certificate  
-**And** I see in-progress feedback (spinner on button, Cancel disabled) and then success (modal closes, st.success toast) or a clear error with retry option  
-**And** After success, Getting Started task 4 is complete and (when all 4 are complete and I navigate away) Getting started is removed from the sidebar  
+**When** I open the Activate Export modal from Getting Started or an equivalent entry point  
+**Then** The modal shows header "Activate Telemetry Export", an info box describing what will happen, a bullet list of objects to be created, and Cancel / Enable Auto-Export actions  
+**And** the primary action remains unavailable until prerequisite setup is complete  
+**And** the modal presents in-progress feedback and clear success or failure states when activation begins
 
-**Implementation note:** The stored procedures referenced by tasks (event_table_collector, account_usage_collector) are registered in setup.sql (Story 1.1). Their Python handler implementations are delivered by Epic 5. This story creates the DDL infrastructure; Epic 5 implements the handler behavior.
+**Implementation Tasks:**
 
----
+- Implement the activation dialog with native Streamlit components only.
+- Surface prerequisite checks and object-summary content from saved configuration.
+- Disable duplicate submissions while activation is in progress.
 
-## Epic 5: Collection pipeline handlers
+### Story 6.4: Event Table export provisioning
 
-Sam (via automated pipelines) gets incremental Event Table export with entity scoping, and independent ACCOUNT_USAGE collection with watermark, overlap, and dedup. This epic implements the Python handler code for the stored procedures that are registered in setup.sql (Story 1.1) and whose tasks are provisioned by Story 4.3.
-
-### Story 5.1: Event Table collector procedure
-
-As an operator (Sam),
-I want the Event Table collector to read from the stream, filter to MVP entity types, and hand off to export,
-So that only SQL/Snowpark compute telemetry is processed and exported.
+As a Snowflake administrator (Maya),
+I want activation to provision the shared OTLP egress objects and Event Table pipeline resources for enabled Event Table sources,
+So that tracing telemetry can start flowing without manual SQL.
 
 **Acceptance Criteria:**
 
-**Given** The Event Table triggered task fires (stream has data, task provisioned by Story 4.3)  
-**When** The collector procedure executes  
-**Then** It sets session.sql_simplifier_enabled = True, loads config from _internal.config (otlp.endpoint, batch settings)  
-**And** Within an explicit BEGIN/COMMIT transaction: reads from the stream using Snowpark DataFrame, applies entity discrimination filter (snow.executable.type IN procedure, function, query, sql) as the first pushdown operation  
-**And** It uses to_pandas_batches() for bounded memory; calls the OTLP export layer (Story 6.1) with each batch  
-**And** Advances the stream via zero-row INSERT into _staging.stream_offset_log within the same transaction  
-**And** Records run metrics to _metrics.pipeline_health (rows_collected, rows_exported, rows_failed, export_latency_ms, duration_ms)  
-**And** Emits structured log events via Native App event definitions (pipeline, source, run_id, duration_ms, error_code)  
-**And** When the user-selected source is a custom view with masking, row access, or projection policies, exported data reflects those policies (Snowflake enforces at read time)  
-**And** If a column expected by the enrichment layer is NULL or missing (e.g. due to projection policy), the pipeline continues with that field as NULL and records a warning for the affected run in _metrics.pipeline_health
+**Given** activation is confirmed and at least one Event Table source is enabled  
+**When** the app executes Event Table provisioning  
+**Then** it provisions or binds the OTLP egress objects required for the configured destination, including EAI and network-rule support and any optional secret references needed for certificate handling  
+**And** for each enabled Event Table source it creates an APPEND_ONLY stream on the selected source using the `_splunk_obs_stream_<source_name>` naming convention  
+**And** for each enabled Event Table source it creates a triggered task using the `_splunk_obs_task_<source_name>` naming convention that invokes the already-delivered Event Table collector from Epic 5  
+**And** provisioning success or failure is reported clearly to the user and logged for troubleshooting
 
-### Story 5.2: ACCOUNT_USAGE collector procedure
+**Implementation Tasks:**
 
-As an operator (Sam),
-I want the ACCOUNT_USAGE collector to query the selected source with watermark and overlap, map rows to OTLP log/event, update the watermark, and record health,
-So that performance telemetry is exported incrementally and reliably.
+- Provision shared OTLP egress dependencies required by activated pipelines.
+- Create Event Table streams on selected sources.
+- Create triggered tasks that call the Epic 5 Event Table collector.
+- Record provisioning results and recoverable failure details.
 
-**Acceptance Criteria:**
+### Story 6.5: `ACCOUNT_USAGE` task provisioning
 
-**Given** An ACCOUNT_USAGE scheduled task fires (task provisioned by Story 4.3)  
-**When** The collector procedure executes  
-**Then** It sets session.sql_simplifier_enabled = True, loads config from _internal.config (otlp.endpoint, source view_fqn, overlap_minutes, batch_size)  
-**And** Reads the current watermark from _internal.export_watermarks for this source  
-**And** Runs a Snowpark query with: overlap window (WHERE ts > watermark - INTERVAL overlap_minutes), latency cutoff (AND ts <= NOW() - INTERVAL overlap_minutes), dedup (QUALIFY ROW_NUMBER() OVER (PARTITION BY natural_key ORDER BY ts DESC) = 1), and batch limit  
-**And** Uses to_pandas_batches() to map rows to OTLP log/event format with source-specific attributes and mandatory routing fields (source identity, Snowflake account identity, telemetry type); calls the OTLP export layer (Story 6.1) with each batch  
-**And** Updates the watermark in _internal.export_watermarks after successful export  
-**And** Records run metrics to _metrics.pipeline_health; emits structured log events via Native App event definitions  
-**And** When the user-selected source is a custom view with masking, row access, or projection policies, exported data reflects those policies (Snowflake enforces at read time)  
-**And** If a column expected by the mapping is NULL or missing (e.g. due to projection policy), the pipeline continues with that field as NULL and records a warning for the affected run in _metrics.pipeline_health
-
----
-
-## Epic 6: OTLP export and Splunk-ready telemetry
-
-Sam can deliver all telemetry via OTLP; Ravi can analyze spans in Splunk with correct conventions; retry and terminal failure handling behave as specified.
-
-### Story 6.1: OTLP gRPC exporter module
-
-As a developer (backend),
-I want a single OTLP gRPC export module with module-level exporter init and TLS support,
-So that all collectors can send telemetry without duplicating connection logic and connections are reused within the sandbox.
+As a Snowflake administrator (Maya),
+I want activation to provision independent scheduled tasks and initial watermark state for enabled `ACCOUNT_USAGE` sources,
+So that performance telemetry starts flowing on per-source schedules without manual SQL.
 
 **Acceptance Criteria:**
 
-**Given** The app has otlp.endpoint (and optional PEM secret reference) in config  
-**When** The export module is first used in a task  
-**Then** OTLP exporters (Span, Metric, Log for Event Table; Log for ACCOUNT_USAGE) are initialized at module level with TLS credentials (default CA or custom PEM from secret)  
-**And** Export uses gRPC over TLS only; no plaintext OTLP  
-**And** SimpleSpanProcessor (or equivalent) is used so export completes within the procedure lifecycle
+**Given** activation is confirmed and at least one `ACCOUNT_USAGE` source is enabled  
+**When** the app executes `ACCOUNT_USAGE` provisioning  
+**Then** for each enabled source it creates an independent serverless scheduled task using the `_splunk_obs_task_<source_name>` naming convention that invokes the already-delivered `ACCOUNT_USAGE` collector from Epic 5  
+**And** it creates or initializes the corresponding watermark row in `_internal.export_watermarks`  
+**And** the created tasks use the saved per-source schedule and configuration rather than a shared root coordinator  
+**And** provisioning success or failure is reported clearly to the user and logged for troubleshooting
 
-### Story 6.2: Event Table span and log mapping
+**Implementation Tasks:**
 
-As an SRE (Ravi),
-I want exported Event Table spans to include db.* and snowflake.* attributes and to preserve all original attributes,
-So that I can trace and search in Splunk APM with correct context and no attribute loss.
+- Create one scheduled task per enabled `ACCOUNT_USAGE` source.
+- Seed or validate the initial watermark state for each source.
+- Bind tasks to saved intervals and source-specific configuration.
+- Record provisioning results and recoverable failure details.
 
-**Acceptance Criteria:**
+### Story 6.6: Activation completion and onboarding transition
 
-**Given** Event Table rows are read by the collector  
-**When** They are mapped to OTLP spans/logs/metrics  
-**Then** db.system.name, db.namespace, db.operation.name, db.stored_procedure.name, and other db.* and snowflake.* attributes are set per OTel and project conventions  
-**And** Original Event Table attributes are preserved (convention-transparent relay); no renaming or removal  
-**And** Mandatory routing fields (source identity, Snowflake account identity, telemetry type, service/resource identity) are present
-
-### Story 6.3: Retry and terminal failure handling
-
-As an operator (Sam),
-I want retryable OTLP errors to be retried automatically and non-retryable errors to be recorded as terminal without endless retry,
-So that transient failures recover and permanent failures are visible and do not spin.
+As a Snowflake administrator (Maya),
+I want successful activation to complete Getting Started and transition me cleanly into daily operations,
+So that I know setup is finished and where to go next.
 
 **Acceptance Criteria:**
 
-**Given** The OTLP export layer is sending a batch  
-**When** A retryable error occurs (e.g. temporary network failure)  
-**Then** The OTel SDK (or app) retries according to the defined policy (e.g. ~6 attempts over ~63s)  
-**When** Retries are exhausted or a non-retryable error occurs  
-**Then** The failure is logged (Native App event definitions) and recorded as a terminal batch failure in _metrics.pipeline_health  
-**And** The pipeline advances (e.g. stream consumed or watermark updated) so the next run does not re-send the same batch indefinitely
+**Given** activation provisioning succeeds  
+**When** the app completes activation  
+**Then** I see success feedback indicating that telemetry export is enabled and that I can navigate to Observability health  
+**And** Getting Started task 4 is marked complete and the progress indicator shows 4/4  
+**And** I remain on the current page until I navigate away manually  
+**And** once all tasks are complete and I navigate away, Getting Started is removed from the sidebar as defined in the UX specification  
+**And** after the first successful pipeline cycle, telemetry is visible in Splunk through the configured OTLP path
+
+**Implementation Tasks:**
+
+- Mark onboarding completion state in durable app configuration.
+- Drive success banners, toasts, and progress updates from provisioning outcomes.
+- Enforce the UX rule that Getting Started disappears only after successful completion and a subsequent navigation away.
 
 ---
 
