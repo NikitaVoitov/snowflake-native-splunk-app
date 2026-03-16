@@ -27,15 +27,11 @@ dependencies = [
     "plotly>=6.5.0",
 
     # Telemetry Export (OTLP/gRPC) — our app uses these directly to send spans to Splunk
-    # Anaconda latest: opentelemetry-sdk==1.38.0, grpcio==1.74.1, protobuf==6.33.0
+    # Anaconda latest (verified 2026-03-15): opentelemetry-sdk==1.38.0, grpcio==1.78.0, protobuf==6.33.5
     "opentelemetry-sdk>=1.38.0",
     "opentelemetry-exporter-otlp-proto-grpc>=1.38.0",
-    "grpcio>=1.74.1",
-    "protobuf>=6.33.0",
-
-    # HTTP Client & Retry
-    "httpx>=0.28.1",
-    "tenacity>=9.1.2",
+    "grpcio>=1.78.0",
+    "protobuf>=6.33.5",
 
     # Data Serialization
     "orjson>=3.9.15",
