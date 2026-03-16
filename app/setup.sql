@@ -17,6 +17,42 @@ CREATE SCHEMA IF NOT EXISTS _internal;
 CREATE SCHEMA IF NOT EXISTS _staging;
 CREATE SCHEMA IF NOT EXISTS _metrics;
 
+-- Durable config/state tables in stateful schemas
+CREATE TABLE IF NOT EXISTS _internal.config (
+    CONFIG_KEY   VARCHAR(256) NOT NULL,
+    CONFIG_VALUE VARCHAR(16384),
+    UPDATED_AT   TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP(),
+    CONSTRAINT pk_config PRIMARY KEY (CONFIG_KEY)
+);
+
+CREATE TABLE IF NOT EXISTS _internal.export_watermarks (
+    SOURCE_NAME     VARCHAR(256) NOT NULL,
+    WATERMARK_VALUE TIMESTAMP_LTZ NOT NULL,
+    UPDATED_AT      TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP(),
+    CONSTRAINT pk_export_watermarks PRIMARY KEY (SOURCE_NAME)
+);
+
+CREATE TABLE IF NOT EXISTS _metrics.pipeline_health (
+    RUN_ID        VARCHAR(36) NOT NULL,
+    PIPELINE_NAME VARCHAR(256) NOT NULL,
+    SOURCE_NAME   VARCHAR(256) NOT NULL,
+    METRIC_NAME   VARCHAR(256) NOT NULL,
+    METRIC_VALUE  NUMBER(38, 6),
+    METADATA      VARIANT,
+    RECORDED_AT   TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP()
+);
+
+CREATE TABLE IF NOT EXISTS _staging.stream_offset_log (
+    _OFFSET_CONSUMED_AT TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP()
+);
+
+-- Streamlit/health visibility for app_admin
+GRANT USAGE ON SCHEMA _internal TO APPLICATION ROLE app_admin;
+GRANT USAGE ON SCHEMA _metrics TO APPLICATION ROLE app_admin;
+GRANT SELECT, INSERT, UPDATE ON TABLE _internal.config TO APPLICATION ROLE app_admin;
+GRANT SELECT ON TABLE _internal.export_watermarks TO APPLICATION ROLE app_admin;
+GRANT SELECT ON TABLE _metrics.pipeline_health TO APPLICATION ROLE app_admin;
+
 -- Minimal Streamlit placeholder to satisfy artifacts.default_streamlit.
 -- Story 1.3 will replace this with full UI shell/navigation.
 CREATE OR REPLACE STREAMLIT app_public.main

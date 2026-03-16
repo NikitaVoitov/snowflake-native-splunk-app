@@ -188,7 +188,7 @@ gpt-5.3-codex-high
 - IDE schema lint errors in `app/manifest.yml` and `snowflake.yml` are caused by outdated/invalid extension-local schema files, not by executable Snowflake runtime validation.
 - Added workspace YAML schema overrides in `.vscode/settings.json` and `.vscode/schemas/*` to restore accurate local linting for manifest v2 and project definition v2.
 - Snowsight evidence attached by user confirms this story's stage-dev outcomes are visible in UI, not only via CLI.
-- Future-story note: provider-side `SHOW SCHEMAS IN APPLICATION/DATABASE SPLUNK_OBSERVABILITY_DEV_APP` currently shows `APP_PUBLIC` and `INFORMATION_SCHEMA` only. Re-validate `_internal`, `_staging`, `_metrics` behavior at Story 1.2 start (before creating stateful tables) and adjust setup approach if needed.
+- Future-story note superseded by later validation: as of 2026-03-16, `SHOW SCHEMAS IN APPLICATION SPLUNK_OBSERVABILITY_DEV_APP` shows `APP_PUBLIC`, `INFORMATION_SCHEMA`, `_INTERNAL`, and `_METRICS`. `_STAGING` is still not visible from the provider `ACCOUNTADMIN` / `snow sql --connection dev` context, so any story that depends on `_STAGING` must verify it explicitly rather than assuming visibility behavior from Story 1.1.
 
 ### File List
 
