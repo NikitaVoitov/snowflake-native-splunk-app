@@ -84,9 +84,9 @@ sprints:
       epic-1:
         name: "App foundation and installation"
         tags: [Infrastructure, Full-stack]
-        status: backlog
+        status: in-progress
         stories:
-          1-1-native-app-manifest-and-idempotent-setup: backlog
+          1-1-native-app-manifest-and-idempotent-setup: done
           1-2-config-and-state-tables: backlog
           1-3-streamlit-shell-and-navigation: backlog
         retrospective: optional

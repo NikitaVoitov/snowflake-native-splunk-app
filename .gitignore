@@ -47,6 +47,9 @@ mcp.json
 .env.*
 !.env.example
 
+# ── Snowflake CLI Build Output ──────────────────────────────────
+output/
+
 # ── Snowflake CLI ───────────────────────────────────────────────
 # Local Snowflake CLI connection config (contains account URLs, roles)
 # This lives in ~/.snowflake/ globally, but if copied locally:
