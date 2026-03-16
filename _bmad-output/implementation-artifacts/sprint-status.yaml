@@ -1,0 +1,306 @@
+# generated: 2026-03-15
+# last_updated: 2026-03-16
+# project: snowflake-native-splunk-app
+# project_key: NOKEY
+# tracking_system: file-system
+# story_location: _bmad-output/implementation-artifacts
+# total_stories: 25
+# total_sprints: 8
+
+# STATUS DEFINITIONS:
+# ==================
+# Sprint Status:
+#   - planned: Sprint is planned but not started
+#   - active: Sprint is currently in progress
+#   - done: All stories in sprint completed
+#
+# Epic Status:
+#   - backlog: Epic not yet started
+#   - in-progress: Epic actively being worked on
+#   - done: All stories in epic completed
+#
+# Story Status:
+#   - backlog: Story only exists in epic file
+#   - ready-for-dev: Story file created in stories folder
+#   - in-progress: Developer actively working on implementation
+#   - review: Ready for code review
+#   - done: Story completed
+#
+# Retrospective Status:
+#   - optional: Can be completed but not required
+#   - done: Retrospective has been completed
+
+# WORKFLOW NOTES:
+# ===============
+# - Epic transitions to 'in-progress' when first story is created (via create-story)
+# - Stories should be worked sequentially within a sprint (top to bottom)
+# - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
+# - Each sprint delivers a testable, measurable increment of user value
+#
+# DEPENDENCY CHAIN (critical path):
+# =================================
+#   Epic 6 (OTLP module) → Epic 5 (collectors import OTLP) → Story 4.3 (activation creates
+#   tasks that call collectors) → Epic 7 (health needs running pipelines)
+#
+#   Epics 2 + 3 (UI config) have no dependency on Epics 5 + 6 (backend) and
+#   vice versa — they converge at Story 4.3 (the integration point).
+#
+#   Implementation order: 1 → 2 → 3 → 6 → 5 → 4 → 7 → 8
+#   This front-loads user-visible UI so Maya sees progress early, then builds
+#   backend infrastructure, then ties everything together at the MVP milestone.
+
+generated: 2026-03-15
+last_updated: 2026-03-16
+project: snowflake-native-splunk-app
+project_key: NOKEY
+tracking_system: file-system
+story_location: _bmad-output/implementation-artifacts
+
+# ═══════════════════════════════════════════════════════════════════════
+# SPRINT PLAN
+# ═══════════════════════════════════════════════════════════════════════
+
+sprints:
+
+  # ─────────────────────────────────────────────────────────────────────
+  # SPRINT 1: Installable app with navigable UI
+  # ─────────────────────────────────────────────────────────────────────
+  sprint-1:
+    status: planned
+    goal: "App installs from Marketplace, UI shell is navigable, config storage works"
+    deliverable: >
+      Maya installs the Native App and sees a working Streamlit UI with sidebar
+      navigation (Getting Started, Observability Health, Telemetry Sources,
+      Splunk Settings, Data Governance, About). All schemas and config/state
+      tables exist. Pages render empty states.
+    acceptance_test: >
+      Install app → approve privileges → open Streamlit UI → navigate all
+      sidebar pages → verify app_public, _internal, _staging, _metrics schemas
+      exist → verify config and state tables created → reinstall confirms
+      idempotent DDL.
+    epic:
+      epic-1:
+        name: "App foundation and installation"
+        tags: [Infrastructure, Full-stack]
+        status: backlog
+        stories:
+          1-1-native-app-manifest-and-idempotent-setup: backlog
+          1-2-config-and-state-tables: backlog
+          1-3-streamlit-shell-and-navigation: backlog
+        retrospective: optional
+
+  # ─────────────────────────────────────────────────────────────────────
+  # SPRINT 2: Splunk destination is configurable
+  # ─────────────────────────────────────────────────────────────────────
+  sprint-2:
+    status: planned
+    goal: "Maya can configure OTLP destination, test connection, and see Getting Started progress"
+    deliverable: >
+      Maya enters an OTLP endpoint, runs a connection test (pass/fail),
+      optionally provides and validates a PEM certificate, and saves settings.
+      The Getting Started hub shows 4 task tiles with 1/4 complete after save.
+    acceptance_test: >
+      Open Splunk Settings → enter OTLP endpoint → click Test Connection →
+      see pass result → (optional) paste PEM → Validate Certificate → see pass →
+      Save Settings → navigate to Getting Started → see task 1 completed (1/4) →
+      verify config persisted in _internal.config → restart app → config still there.
+    depends_on: [sprint-1]
+    epic:
+      epic-2:
+        name: "First-time setup and destination configuration"
+        tags: [UI, Config]
+        status: backlog
+        stories:
+          2-1-otlp-endpoint-and-connection-test: backlog
+          2-2-optional-certificate-and-validation: backlog
+          2-3-persist-destination-config-and-getting-started-hub: backlog
+        retrospective: optional
+
+  # ─────────────────────────────────────────────────────────────────────
+  # SPRINT 3: Telemetry sources are selectable
+  # ─────────────────────────────────────────────────────────────────────
+  sprint-3:
+    status: planned
+    goal: "Maya can discover sources, enable packs, select sources, configure intervals, and save"
+    deliverable: >
+      Maya opens the Telemetry Sources page, sees discovered Event Tables and
+      ACCOUNT_USAGE views organized by Monitoring Pack categories, enables/disables
+      packs, selects default or custom source per entry, adjusts intervals,
+      overlap, and batch size, and saves the configuration.
+    acceptance_test: >
+      Open Telemetry Sources → see discovered sources in categories →
+      enable Distributed Tracing pack → select a custom view for one source →
+      change interval → change overlap for AU source → save → reopen page →
+      verify selections persisted → Getting Started shows 2/4.
+    depends_on: [sprint-1]
+    epic:
+      epic-3:
+        name: "Telemetry source selection and pack management"
+        tags: [UI, Config]
+        status: backlog
+        stories:
+          3-1-source-discovery-and-pack-toggles: backlog
+          3-2-per-source-selection-and-intervals: backlog
+          3-3-save-source-configuration: backlog
+        retrospective: optional
+
+  # ─────────────────────────────────────────────────────────────────────
+  # SPRINT 4: OTLP export pipeline
+  # ─────────────────────────────────────────────────────────────────────
+  sprint-4:
+    status: planned
+    goal: "OTLP gRPC module can send spans, logs, and metrics to Splunk with retry and failure handling"
+    deliverable: >
+      A reusable OTLP gRPC export module with module-level exporter init,
+      TLS support (including custom PEM), span/log mapping with Splunk-ready
+      OTel conventions, and automatic retry for transient failures with
+      terminal failure recording. Collectors (Sprint 5) will import this module.
+    acceptance_test: >
+      Integration test: initialize exporter with test endpoint → send a batch
+      of span data → verify arrival in Splunk with correct db.*/snowflake.*
+      attributes → simulate transient error → verify retry succeeds → simulate
+      permanent error → verify terminal failure recorded in _metrics.pipeline_health.
+    depends_on: [sprint-1]
+    note: >
+      Backend infrastructure sprint — not user-visible in the UI, but fully
+      testable via integration tests. Required before collectors (Sprint 5) and
+      activation (Sprint 6) can produce end-to-end results.
+    epic:
+      epic-6:
+        name: "OTLP export and Splunk-ready telemetry"
+        tags: [Backend]
+        status: backlog
+        stories:
+          6-1-otlp-grpc-exporter-module: backlog
+          6-2-event-table-span-and-log-mapping: backlog
+          6-3-retry-and-terminal-failure-handling: backlog
+        retrospective: optional
+
+  # ─────────────────────────────────────────────────────────────────────
+  # SPRINT 5: Collection handlers process telemetry
+  # ─────────────────────────────────────────────────────────────────────
+  sprint-5:
+    status: planned
+    goal: "ET and AU collector procedures read data, filter, map, export via OTLP module, and record health"
+    deliverable: >
+      Two Python stored-procedure handlers: the Event Table collector reads
+      from a stream, applies entity discrimination, batches via to_pandas_batches(),
+      exports via the OTLP module (Sprint 4), and records health. The
+      ACCOUNT_USAGE collector reads with watermark + overlap, deduplicates,
+      maps to OTLP log/event format, and updates watermark.
+    acceptance_test: >
+      Integration test: create test stream with sample ET data → run ET collector →
+      verify entity filter applied → verify batch exported → verify stream advanced →
+      verify health metrics in _metrics.pipeline_health.
+      Integration test: seed AU source with test rows → run AU collector →
+      verify watermark/overlap/dedup → verify OTLP export → verify watermark updated.
+    depends_on: [sprint-4]
+    note: >
+      Backend infrastructure sprint — not user-visible in the UI, but fully
+      testable via integration tests against a dev Snowflake schema.
+      Story 4.3 (Sprint 6) will create the tasks that invoke these handlers.
+    epic:
+      epic-5:
+        name: "Collection pipeline handlers"
+        tags: [Backend]
+        status: backlog
+        stories:
+          5-1-event-table-collector-procedure: backlog
+          5-2-account-usage-collector-procedure: backlog
+        retrospective: optional
+
+  # ─────────────────────────────────────────────────────────────────────
+  # SPRINT 6: End-to-end — data flows to Splunk  🎯 MVP MILESTONE
+  # ─────────────────────────────────────────────────────────────────────
+  sprint-6:
+    status: planned
+    goal: "Maya reviews governance, acknowledges, activates export — data flows from Snowflake to Splunk"
+    deliverable: >
+      Maya reviews the Data Governance page showing enabled sources with
+      governance implications, acknowledges disclosure, opens the Activate
+      Export modal, and clicks Enable Auto-Export. The app provisions streams,
+      tasks, EAI, and network rules. Pipelines start running. Telemetry
+      appears in Splunk. Getting Started shows 4/4 and is removed from sidebar.
+    acceptance_test: >
+      Open Data Governance → see enabled sources with governance messages →
+      acknowledge → open Activate Export modal → see objects to be created →
+      click Enable Auto-Export → see progress spinner → see success toast →
+      verify streams and tasks exist in Snowflake → wait one cycle → verify
+      data in Splunk → Getting Started shows 4/4 → navigate away → Getting
+      Started removed from sidebar.
+    depends_on: [sprint-2, sprint-3, sprint-5]
+    milestone: MVP
+    note: >
+      This is the integration point where all prior work converges. After this
+      sprint, the complete first-time setup flow works end-to-end and telemetry
+      is flowing from Snowflake to Splunk.
+    epic:
+      epic-4:
+        name: "Data governance review and activation"
+        tags: [Full-stack, Integration]
+        status: backlog
+        stories:
+          4-1-data-governance-page: backlog
+          4-2-governance-disclosure-and-acknowledgement: backlog
+          4-3-activate-export-provisioning: backlog
+        retrospective: optional
+
+  # ─────────────────────────────────────────────────────────────────────
+  # SPRINT 7: Operators can monitor and troubleshoot pipelines
+  # ─────────────────────────────────────────────────────────────────────
+  sprint-7:
+    status: planned
+    goal: "Sam can monitor health, drill into sources, see errors, and rely on automatic recovery"
+    deliverable: >
+      The Observability Health page shows destination status, 4 KPI metrics,
+      export throughput chart, category health summary with drill-down, and
+      recent errors feed. The Telemetry Sources page shows per-source health
+      columns. Stale streams recover automatically. Failing sources auto-suspend
+      without affecting others.
+    acceptance_test: >
+      Open Observability Health → see destination card, KPIs, throughput chart,
+      category summary → drill down to source → see freshness, runs, errors →
+      trigger a source failure → verify auto-suspend → verify other sources
+      unaffected → trigger stale stream → verify automatic recovery within
+      recovery window → verify data gap recorded → see errors in Recent Errors →
+      click "View all in Snowsight" → query events.
+    depends_on: [sprint-6]
+    epic:
+      epic-7:
+        name: "Pipeline operations and observability health"
+        tags: [UI, Backend]
+        status: backlog
+        stories:
+          7-1-pipeline-health-recording-and-operational-logs: backlog
+          7-2-observability-health-page: backlog
+          7-3-telemetry-sources-per-source-health-columns: backlog
+          7-4-stale-stream-recovery-and-auto-suspend: backlog
+          7-5-recent-errors-feed-and-empty-state: backlog
+        retrospective: optional
+
+  # ─────────────────────────────────────────────────────────────────────
+  # SPRINT 8: Marketplace-ready release
+  # ─────────────────────────────────────────────────────────────────────
+  sprint-8:
+    status: planned
+    goal: "App supports upgrades, retains state, emits upgrade events, and passes Marketplace approval"
+    deliverable: >
+      The app supports version upgrades with config/state retention, emits
+      structured upgrade events, and passes the automated Marketplace security
+      scan. Reviewer guidance is complete.
+    acceptance_test: >
+      Deploy v1 → configure → activate → verify data flowing → deploy v2 →
+      verify config and watermarks retained → verify upgrade event in event
+      table → verify in-flight task resumes → run Marketplace security scan →
+      zero Critical/High findings → verify reviewer guidance document complete.
+    depends_on: [sprint-7]
+    epic:
+      epic-8:
+        name: "App lifecycle and Marketplace release"
+        tags: [DevOps]
+        status: backlog
+        stories:
+          8-1-versioned-and-stateful-schema-upgrade: backlog
+          8-2-upgrade-continuity-and-upgrade-events: backlog
+          8-3-marketplace-packaging-and-submission-readiness: backlog
+        retrospective: optional
