@@ -95,7 +95,7 @@ if "onboarding_complete" not in st.session_state:
 @st.dialog(" ")
 def show_about() -> None:
     st.markdown(
-        f"""
+        """
         <div style="text-align: center; padding: 0.5rem 0 0 0;">
             <p style="font-size: 1.25rem; font-weight: 700; margin: 0 0 0.25rem 0;">
                 Splunk Observability</p>
@@ -104,17 +104,18 @@ def show_about() -> None:
                 Version 1.0.0</p>
             <p style="margin: 0 0 0.1rem 0;">Copyright &copy; 2026 Splunk Inc.</p>
             <p style="margin: 0 0 1.5rem 0;">All rights reserved.</p>
-            <a href="{DOCS_URL}" target="_blank" rel="noopener noreferrer"
-               style="display: inline-flex; align-items: center; gap: 0.4rem;
-                      padding: 0.4rem 1rem; border: 1px solid #e0e0e0;
-                      border-radius: 0.5rem; color: #0a0a0a; text-decoration: none;
-                      font-size: 0.9rem; font-weight: 500;">
-                <span style="font-size: 1rem;">&#8599;</span> Documentation
-            </a>
         </div>
         """,
         unsafe_allow_html=True,
     )
+    left, center, right = st.columns([1, 1.8, 1])
+    with center:
+        st.link_button(
+            "Documentation",
+            DOCS_URL,
+            icon=":material/open_in_new:",
+            width="stretch",
+        )
 
 
 pages = [

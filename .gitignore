@@ -68,6 +68,9 @@ _bmad/
 _bmad-output/*
 !_bmad-output/*-artifacts/
 
+# ── Root-level assets (screenshots, etc.; not for version control) ─
+/*.png
+
 # ── OS Files ────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
