@@ -1,5 +1,5 @@
 # generated: 2026-03-15
-# last_updated: 2026-03-16
+# last_updated: 2026-03-17
 # project: snowflake-native-splunk-app
 # project_key: NOKEY
 # tracking_system: file-system
@@ -52,8 +52,8 @@
 #   the actual dependency order and removing forward-dependency workarounds.
 
 generated: 2026-03-15
-last_updated: 2026-03-15
-updated_by: correct-course (warehouse binding requirement added to Story 1-1)
+last_updated: 2026-03-17
+updated_by: epic-1 validated; story 1-1 marked done
 project: snowflake-native-splunk-app
 project_key: NOKEY
 tracking_system: file-system
@@ -69,7 +69,7 @@ sprints:
   # SPRINT 1: Installable app with navigable UI
   # ─────────────────────────────────────────────────────────────────────
   sprint-1:
-    status: planned
+    status: done
     goal: "App installs from Marketplace, UI shell is navigable, config storage works"
     deliverable: >
       Maya installs the Native App and sees a working Streamlit UI with sidebar
@@ -85,12 +85,12 @@ sprints:
       epic-1:
         name: "App foundation and installation"
         tags: [Infrastructure, Full-stack]
-        status: in-progress
+        status: done
         stories:
-          1-1-native-app-manifest-and-idempotent-setup: in-progress  # reopened: warehouse binding (CONSUMER_WAREHOUSE ref + ALTER STREAMLIT QUERY_WAREHOUSE)
+          1-1-native-app-manifest-and-idempotent-setup: done
           1-2-config-and-state-tables: done
-          1-3-streamlit-shell-and-navigation: review
-        retrospective: optional
+          1-3-streamlit-shell-and-navigation: done
+        retrospective: done
 
   # ─────────────────────────────────────────────────────────────────────
   # SPRINT 2: Splunk destination is configurable
