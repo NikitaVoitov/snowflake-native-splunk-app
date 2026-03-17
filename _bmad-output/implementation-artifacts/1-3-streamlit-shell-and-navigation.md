@@ -1,6 +1,6 @@
 # Story 1.3: Streamlit shell and navigation
 
-Status: review
+Status: done
 
 ## Story
 
@@ -368,6 +368,7 @@ gpt-5.3-codex-high
 - Added five page stubs under `app/streamlit/pages/` with required titles and `st.info()` placeholder messages.
 - Validated artifact packaging and deployment end-to-end: bundle includes `streamlit/main.py` and all five `streamlit/pages/*.py`; stage listing confirms all expected files; `snow app run` is idempotent.
 - Snow CLI directory copy (`app/streamlit/` -> `streamlit/`) produced nested `streamlit/streamlit/` in this environment, so mapping was finalized with explicit file mappings to preserve required stage layout.
+- Tested an alternate native-sidebar prototype in `app/about_dialog_native_preview.py`; it can support routing and progress behavior, but it required more DOM/CSS overrides for footer placement, fixed width, collapsed-arrow positioning, and right-aligned progress text, so the shipped app keeps the current `st.navigation(position="hidden")` plus custom sidebar shell.
 
 ### File List
 
@@ -384,3 +385,4 @@ gpt-5.3-codex-high
 ### Change Log
 
 - 2026-03-16: Implemented Story 1.3 navigation shell, page stubs, About dialog/footer, artifact mapping fixes, and Snow CLI deployment/stage validation; moved status to review.
+- 2026-03-17: Marked Story 1.3 done and documented the alternate native-sidebar experiment in `app/about_dialog_native_preview.py` for possible future reconsideration.

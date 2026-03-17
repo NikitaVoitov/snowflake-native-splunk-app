@@ -68,6 +68,7 @@ _This document builds collaboratively through step-by-step discovery. Sections a
 | `BatchSpanProcessor` daemon thread incompatible | SP request-response lifecycle | Must use `SimpleSpanProcessor` or explicit `force_flush()`; application-level batching |
 | Limited concurrent queries per session | SP default behavior | Independent tasks (not intra-procedure parallelism) for source concurrency |
 | Masking policies blocked on Event Tables | Snowflake platform | Custom view required for value-level redaction on Event Table telemetry |
+| Streamlit `QUERY_WAREHOUSE` does not support `reference()` | Snowflake Native App framework | Warehouse binding for Streamlit requires `ALTER STREAMLIT SET QUERY_WAREHOUSE`; tasks can use `reference()` directly |
 | ACCOUNT_USAGE views don't support Streams | Snowflake platform | Poll-based pipeline with watermark state required for AU sources |
 | Event Table shared multi-service sink | Snowflake telemetry model | Entity discrimination filter required (positive include-list on `snow.executable.type`) |
 | EAI + Network Rules for outbound connectivity | Snowflake networking model | Consumer must approve app specification for OTLP egress |
@@ -164,6 +165,7 @@ This ensures IDE autocompletion and linting work correctly for both runtimes whi
 | Item | Decision | Rationale |
 |---|---|---|
 | **HEC references in manifest** | **Remove** — single OTLP/gRPC endpoint only | PRD and vision converged on single OTLP/gRPC; remote collector handles routing to Splunk backends. `SPLUNK_HEC_SECRET` reference and HEC-related comments to be removed from `manifest.yml`. |
+| **Warehouse binding** | **WAREHOUSE reference in manifest** — consumer binds existing warehouse; dual binding for tasks (`reference()`) and Streamlit (`ALTER STREAMLIT SET QUERY_WAREHOUSE`) | Snowflake docs confirm `reference()` is not supported for Streamlit `QUERY_WAREHOUSE`. Tasks can use `WAREHOUSE = reference('consumer_warehouse')`. Custom register callback handles both paths. No `CREATE WAREHOUSE` privilege needed — consumer selects an existing warehouse. Validated via Firecrawl scrape of Snowflake docs + live Snowflake MCP confirming `query_warehouse = null` on deployed Streamlit. |
 | **Streamlit version** | **Pin to 1.52.2** (latest on Anaconda) | Verified via live Snowflake Anaconda channel query (2026-03-15). |
 | **httpx / tenacity deps** | **Removed from MVP** | MVP uses OTel SDK built-in gRPC retry exclusively. Removed from `environment.yml`; will be added back when post-MVP retry logic is implemented. |
 
@@ -233,6 +235,7 @@ Multi-package promotion: dev (`INTERNAL`) → scan (`EXTERNAL`, security scan) �
 
 | Setting Category | Storage | Resolution |
 |---|---|---|
+| Consumer warehouse | Manifest reference (`CONSUMER_WAREHOUSE`) | `REFERENCE('CONSUMER_WAREHOUSE')` in task DDL; `ALTER STREAMLIT` for Streamlit binding |
 | Event Table reference | Manifest reference (`CONSUMER_EVENT_TABLE`) | `REFERENCE('CONSUMER_EVENT_TABLE')` in SQL |
 | EAI reference | Manifest reference (`SPLUNK_EAI`) | `REFERENCE('SPLUNK_EAI')` in SQL |
 | PEM cert Secret reference | Manifest reference (optional, `required_at_setup: false`) | Resolve Secret content via reference at runtime |

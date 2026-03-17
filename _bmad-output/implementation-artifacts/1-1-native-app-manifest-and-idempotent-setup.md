@@ -5,8 +5,8 @@ Status: done
 ## Story
 
 As a Snowflake administrator (Maya),
-I want the app to declare its required privileges and create schemas in an idempotent way,
-So that I can install from Marketplace and approve privileges without manual SQL, and upgrades do not break state.
+I want the app to declare its required privileges and warehouse reference, and create schemas in an idempotent way,
+So that I can install from Marketplace, approve privileges, bind a warehouse, and have the Streamlit UI open with query execution capability — without manual SQL, and upgrades do not break state.
 
 ## Acceptance Criteria
 
@@ -32,10 +32,19 @@ So that I can install from Marketplace and approve privileges without manual SQL
    - Artifacts: `setup_script: setup.sql`, `default_streamlit: app_public.main`, `extension_code: true`.
    - **Zero HEC references anywhere in the manifest** — architecture specifies a single OTLP/gRPC endpoint. Remove the `SPLUNK_HEC_SECRET` reference block AND scrub all HEC/HEC-related mentions from `version.comment`, privilege descriptions, and reference descriptions.
    - Required references declared: `CONSUMER_EVENT_TABLE` (required_at_setup: true), `SPLUNK_EAI` (required_at_setup: false), `SPLUNK_OTLP_SECRET` (required_at_setup: false, kept for post-MVP bearer token auth).
+   - **`CONSUMER_WAREHOUSE` reference declared** (WAREHOUSE, privileges: USAGE + OPERATE, register_callback: `app_public.register_single_callback`).
 
 4. **Callback stub procedures exist for install**
    - Manifest references callback procedures (`register_single_callback`, `get_secret_configuration`, `get_eai_configuration`). These must exist in `app_public` for `snow app run` to succeed.
    - `setup.sql` creates minimal SQL stub procedures that accept the expected parameters and return a valid response (empty string or NULL). Full implementations come in later stories.
+
+5. **Warehouse binding and Streamlit QUERY_WAREHOUSE** *(new — course correction)*
+   - The `register_single_callback` procedure handles `CONSUMER_WAREHOUSE` binding:
+     - On `ADD` operation: calls `SYSTEM$SET_REFERENCE(:ref_name, :ref_or_alias)` to bind the warehouse reference AND runs `ALTER STREAMLIT app_public.main SET QUERY_WAREHOUSE = <warehouse_name>` to set the Streamlit warehouse.
+     - On `REMOVE` operation: returns success (no action needed; warehouse will be unset on app drop).
+     - On `CLEAR` operation: returns success.
+   - After the consumer binds a warehouse through the Snowsight permission UI, `DESCRIBE STREAMLIT app_public.main` shows `query_warehouse` set to the consumer's warehouse (not `null`).
+   - `snow app run` → privilege approval succeeds → warehouse selection succeeds → Streamlit opens with the bound warehouse available for queries.
 
 ## Tasks / Subtasks
 
@@ -55,6 +64,14 @@ So that I can install from Marketplace and approve privileges without manual SQL
     - `SPLUNK_OTLP_SECRET` (SECRET, USAGE, required_at_setup: false, callbacks: `register_single_callback` + `get_secret_configuration`).
     - `SPLUNK_EAI` (EXTERNAL_ACCESS_INTEGRATION, USAGE, required_at_setup: false, callbacks: `register_single_callback` + `get_eai_configuration`).
   - [x] Update all reference descriptions — no HEC mentions; use "OTLP gRPC" only.
+- [x] **Task 1a: Add CONSUMER_WAREHOUSE reference to manifest.yml** (AC: 3, 5) *(new — course correction)*
+  - [x] Add `CONSUMER_WAREHOUSE` reference entry to `manifest.yml`:
+    - `label`: "Warehouse"
+    - `description`: "Warehouse for app query execution (Streamlit UI, tasks, stored procedures)"
+    - `privileges`: `[USAGE, OPERATE]`
+    - `object_type`: WAREHOUSE
+    - `multi_valued`: false
+    - `register_callback`: `app_public.register_single_callback`
 - [x] **Task 2: Verify and fix setup.sql idempotency** (AC: 2)
   - [x] `CREATE APPLICATION ROLE IF NOT EXISTS app_admin`.
   - [x] `CREATE OR ALTER VERSIONED SCHEMA app_public` + `GRANT USAGE ON SCHEMA app_public TO APPLICATION ROLE app_admin`.
@@ -66,10 +83,23 @@ So that I can install from Marketplace and approve privileges without manual SQL
   - [x] `CREATE OR REPLACE PROCEDURE app_public.get_eai_configuration(ref_name STRING) RETURNS STRING ...` — stub returns empty string.
   - [x] All three use `LANGUAGE SQL`, `EXECUTE AS OWNER`.
   - [x] `GRANT USAGE ON PROCEDURE ... TO APPLICATION ROLE app_admin` for each.
-- [x] **Task 4: Validate with `snow app run`** (AC: 1, 2, 3, 4)
+- [x] **Task 3a: Implement warehouse-aware register_single_callback** (AC: 5) *(new — course correction)*
+  - [x] Replace the `register_single_callback` stub with a working implementation that handles all reference types:
+    - For `CONSUMER_WAREHOUSE` with `ADD` operation:
+      1. Call `SYSTEM$SET_REFERENCE(:ref_name, :ref_or_alias)` to bind the warehouse reference.
+      2. Resolve actual warehouse name via `SYSTEM$GET_ALL_REFERENCES('CONSUMER_WAREHOUSE', 'TRUE')` + `PARSE_JSON`.
+      3. Run `ALTER STREAMLIT app_public.main SET QUERY_WAREHOUSE = <warehouse_name>` to set the Streamlit query warehouse.
+    - For other references (`CONSUMER_EVENT_TABLE`, `SPLUNK_OTLP_SECRET`, `SPLUNK_EAI`) with `ADD` operation: call `SYSTEM$SET_REFERENCE(:ref_name, :ref_or_alias)`.
+    - For `REMOVE` operation: call `SYSTEM$REMOVE_REFERENCE(:ref_name, :ref_or_alias)`.
+    - For `CLEAR` operation: call `SYSTEM$REMOVE_ALL_REFERENCES(:ref_name)`.
+  - [x] Procedure uses `LANGUAGE SQL`, `EXECUTE AS OWNER`.
+  - [x] Test: after binding warehouse through Snowsight, `DESCRIBE STREAMLIT app_public.main` shows `query_warehouse` = consumer warehouse name.
+- [x] **Task 4: Validate with `snow app run`** (AC: 1, 2, 3, 4, 5)
   - [x] Run `snow app run` — app installs without errors, privilege approval succeeds, Streamlit opens (may show error if main.py doesn't exist yet — that's expected, see Story 1.3 dependency below).
   - [x] Run `snow app run` a second time — no DDL errors on re-run (idempotency).
   - [x] Packaging and runtime blockers resolved (`snowflake.yml` artifact mapping cleanup, `debug: false` for manifest v2).
+  - [x] *(new)* After warehouse binding through Snowsight permission UI: confirm `DESCRIBE STREAMLIT` shows `query_warehouse` is set.
+  - [x] *(new)* Confirm Streamlit opens and can execute queries using the bound warehouse.
 
 ## Dev Notes
 
@@ -82,6 +112,12 @@ So that I can install from Marketplace and approve privileges without manual SQL
 - **Privileges**: Architecture uses internal schemas within the app database — `CREATE DATABASE` is NOT required. The vision document included it but the architecture (source of truth, written later) does not use an external database. Remove it.
 - **RBAC**: Single application role `app_admin` (decision V14). No viewer roles. [Source: architecture.md § V14]
 - **Callbacks**: Manifest references require the callback procedures to exist. `register_single_callback` is the standard Native App reference-binding callback. `get_secret_configuration` and `get_eai_configuration` return configuration for Secret and EAI references respectively. Full implementations come in later epics; stubs are sufficient for install.
+- **Warehouse binding** *(course correction — added 2026-03-15)*: The app needs a consumer warehouse for Streamlit UI query execution, tasks, and stored procedures. [Source: architecture.md § Alignment Decisions, PRD § FR2a]
+  - Declare `CONSUMER_WAREHOUSE` reference in `manifest.yml` (WAREHOUSE, USAGE + OPERATE).
+  - **Critical constraint**: Snowflake docs explicitly state "references to warehouses are not supported" for Streamlit `QUERY_WAREHOUSE`. Tasks can use `WAREHOUSE = reference('consumer_warehouse')` in DDL, but Streamlit requires `ALTER STREAMLIT ... SET QUERY_WAREHOUSE = <warehouse_name>`.
+  - The `register_single_callback` must handle `CONSUMER_WAREHOUSE` specially: after calling `SYSTEM$SET_REFERENCE` to bind the reference, it must also run `ALTER STREAMLIT app_public.main SET QUERY_WAREHOUSE = <warehouse_name>` to set the Streamlit query warehouse.
+  - Validated via live Snowflake MCP: `DESCRIBE STREAMLIT app_public.main` currently shows `query_warehouse = null`.
+  - Validated via Firecrawl scrape: [Adding Streamlit to Native Apps](https://docs.snowflake.com/en/developer-guide/native-apps/adding-streamlit), [Requesting references](https://docs.snowflake.com/en/developer-guide/native-apps/requesting-refs), [manifest.yml reference](https://docs.snowflake.com/en/developer-guide/native-apps/manifest-reference).
 
 ### Deferred to later stories
 
@@ -94,14 +130,15 @@ So that I can install from Marketplace and approve privileges without manual SQL
 
 | Path | Action |
 |------|--------|
-| `app/manifest.yml` | Rewrite: manifest_version 2, four privileges (no CREATE DATABASE), three references (no HEC), scrub all HEC mentions, correct descriptions. |
-| `app/setup.sql` | Add callback stub procedures with grants. Verify existing DDL is correct and idempotent. |
+| `app/manifest.yml` | *(Partially done)* Add `CONSUMER_WAREHOUSE` reference (WAREHOUSE, USAGE + OPERATE, register_callback). Previous work already handled privileges, other references, HEC cleanup. |
+| `app/setup.sql` | *(Partially done)* Replace `register_single_callback` stub with working implementation that handles `CONSUMER_WAREHOUSE` (SYSTEM$SET_REFERENCE + ALTER STREAMLIT). Other stubs remain stubs. |
+| `app/README.md` | *(Partially done)* Add `CONSUMER_WAREHOUSE` to the Required References table. |
 
 ### Current state of existing files
 
-- `app/manifest.yml`: **Done** — manifest_version 2, exactly four privileges (no CREATE DATABASE), three references (CONSUMER_EVENT_TABLE, SPLUNK_OTLP_SECRET, SPLUNK_EAI), zero HEC references. Aligned with architecture.
-- `app/setup.sql`: **Done** — application role `app_admin`, versioned schema `app_public`, stateful schemas `_internal`, `_staging`, `_metrics`, Streamlit placeholder `app_public.main`, three callback stub procedures with grants. Idempotent. No tables (Story 1.2).
-- `app/README.md`: **Done** — consumer-facing readme aligned with OTLP-only architecture; four privileges and required references tables; no HEC mentions.
+- `app/manifest.yml`: **Needs update** — manifest_version 2, exactly four privileges (no CREATE DATABASE), three references (CONSUMER_EVENT_TABLE, SPLUNK_OTLP_SECRET, SPLUNK_EAI), zero HEC references. **Missing: `CONSUMER_WAREHOUSE` reference.** Task 1a adds it.
+- `app/setup.sql`: **Needs update** — application role `app_admin`, versioned schema `app_public`, stateful schemas `_internal`, `_staging`, `_metrics`, Streamlit placeholder `app_public.main`, three callback stub procedures with grants. Idempotent. No tables (Story 1.2). **Missing: `register_single_callback` must be upgraded from stub to handle warehouse binding.** Task 3a replaces the stub.
+- `app/README.md`: **Needs update** — consumer-facing readme aligned with OTLP-only architecture; four privileges and required references tables; no HEC mentions. **Missing: `CONSUMER_WAREHOUSE` reference in the Required References table.**
 
 ### Development environment
 
@@ -185,6 +222,14 @@ gpt-5.3-codex-high
 - Resolved manifest-v2 upgrade issue by setting app debug mode to false in `snowflake.yml` (session debug mode is the supported path for v2).
 - Runtime nuance discovered and applied: `required_at_setup` for TABLE references is rejected by runtime parser in this account; kept it for SECRET/EAI only.
 - Story is validated end-to-end: two consecutive successful `snow app run --connection dev --force` executions (idempotent).
+- Added `CONSUMER_WAREHOUSE` reference (WAREHOUSE, USAGE + OPERATE) to `manifest.yml` with `register_callback: app_public.register_single_callback`.
+- Replaced `register_single_callback` stub with a working implementation that:
+  - On ADD: binds the reference via `SYSTEM$SET_REFERENCE`, then for `CONSUMER_WAREHOUSE` resolves the actual warehouse name via `SYSTEM$GET_ALL_REFERENCES('CONSUMER_WAREHOUSE', 'TRUE')` + `PARSE_JSON` and sets it with `ALTER STREAMLIT app_public.main SET QUERY_WAREHOUSE`.
+  - On REMOVE: calls `SYSTEM$REMOVE_REFERENCE`.
+  - On CLEAR: calls `SYSTEM$REMOVE_ALL_REFERENCES`.
+- Key discovery: Streamlit does not support warehouse references — `ALTER STREAMLIT SET QUERY_WAREHOUSE` requires the actual warehouse name, not the internal reference alias (e.g. `ENT_REF_WAREHOUSE_...`). Resolved by extracting the `name` field from `SYSTEM$GET_ALL_REFERENCES` JSON output after binding.
+- Added `CONSUMER_WAREHOUSE` to `app/README.md` Required References section.
+- Verified end-to-end: `snow app run` deploys clean, Snowsight warehouse binding triggers the callback, `DESCRIBE STREAMLIT` shows `query_warehouse` set to consumer warehouse.
 - IDE schema lint errors in `app/manifest.yml` and `snowflake.yml` are caused by outdated/invalid extension-local schema files, not by executable Snowflake runtime validation.
 - Added workspace YAML schema overrides in `.vscode/settings.json` and `.vscode/schemas/*` to restore accurate local linting for manifest v2 and project definition v2.
 - Snowsight evidence attached by user confirms this story's stage-dev outcomes are visible in UI, not only via CLI.

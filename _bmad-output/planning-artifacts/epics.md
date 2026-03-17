@@ -123,6 +123,7 @@ UX-DR13: All form inputs use descriptive label parameters; status communicated v
 
 FR1: Epic 1 — Install from Marketplace without vendor infrastructure
 FR2: Epic 1 — Review and approve Snowflake privileges during install/upgrade
+FR2a: Epic 1 — Bind an existing warehouse to the app during install
 FR3: Epic 2 — Complete first-time setup (OTLP saved, source selected, governance acknowledged, export activated)
 FR4: Epic 3 — Discover available ACCOUNT_USAGE views and Event Tables
 FR5: Epic 3 — Enable or disable each Monitoring Pack independently
@@ -165,8 +166,8 @@ FR39: Epic 8 — Submit release for Marketplace approval after consumer-account 
 ## Epic List
 
 ### Epic 1: App foundation and installation
-Maya can install the app from the Snowflake Marketplace and complete required privilege approval; the app has a working Native App shell (manifest v2, idempotent setup.sql, config and state schemas), Streamlit entrypoint with st.navigation() and sidebar (Getting started, Observability health, Telemetry sources, Splunk settings, Data governance, About), and foundational config storage so all later setup and pipeline code can persist and read settings.
-**FRs covered:** FR1, FR2
+Maya can install the app from the Snowflake Marketplace and complete required privilege approval and warehouse binding; the app has a working Native App shell (manifest v2, idempotent setup.sql, config and state schemas), Streamlit entrypoint with st.navigation() and sidebar (Getting started, Observability health, Telemetry sources, Splunk settings, Data governance, About), and foundational config storage so all later setup and pipeline code can persist and read settings.
+**FRs covered:** FR1, FR2, FR2a
 
 ### Epic 2: First-time setup and destination configuration
 Maya can complete first-time setup by configuring the OTLP export destination (endpoint, optional PEM certificate, test connection, validate certificate) and saving settings; the Getting Started hub shows progress and task tiles with drill-down; the Splunk settings page exposes the Export settings tab with Connection Card behavior and Save disabled until connection test (and certificate validation if provided) succeeds.
@@ -200,20 +201,23 @@ Tom can publish supported app upgrades through Snowflake Marketplace; Maya retai
 
 ## Epic 1: App foundation and installation
 
-Maya can install the app from the Snowflake Marketplace and complete required privilege approval; the app has a working Native App shell (manifest v2, idempotent setup.sql, config and state schemas), Streamlit entrypoint with st.navigation() and sidebar, and foundational config storage.
+Maya can install the app from the Snowflake Marketplace and complete required privilege approval and warehouse binding; the app has a working Native App shell (manifest v2, idempotent setup.sql, config and state schemas), Streamlit entrypoint with st.navigation() and sidebar, and foundational config storage.
 
 ### Story 1.1: Native App manifest and idempotent setup
 
 As a Snowflake administrator (Maya),
-I want the app to declare its required privileges and create schemas and tables in an idempotent way,
-So that I can install from Marketplace and approve privileges without manual SQL, and upgrades do not break state.
+I want the app to declare its required privileges and warehouse reference, and create schemas in an idempotent way,
+So that I can install from Marketplace, approve privileges, bind a warehouse, and have the Streamlit UI open with query execution capability — without manual SQL, and upgrades do not break state.
 
 **Acceptance Criteria:**
 
 **Given** the app package is deployed to a consumer account  
 **When** setup.sql runs (install or upgrade)  
 **Then** manifest.yml uses manifest_version: 2 and declares all required privileges (IMPORTED PRIVILEGES ON SNOWFLAKE DB, EXECUTE TASK, EXECUTE MANAGED TASK, CREATE EXTERNAL ACCESS INTEGRATION)  
+**And** manifest.yml declares a `CONSUMER_WAREHOUSE` reference (WAREHOUSE, privileges: USAGE + OPERATE) with `register_callback`  
 **And** setup.sql creates app_public (CREATE OR ALTER VERSIONED SCHEMA), _internal, _staging, _metrics (CREATE SCHEMA IF NOT EXISTS)  
+**And** setup.sql includes a warehouse-aware register callback that binds the reference via `SYSTEM$SET_REFERENCE` and sets `QUERY_WAREHOUSE` on the Streamlit object via `ALTER STREAMLIT`  
+**And** after the consumer binds a warehouse, `DESCRIBE STREAMLIT app_public.main` shows `query_warehouse` set to the consumer's warehouse  
 **And** no DDL fails when run a second time (idempotent)
 
 ### Story 1.2: Durable config and state persistence

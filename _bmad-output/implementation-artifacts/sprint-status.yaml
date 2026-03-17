@@ -52,8 +52,8 @@
 #   the actual dependency order and removing forward-dependency workarounds.
 
 generated: 2026-03-15
-last_updated: 2026-03-16
-updated_by: dev-story (1-3-streamlit-shell-and-navigation review)
+last_updated: 2026-03-15
+updated_by: correct-course (warehouse binding requirement added to Story 1-1)
 project: snowflake-native-splunk-app
 project_key: NOKEY
 tracking_system: file-system
@@ -87,7 +87,7 @@ sprints:
         tags: [Infrastructure, Full-stack]
         status: in-progress
         stories:
-          1-1-native-app-manifest-and-idempotent-setup: done
+          1-1-native-app-manifest-and-idempotent-setup: in-progress  # reopened: warehouse binding (CONSUMER_WAREHOUSE ref + ALTER STREAMLIT QUERY_WAREHOUSE)
           1-2-config-and-state-tables: done
           1-3-streamlit-shell-and-navigation: review
         retrospective: optional

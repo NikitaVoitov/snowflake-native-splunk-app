@@ -171,14 +171,14 @@ These gates trace to **Tom** and define when the MVP is approval-ready.
 
 **Persona:** Maya — Snowflake Administrator responsible for setup, source selection, and governance choices.
 
-1. Maya installs the app from the Snowflake Marketplace and completes the required approvals inside Snowflake.
+1. Maya installs the app from the Snowflake Marketplace and completes the required approvals — including granting the app access to a warehouse for query execution — inside Snowflake.
 2. She configures the Splunk destination, enables the MVP packs she needs, and selects either governed custom sources or default Snowflake sources for each enabled feed.
 3. The app makes the governance tradeoff explicit: default sources are fast to activate, while custom sources are how her organization applies masking or row-level controls.
 4. Maya confirms first telemetry in Splunk and hands the resulting operational views to the teams that depend on them.
 
 **Outcome:** Snowflake telemetry becomes usable in Splunk within the onboarding window, without Maya building or operating a separate export pipeline.
 
-**UX Note:** Onboarding should emphasize approval, destination setup, source choice, governance clarity, and first-value confirmation.
+**UX Note:** Onboarding should emphasize approval (privileges and warehouse), destination setup, source choice, governance clarity, and first-value confirmation.
 
 ---
 
@@ -252,7 +252,7 @@ These gates trace to **Tom** and define when the MVP is approval-ready.
 
 | Journey | Key Capabilities Required |
 |---|---|
-| **Maya First Value** | Marketplace install, privilege approval, destination setup, source selection, governance review, activation, first-value confirmation |
+| **Maya First Value** | Marketplace install, privilege approval, warehouse binding, destination setup, source selection, governance review, activation, first-value confirmation |
 | **Ravi Incident Investigation** | Event Table export for SQL/Snowpark compute, Splunk-compatible context enrichment, preserved source attributes, searchable Snowflake spans in Splunk |
 | **Sam Health & Recovery** | Destination health visibility, source freshness visibility, per-source inspection, structured operational logs, retry behavior, data gap reporting, automatic recovery signals |
 | **Maya Governance & Source Ownership** | Custom-source selection, governance disclosure, policy-respecting export behavior, user-owned source maintenance guidance |
@@ -296,6 +296,14 @@ This product is a **Snowflake Native App** distributed via the Snowflake Marketp
 | `EXECUTE TASK` | Run serverless tasks | Permission SDK → Snowsight grant prompt |
 | `EXECUTE MANAGED TASK` | Serverless task compute | Permission SDK → Snowsight grant prompt |
 | `CREATE EXTERNAL ACCESS INTEGRATION` | Outbound networking to Splunk endpoints | Permission SDK → Snowsight grant prompt |
+
+**Warehouse binding (via manifest reference + Permission SDK):**
+
+| Reference | Purpose | Binding Method |
+|---|---|---|
+| `CONSUMER_WAREHOUSE` (WAREHOUSE, USAGE + OPERATE) | Query execution for Streamlit UI, tasks, and stored procedures | Permission SDK → Snowsight warehouse picker (consumer selects an existing warehouse). Callback stores binding via `SYSTEM$SET_REFERENCE` and sets `QUERY_WAREHOUSE` on the Streamlit object via `ALTER STREAMLIT`. |
+
+**Warehouse binding constraint:** Snowflake docs explicitly state that `reference()` is **not supported** for Streamlit `QUERY_WAREHOUSE`. Tasks can use `WAREHOUSE = reference('consumer_warehouse')`, but the Streamlit object requires `ALTER STREAMLIT ... SET QUERY_WAREHOUSE = <warehouse_name>`. The register callback handles both paths: it binds the reference for tasks and also runs `ALTER STREAMLIT` to set the warehouse on the Streamlit object.
 
 **Stored procedure execution model:**
 
@@ -434,6 +442,7 @@ The app uses Snowflake's [Native App event definition framework](https://docs.sn
 | Consideration | Decision | Rationale |
 |---|---|---|
 | **Deployment model** | Snowflake Marketplace (auto-install, auto-upgrade) | Zero consumer infrastructure. Snowflake manages distribution. |
+| **Warehouse binding** | Consumer warehouse reference (`CONSUMER_WAREHOUSE`) in manifest.yml | Consumer selects an existing warehouse during install; used for Streamlit UI queries, tasks, and stored procedures. No `CREATE WAREHOUSE` privilege needed. |
 | **Upgrade strategy** | Auto-upgrade via release directive + consumer maintenance policy | Consumer controls timing. Setup script is idempotent. Stateful objects preserved. |
 | **State management** | Internal tables (`_internal.config`, `_internal.export_watermarks`) + streams on selected source | State survives upgrades. Watermarks ensure exactly-once semantics (happy path). No app-created governed views. |
 | **Networking** | EAI + Network Rules per Splunk destination | Snowflake-native outbound networking. No VPN or PrivateLink required (MVP). |
@@ -664,6 +673,7 @@ Detailed UX behavior plus integration, processing, and release implementation me
 
 - **FR1:** Maya can install the app from the Snowflake Marketplace without provisioning vendor-managed infrastructure outside Snowflake.
 - **FR2:** Maya can review and approve the Snowflake privileges the app requires during install or upgrade flows.
+- **FR2a:** Maya can bind an existing warehouse to the app during install so that the Streamlit UI, tasks, and stored procedures have a warehouse for query execution.
 - **FR3:** Maya can complete first-time setup in the app so that an OTLP destination is saved, at least one telemetry source is selected, governance review is acknowledged, and export activation is enabled.
 
 ### Source Configuration
