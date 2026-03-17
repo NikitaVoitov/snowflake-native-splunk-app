@@ -7,22 +7,22 @@
 # ─────────────────────────────────────────────────────────────────
 
 name: sf_env
-channel:
+channels:
   - snowflake
 dependencies:
   # Core Application Framework
-  - streamlit==1.52.2
-  - snowflake-snowpark-python==1.9.0
-  - snowflake-native-apps-permission==0.1.9
+  - streamlit=1.52.2
+  - snowflake-snowpark-python=1.9.0
+  - snowflake-native-apps-permission=0.1.9
 
   # Visualization & Dashboard
-  - plotly==6.5.0
+  - plotly=6.5.0
 
   # Telemetry Export (OTLP/gRPC)
-  - opentelemetry-sdk==1.38.0
-  - opentelemetry-exporter-otlp-proto-grpc==1.38.0
-  - grpcio==1.78.0
-  - protobuf==6.33.5
+  - opentelemetry-sdk=1.38.0
+  - opentelemetry-exporter-otlp-proto-grpc=1.38.0
+  - grpcio=1.78.0
+  - protobuf=6.33.5
 
   # Data Serialization
-  - orjson==3.9.15
+  - orjson=3.9.15

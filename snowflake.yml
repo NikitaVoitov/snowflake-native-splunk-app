@@ -26,8 +26,12 @@ entities:
         dest: README.md
       - src: app/environment.yml
         dest: environment.yml
-      - src: app/streamlit/*
-        dest: streamlit/
+      - src: app/environment.yml
+        dest: streamlit/environment.yml
+      - src: app/streamlit/main.py
+        dest: streamlit/main.py
+      - src: app/streamlit/pages/*
+        dest: streamlit/pages/
     meta:
       post_deploy:
         - sql_script: scripts/shared_content.sql

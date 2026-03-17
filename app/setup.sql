@@ -57,50 +57,8 @@ GRANT SELECT ON TABLE _metrics.pipeline_health TO APPLICATION ROLE app_admin;
 -- Story 1.3 will replace this with full UI shell/navigation.
 CREATE OR REPLACE STREAMLIT app_public.main
     FROM '/streamlit'
-    MAIN_FILE = '/main.py';
+    MAIN_FILE = '/main.py'
+    TITLE = 'Splunk Observability';
 GRANT USAGE ON STREAMLIT app_public.main TO APPLICATION ROLE app_admin;
 
--- Callback stubs required by manifest references
-CREATE OR REPLACE PROCEDURE app_public.register_single_callback(
-    ref_name STRING,
-    operation STRING,
-    ref_or_alias STRING
-)
-RETURNS STRING
-LANGUAGE SQL
-EXECUTE AS OWNER
-AS
-$$
-BEGIN
-    RETURN '';
-END;
-$$;
-
-CREATE OR REPLACE PROCEDURE app_public.get_secret_configuration(ref_name STRING)
-RETURNS STRING
-LANGUAGE SQL
-EXECUTE AS OWNER
-AS
-$$
-BEGIN
-    RETURN '';
-END;
-$$;
-
-CREATE OR REPLACE PROCEDURE app_public.get_eai_configuration(ref_name STRING)
-RETURNS STRING
-LANGUAGE SQL
-EXECUTE AS OWNER
-AS
-$$
-BEGIN
-    RETURN '';
-END;
-$$;
-
-GRANT USAGE ON PROCEDURE app_public.register_single_callback(STRING, STRING, STRING)
-TO APPLICATION ROLE app_admin;
-GRANT USAGE ON PROCEDURE app_public.get_secret_configuration(STRING)
-TO APPLICATION ROLE app_admin;
-GRANT USAGE ON PROCEDURE app_public.get_eai_configuration(STRING)
-TO APPLICATION ROLE app_admin;
+-- No object references are requested during install in Story 1.3.

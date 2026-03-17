@@ -329,20 +329,28 @@ We design flows for the critical PRD journeys, mapped to our **Multi-Page App (S
 
 **Sidebar order (top to bottom, exact labels from Figma):** The links users see in the sidebar are, in order:
 
-| # | Label | Icon | Notes |
-|---|---|---|---|
-| 1 | **Getting started** | 🚀 (rocket) | Shows "X/4" progress badge; visible until all onboarding tasks complete AND user navigates away; then removed |
-| 2 | **Observability health** | 📊 (chart/graph) | Home page after onboarding; active state has blue left border |
-| 3 | **Telemetry sources** | 💾 (floppy/database) | Where user selects content packs, sources, and intervals |
-| 4 | **Splunk settings** | ⚙️ (settings gear) | Where user configures OTLP/gRPC export |
-| 5 | **Data governance** | 🛡️ (shield) | Read-only governance view |
+| # | Label | Streamlit icon | Figma Lucide name | Notes |
+|---|---|---|---|---|
+| 1 | **Getting started** | `:material/rocket_launch:` | `Rocket` | Shows "X/4" progress badge; visible until all onboarding tasks complete AND user navigates away; then removed |
+| 2 | **Observability health** | `:material/dashboard:` | `LayoutDashboard` | Home page after onboarding; active state has dark (#030213) left accent bar |
+| 3 | **Telemetry sources** | `:material/database:` | `Database` | Where user selects content packs, sources, and intervals |
+| 4 | **Splunk settings** | `:material/settings:` | `Settings` | Where user configures OTLP/gRPC export |
+| 5 | **Data governance** | `:material/shield:` | `Shield` | Read-only governance view |
 
 **Sidebar header (from Figma):**
 - App name: **"Splunk Observability"**
 - Subtitle: **"for Snowflake"**
 
-**Sidebar footer:**
-- **"About"** link/button that opens a `st.dialog` modal containing: app version (e.g. "v1.0.0"), build info, documentation links, and support contact. No version string displayed directly on the sidebar.
+**Sidebar footer (from Figma node 4499:49308):**
+- An **"About"** link with an `:material/info:` icon (Figma: `Info` — circle-i). Text: "About" (Inter Medium, 12px, muted #717182). Clicking it opens a `@st.dialog` modal.
+
+**About dialog (from Figma node 4499:49748):**
+- **"Splunk Observability"** — centered, Inter Semi Bold, 20px, #0a0a0a
+- **"for Snowflake"** — centered, Inter Regular, 14px, #717182
+- **"Version 1.0.0"** — centered, Inter Regular, 12px, #717182
+- **"Copyright © 2026 Splunk Inc."** / **"All rights reserved."** — centered, Inter Regular, 14px, #717182
+- **"Documentation"** link with external link icon (`:material/open_in_new:`) — Inter Regular, 14px, #030213
+- Close (X) button in top-right corner (handled natively by `@st.dialog`)
 
 After onboarding is complete, only items 2–5 are shown (Observability health, Telemetry sources, Splunk settings, Data governance).
 
@@ -391,7 +399,7 @@ We recommend a **permanent Getting Started page** (Equals-, GitLab-, and Cake-st
 - **Linear stepper only (no hub):** A single linear form without tiles is less flexible; users can’t see all steps or jump to a specific one. The tile hub with drill-down supports both ordered flow and random access.
 - **Permanent Getting Started after 100%:** We prefer **removing it from the sidebar once complete** and using **Telemetry sources** and **Splunk settings** for later changes (e.g. add Event Table, change OTLP endpoint).
 
-**Summary:** Getting Started is a **dedicated page**: "🚀 Getting started" appears in the navigation **with a progress badge** (e.g. "2/4"); the main area shows a welcome header and a **vertical list of task tiles/cards** with completion state (checkmark vs number) and **drill-down** to the corresponding pages. Remove it from the nav when all tasks are complete AND user navigates away.
+**Summary:** Getting Started is a **dedicated page**: `:material/rocket_launch:` **Getting started** appears in the navigation **with a progress badge** (e.g. "2/4"); the main area shows a welcome header and a **vertical list of task tiles/cards** with completion state (checkmark vs number) and **drill-down** to the corresponding pages. Remove it from the nav when all tasks are complete AND user navigates away.
 
 ### Journey 1: Maya — Install, Configure, Observe (First-Time Setup)
 
@@ -931,7 +939,7 @@ Same as Telemetry sources: health computed **on page load or manual refresh only
 
 **Modal content (from Figma):**
 
-- **Header:** Rocket icon (🚀) + **"Activate Telemetry Export"**
+- **Header:** Rocket icon (`:material/rocket_launch:`) + **"Activate Telemetry Export"**
 - **Subtitle:** "You're about to enable automatic telemetry export to your Splunk Observability platform."
 
 - **Info box** (`st.info` style, blue background):
@@ -948,7 +956,7 @@ Same as Telemetry sources: health computed **on page load or manual refresh only
 
 - **Action buttons (bottom-right):**
   - "Cancel" (secondary) — closes modal, no action
-  - "Enable Auto-Export" (primary, with rocket icon 🚀) — provisions objects and starts export
+  - "Enable Auto-Export" (primary, with `:material/rocket_launch:` icon) — provisions objects and starts export
 
 **States:**
 - **Default:** Modal open, buttons enabled
@@ -1057,11 +1065,11 @@ This section documents the complete user journey from initial app load through o
 **Entry Point:** User opens the Splunk Observability for Snowflake Native App from Snowflake Apps tab.
 
 **Sidebar Navigation (during onboarding):**
-- 🚀 Getting started (0/4)
-- 📊 Observability health
-- 💾 Telemetry sources
-- ⚙️ Splunk settings
-- 🛡️ Data governance
+- `:material/rocket_launch:` Getting started (0/4)
+- `:material/dashboard:` Observability health
+- `:material/database:` Telemetry sources
+- `:material/settings:` Splunk settings
+- `:material/shield:` Data governance
 
 **Main Content:** Getting Started page displayed by default with:
 - Page header: "Welcome to Splunk Observability for Snowflake"
@@ -1148,7 +1156,7 @@ This section documents the complete user journey from initial app load through o
 **Modal Dialog Opens:** "Activate Telemetry Export"
 
 **User sees:**
-- 🚀 Rocket icon + title
+- `:material/rocket_launch:` Rocket icon + title
 - Blue info banner: "What will happen: The app will provision tasks, streams..."
 - List of what will be created:
   - Scheduled tasks for each enabled telemetry source
@@ -1211,10 +1219,10 @@ This section documents the complete user journey from initial app load through o
 ### Sidebar After First Navigation Away
 
 Now shows (Getting started permanently hidden after user navigates away):
-- 📊 Observability health ← current page
-- 💾 Telemetry sources
-- ⚙️ Splunk settings
-- 🛡️ Data governance
+- `:material/dashboard:` Observability health ← current page
+- `:material/database:` Telemetry sources
+- `:material/settings:` Splunk settings
+- `:material/shield:` Data governance
 
 ### Returning User Behavior
 
