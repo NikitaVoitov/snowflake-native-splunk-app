@@ -108,7 +108,7 @@ def show_about() -> None:
         """,
         unsafe_allow_html=True,
     )
-    left, center, right = st.columns([1, 1.8, 1])
+    _, center, _ = st.columns([1, 1.8, 1])
     with center:
         st.link_button(
             "Documentation",
@@ -169,7 +169,7 @@ with st.sidebar:
     if st.button(
         "About",
         icon=":material/info:",
-        use_container_width=True,
+        width="stretch",
         type="tertiary",
     ):
         show_about()
