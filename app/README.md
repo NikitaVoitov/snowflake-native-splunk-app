@@ -22,3 +22,7 @@ All telemetry is sent to a remote OpenTelemetry Collector (Splunk distribution),
 - `EXECUTE TASK` - Run scheduled and triggered tasks.
 - `EXECUTE MANAGED TASK` - Provision serverless compute for tasks.
 - `CREATE EXTERNAL ACCESS INTEGRATION` - Allow OTLP gRPC egress to the configured collector endpoint.
+
+## Required References
+
+- `CONSUMER_WAREHOUSE` (Warehouse) - USAGE, OPERATE privileges. Query execution for Streamlit UI, tasks, and stored procedures.

@@ -25,3 +25,14 @@ privileges:
       description: "Required to provision serverless compute for tasks"
   - "CREATE EXTERNAL ACCESS INTEGRATION":
       description: "Required to create an external access integration for OTLP gRPC egress"
+
+references:
+  - CONSUMER_WAREHOUSE:
+      label: "Warehouse"
+      description: "Warehouse for app query execution (Streamlit UI, tasks, stored procedures)"
+      privileges:
+        - USAGE
+        - OPERATE
+      object_type: WAREHOUSE
+      multi_valued: false
+      register_callback: app_public.register_single_callback

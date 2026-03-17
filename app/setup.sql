@@ -61,4 +61,44 @@ CREATE OR REPLACE STREAMLIT app_public.main
     TITLE = 'Splunk Observability';
 GRANT USAGE ON STREAMLIT app_public.main TO APPLICATION ROLE app_admin;
 
--- No object references are requested during install in Story 1.3.
+-- Reference callback: binds consumer-granted objects to app references.
+-- CONSUMER_WAREHOUSE requires special handling: after binding the reference,
+-- resolve the actual warehouse name via SYSTEM$GET_ALL_REFERENCES and set the
+-- Streamlit QUERY_WAREHOUSE (warehouse references are not supported by Streamlit).
+-- Ref: https://docs.snowflake.com/en/developer-guide/native-apps/requesting-refs
+CREATE OR REPLACE PROCEDURE app_public.register_single_callback(
+    ref_name STRING, operation STRING, ref_or_alias STRING
+)
+RETURNS STRING
+LANGUAGE SQL
+EXECUTE AS OWNER
+AS
+$$
+BEGIN
+    CASE (operation)
+        WHEN 'ADD' THEN
+            SELECT SYSTEM$SET_REFERENCE(:ref_name, :ref_or_alias);
+            IF (ref_name = 'CONSUMER_WAREHOUSE') THEN
+                LET refs_json VARCHAR := (
+                    SELECT SYSTEM$GET_ALL_REFERENCES('CONSUMER_WAREHOUSE', 'TRUE')
+                );
+                LET wh_name VARCHAR := (
+                    SELECT PARSE_JSON(:refs_json)[0]:name::STRING
+                );
+                IF (wh_name IS NOT NULL) THEN
+                    EXECUTE IMMEDIATE
+                        'ALTER STREAMLIT app_public.main SET QUERY_WAREHOUSE = ' || wh_name;
+                END IF;
+            END IF;
+        WHEN 'REMOVE' THEN
+            SELECT SYSTEM$REMOVE_REFERENCE(:ref_name, :ref_or_alias);
+        WHEN 'CLEAR' THEN
+            SELECT SYSTEM$REMOVE_ALL_REFERENCES(:ref_name);
+        ELSE
+            RETURN 'unknown operation: ' || operation;
+    END CASE;
+    RETURN '';
+END;
+$$;
+GRANT USAGE ON PROCEDURE app_public.register_single_callback(STRING, STRING, STRING)
+    TO APPLICATION ROLE app_admin;
