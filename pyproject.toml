@@ -36,6 +36,9 @@ dependencies = [
     # Data Serialization
     "orjson>=3.9.15",
 
+    # PEM/X.509 validation (grpc_test, stored procedure)
+    "cryptography>=46.0.0",
+
 ]
 
 [dependency-groups]
@@ -126,6 +129,12 @@ unfixable = []
 ]
 "__init__.py" = [
     "F401",    # unused imports OK (re-exports)
+]
+"grpc_test/**/*.py" = [
+    "T201",    # print OK in CLI scripts
+    "PLR0912", # too many branches OK in CLI main()
+    "PLR0911", # too many returns OK in _ssl_cert_check
+    "PLR0915", # too many statements OK in _run_diagnose
 ]
 
 [tool.ruff.lint.isort]
