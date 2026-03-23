@@ -1,5 +1,5 @@
 # generated: 2026-03-15
-# last_updated: 2026-03-17
+# last_updated: 2026-03-23
 # project: snowflake-native-splunk-app
 # project_key: NOKEY
 # tracking_system: file-system
@@ -52,8 +52,8 @@
 #   the actual dependency order and removing forward-dependency workarounds.
 
 generated: 2026-03-15
-last_updated: 2026-03-17
-updated_by: epic-1 validated; story 1-1 marked done
+last_updated: 2026-03-23
+updated_by: story 2-1-otlp-endpoint-and-connection-test marked done
 project: snowflake-native-splunk-app
 project_key: NOKEY
 tracking_system: file-system
@@ -96,7 +96,7 @@ sprints:
   # SPRINT 2: Splunk destination is configurable
   # ─────────────────────────────────────────────────────────────────────
   sprint-2:
-    status: planned
+    status: active
     goal: "Maya can configure OTLP destination, test connection, and see Getting Started progress"
     deliverable: >
       Maya enters an OTLP endpoint, runs a connection test (pass/fail),
@@ -112,9 +112,9 @@ sprints:
       epic-2:
         name: "First-time setup and destination configuration"
         tags: [UI, Config]
-        status: backlog
+        status: in-progress
         stories:
-          2-1-otlp-endpoint-and-connection-test: backlog
+          2-1-otlp-endpoint-and-connection-test: done
           2-2-optional-certificate-and-validation: backlog
           2-3-persist-destination-config-and-getting-started-hub: backlog
         retrospective: optional

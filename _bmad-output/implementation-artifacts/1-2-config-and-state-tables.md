@@ -118,7 +118,7 @@ For this story, `_INTERNAL` and `_METRICS` are directly visible from provider-si
 
 ### Deferred to later stories
 
-- **Config seed data** — No default config values are inserted. Story 2.1 (OTLP endpoint) will write `otlp.endpoint`; Story 3.3 will write `pack_enabled.*` and `source.*.*` keys.
+- **Config seed data** — No default config values are inserted. Story 2.3 (persist destination) will write `otlp.endpoint` after a successful connection test; Story 2.1 adds read-only hydration from config in the UI. Story 3.3 will write `pack_enabled.*` and `source.*.*` keys.
 - **Pipeline health INSERT logic** — The table is created empty. Story 4.3 (retry/failure handling) and Story 5.1/5.2 (collectors) will insert health metrics via the `record_run_metrics()` pattern.
 - **Watermark seed data** — No initial watermarks. Story 6.5 (`ACCOUNT_USAGE` task provisioning) will seed watermark rows for each enabled source.
 - **Grants on `_staging`** — Only owner-mode SPs access `_staging.stream_offset_log`. No grants to `app_admin` needed.
