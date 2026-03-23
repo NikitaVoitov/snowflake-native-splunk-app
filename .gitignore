@@ -70,6 +70,8 @@ _bmad-output/*
 
 # ── Root-level assets (screenshots, etc.; not for version control) ─
 /*.png
+/*.jpg
+/*.jpeg
 
 # ── OS Files ────────────────────────────────────────────────────
 .DS_Store
