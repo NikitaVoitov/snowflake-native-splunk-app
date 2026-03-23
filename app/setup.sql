@@ -102,3 +102,39 @@ END;
 $$;
 GRANT USAGE ON PROCEDURE app_public.register_single_callback(STRING, STRING, STRING)
     TO APPLICATION ROLE app_admin;
+
+-- ─────────────────────────────────────────────────────────────────
+-- OTLP gRPC egress: network rule, EAI, app specification, Python SPs
+-- Story 2.1 — dynamic host:port via provision_otlp_egress + test_otlp_connection
+-- ─────────────────────────────────────────────────────────────────
+
+CREATE NETWORK RULE IF NOT EXISTS _internal.otlp_egress_rule
+    TYPE = HOST_PORT
+    MODE = EGRESS
+    VALUE_LIST = ('placeholder.invalid:4317');
+
+CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION otlp_egress_eai
+    ALLOWED_NETWORK_RULES = (_internal.otlp_egress_rule)
+    ENABLED = TRUE;
+
+CREATE OR REPLACE PROCEDURE app_public.provision_otlp_egress(endpoint VARCHAR)
+RETURNS VARCHAR
+LANGUAGE PYTHON
+RUNTIME_VERSION = '3.11'
+PACKAGES = ('snowflake-snowpark-python')
+HANDLER = 'provision_egress.provision_egress'
+IMPORTS = ('/python/endpoint_parse.py', '/python/provision_egress.py')
+EXECUTE AS OWNER;
+
+CREATE OR REPLACE PROCEDURE app_public.test_otlp_connection(endpoint VARCHAR, cert_pem VARCHAR)
+RETURNS VARCHAR
+LANGUAGE PYTHON
+RUNTIME_VERSION = '3.11'
+PACKAGES = ('snowflake-snowpark-python', 'grpcio')
+HANDLER = 'connection_test.test_connection'
+IMPORTS = ('/python/endpoint_parse.py', '/python/connection_test.py')
+EXTERNAL_ACCESS_INTEGRATIONS = (otlp_egress_eai)
+EXECUTE AS OWNER;
+
+GRANT USAGE ON PROCEDURE app_public.provision_otlp_egress(VARCHAR) TO APPLICATION ROLE app_admin;
+GRANT USAGE ON PROCEDURE app_public.test_otlp_connection(VARCHAR, VARCHAR) TO APPLICATION ROLE app_admin;

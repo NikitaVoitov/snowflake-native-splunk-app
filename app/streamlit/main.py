@@ -76,6 +76,56 @@ st.markdown(
         justify-content: flex-start !important;
     }
 
+    /* ── Left-align content (Snowflake embed centres it by default) ── */
+    [data-testid="stMain"] {
+        align-items: flex-start !important;
+    }
+    /* ── Collapse empty header but keep sidebar expand button reachable ── */
+    [data-testid="stHeader"] {
+        height: 0 !important;
+        min-height: 0 !important;
+        overflow: visible !important;
+        padding: 0 !important;
+        position: relative !important;
+    }
+    [data-testid="stExpandSidebarButton"] {
+        position: absolute !important;
+        top: 33px !important;
+        left: 12px !important;
+        z-index: 10 !important;
+    }
+    [data-testid="stMainBlockContainer"] {
+        padding-top: 2rem !important;
+    }
+
+    /* ── Prevent button text wrapping inside narrow columns ── */
+    [data-testid="stMainBlockContainer"] [data-testid="stButton"] button {
+        white-space: nowrap !important;
+    }
+
+    /* ── Tab-panel button columns: auto-size to content, tight spacing ── */
+    [role="tabpanel"] [data-testid="stHorizontalBlock"] {
+        gap: 0.5rem !important;
+    }
+    [role="tabpanel"] [data-testid="stHorizontalBlock"]
+        > [data-testid="stColumn"]:has([data-testid="stButton"]) {
+        flex: 0 0 auto !important;
+        width: auto !important;
+    }
+    [role="tabpanel"] [data-testid="stHorizontalBlock"]
+        > [data-testid="stColumn"]:not(:has([data-testid="stButton"])) {
+        flex: 1 1 0 !important;
+    }
+
+    /* ── Tab-panel content: fill viewport, push footer to bottom ── */
+    [role="tabpanel"] > [data-testid="stVerticalBlock"] {
+        min-height: calc(100vh - 14rem);
+    }
+    [role="tabpanel"] > [data-testid="stVerticalBlock"]
+        > [data-testid="stElementContainer"]:has(hr) {
+        margin-top: auto !important;
+    }
+
     /* ── About dialog: hide title text, keep close button ── */
     div[data-testid="stDialog"] [data-testid="stDialogHeader"] {
         min-height: 2rem;
