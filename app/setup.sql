@@ -121,7 +121,7 @@ CREATE OR REPLACE PROCEDURE app_public.provision_otlp_egress(endpoint VARCHAR)
 RETURNS VARCHAR
 LANGUAGE PYTHON
 RUNTIME_VERSION = '3.11'
-PACKAGES = ('snowflake-snowpark-python')
+PACKAGES = ('snowflake-snowpark-python', 'validators')
 HANDLER = 'provision_egress.provision_egress'
 IMPORTS = ('/python/endpoint_parse.py', '/python/provision_egress.py')
 EXECUTE AS OWNER;
@@ -130,7 +130,7 @@ CREATE OR REPLACE PROCEDURE app_public.test_otlp_connection(endpoint VARCHAR, ce
 RETURNS VARCHAR
 LANGUAGE PYTHON
 RUNTIME_VERSION = '3.11'
-PACKAGES = ('snowflake-snowpark-python', 'grpcio')
+PACKAGES = ('snowflake-snowpark-python', 'grpcio', 'validators', 'dnspython')
 HANDLER = 'connection_test.test_connection'
 IMPORTS = ('/python/endpoint_parse.py', '/python/connection_test.py')
 EXTERNAL_ACCESS_INTEGRATIONS = (otlp_egress_eai)
@@ -138,3 +138,21 @@ EXECUTE AS OWNER;
 
 GRANT USAGE ON PROCEDURE app_public.provision_otlp_egress(VARCHAR) TO APPLICATION ROLE app_admin;
 GRANT USAGE ON PROCEDURE app_public.test_otlp_connection(VARCHAR, VARCHAR) TO APPLICATION ROLE app_admin;
+
+-- ─────────────────────────────────────────────────────────────────
+-- PEM certificate validation (Story 2.2)
+-- Parses a PEM-encoded X.509 certificate server-side, checks the
+-- validity window, and returns JSON with expiry/subject/fingerprint.
+-- ─────────────────────────────────────────────────────────────────
+
+CREATE OR REPLACE PROCEDURE app_public.validate_otlp_certificate_pem(cert_pem VARCHAR)
+RETURNS VARCHAR
+LANGUAGE PYTHON
+RUNTIME_VERSION = '3.11'
+PACKAGES = ('snowflake-snowpark-python', 'cryptography')
+HANDLER = 'cert_validate.validate_pem'
+IMPORTS = ('/python/cert_validate.py')
+EXECUTE AS OWNER;
+
+GRANT USAGE ON PROCEDURE app_public.validate_otlp_certificate_pem(VARCHAR)
+    TO APPLICATION ROLE app_admin;

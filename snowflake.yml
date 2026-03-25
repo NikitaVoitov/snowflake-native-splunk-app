@@ -32,12 +32,18 @@ entities:
         dest: streamlit/main.py
       - src: app/streamlit/pages/*.py
         dest: streamlit/pages/
+      - src: app/streamlit/utils/__init__.py
+        dest: streamlit/utils/__init__.py
+      - src: app/streamlit/utils/snowflake.py
+        dest: streamlit/utils/snowflake.py
       - src: app/python/endpoint_parse.py
         dest: python/endpoint_parse.py
       - src: app/python/provision_egress.py
         dest: python/provision_egress.py
       - src: app/python/connection_test.py
         dest: python/connection_test.py
+      - src: app/python/cert_validate.py
+        dest: python/cert_validate.py
     meta:
       post_deploy:
         - sql_script: scripts/shared_content.sql

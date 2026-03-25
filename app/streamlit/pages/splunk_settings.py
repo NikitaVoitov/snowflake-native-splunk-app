@@ -3,34 +3,100 @@
 
 from __future__ import annotations
 
+import hashlib
+import ipaddress
 import json
 from datetime import UTC, datetime
 from typing import Any
 
+import validators
+from snowflake.snowpark.exceptions import SnowparkSQLException
+from utils.snowflake import get_session
+
 import streamlit as st
 
-_PEM_HEADER = "-----BEGIN CERTIFICATE-----"
-_PEM_FOOTER = "-----END CERTIFICATE-----"
-
 APPROVAL_WARNING = (
-    "External access approval required. Please approve the 'OTLP gRPC Export' "
-    "specification in the app configuration panel (Snowsight → Data Products → Apps → "
-    "Splunk Observability → Manage Access). Then run Test connection again."
+    "External access approval required. In Snowsight, go to **Data Products > Apps**, "
+    "open this app, then select the **Configurations** tab. Under the **Connections** "
+    "section you will see *Updates pending review* -- click **Review**, toggle the "
+    "**OTLP gRPC Export** entry on, and click **Save**. You must use a role with the "
+    "MANAGE APPLICATION SPECIFICATIONS privilege (granted by default to SECURITYADMIN). "
+    "Then return here and click **Test connection** again."
+)
+
+_APPROVAL_HINTS = (
+    "approve",
+    "approval",
+    "specification",
+    "external access",
+    "not approved",
+    "pending approval",
+    "app specification",
 )
 
 
-def _snowpark_session() -> Any:
+def _is_ipv4(host: str) -> bool:
     try:
-        from snowflake.snowpark.context import get_active_session
+        ipaddress.IPv4Address(host)
+        return True
+    except ValueError:
+        return False
 
-        return get_active_session()
-    except Exception:
+
+def _validate_endpoint_format(endpoint: str) -> str | None:
+    """Client-side format check using validators + ipaddress. Returns error or None."""
+    s = endpoint.strip()
+    if not s:
         return None
+
+    low = s.lower()
+    if low.startswith("http://"):
+        return "Plain HTTP is not supported. Use hostname:port format (e.g. collector.example.com:4317)."
+    if low.startswith("https://"):
+        s = s[8:]
+
+    if any(c in s for c in (" ", "\t", "\n", ";", "'", '"', "\\", "/", "?", "#")):
+        return "Endpoint contains invalid characters. Use hostname:port format."
+
+    host_part = s
+    if ":" in s:
+        host_part, port_str = s.rsplit(":", 1)
+        if not port_str.isdigit():
+            return "Port must be a number."
+        port_val = int(port_str)
+        if port_val < 1 or port_val > 65535:
+            return f"Port {port_val} is out of the valid range (1-65535)."
+
+    host = host_part.strip()
+    if not host:
+        return "Hostname is empty."
+
+    if _is_ipv4(host):
+        return (
+            "IP addresses are not supported for Snowflake external access. "
+            "Use a fully-qualified hostname instead (e.g. collector.example.com)."
+        )
+
+    if not validators.domain(host):
+        return f"'{host}' is not a valid fully-qualified domain name. Use a complete hostname like collector.example.com."
+
+    return None
+
+
+def _is_approval_related(text: str) -> bool:
+    low = text.lower()
+    return any(hint in low for hint in _APPROVAL_HINTS)
+
+
+def _pem_fingerprint(raw_pem: str) -> str:
+    """SHA-256 fingerprint of the PEM after normalizing line endings."""
+    normalized = raw_pem.strip().replace("\r\n", "\n").encode("utf-8")
+    return hashlib.sha256(normalized).hexdigest()
 
 
 def _load_saved_endpoint() -> str:
     """Load saved OTLP endpoint from _internal.config; return empty string on failure."""
-    sess = _snowpark_session()
+    sess = get_session()
     if sess is None:
         return ""
     try:
@@ -39,7 +105,7 @@ def _load_saved_endpoint() -> str:
         ).collect()
         if rows and rows[0][0]:
             return str(rows[0][0]).strip()
-    except Exception:  # noqa: S110 — config row may not exist yet
+    except SnowparkSQLException:
         pass
     return ""
 
@@ -59,6 +125,8 @@ def _init_session_state() -> None:
         st.session_state.last_test_success_endpoint = None
     if "cert_validation_result" not in st.session_state:
         st.session_state.cert_validation_result = None
+    if "endpoint_format_error" not in st.session_state:
+        st.session_state.endpoint_format_error = None
 
 
 def _call_proc_json(session: Any, proc_fqn: str, *args: str) -> dict[str, Any]:
@@ -79,6 +147,7 @@ def _on_connection_inputs_change() -> None:
     """Require a fresh test whenever connection inputs change."""
     _clear_connection_state()
     st.session_state.cert_validation_result = None
+    st.session_state.endpoint_format_error = None
 
 
 def _on_clear() -> None:
@@ -87,6 +156,7 @@ def _on_clear() -> None:
     st.session_state.otlp_cert_pem = ""
     _clear_connection_state()
     st.session_state.cert_validation_result = None
+    st.session_state.endpoint_format_error = None
 
 
 def _on_reset() -> None:
@@ -95,10 +165,11 @@ def _on_reset() -> None:
     st.session_state.otlp_cert_pem = ""
     _clear_connection_state()
     st.session_state.cert_validation_result = None
+    st.session_state.endpoint_format_error = None
 
 
 def _run_connection_workflow(endpoint: str, cert_pem: str = "") -> None:
-    session = _snowpark_session()
+    session = get_session()
     if session is None:
         st.session_state.connection_test_result = {
             "success": False,
@@ -124,18 +195,27 @@ def _run_connection_workflow(endpoint: str, cert_pem: str = "") -> None:
             if prov.get("needs_approval"):
                 st.session_state.connection_test_result = {
                     "success": False,
-                    "message": "Approval required",
+                    "message": prov.get("message", "Approval required"),
                     "approval": True,
                 }
                 return
 
+            normalized_pem = cert_pem.strip().replace("\r\n", "\n") if cert_pem else ""
             test = _call_proc_json(
-                session, "app_public.test_otlp_connection", endpoint, cert_pem,
+                session, "app_public.test_otlp_connection", endpoint, normalized_pem,
             )
     except Exception as e:
+        msg = str(e)
+        if _is_approval_related(msg):
+            st.session_state.connection_test_result = {
+                "success": False,
+                "message": msg,
+                "approval": True,
+            }
+            return
         st.session_state.connection_test_result = {
             "success": False,
-            "message": f"Provisioning or connection test failed: {e!s}",
+            "message": f"Provisioning or connection test failed: {msg}",
         }
         return
 
@@ -164,6 +244,37 @@ def _run_connection_workflow(endpoint: str, cert_pem: str = "") -> None:
         "details": test.get("details", ""),
     }
 
+
+def _run_cert_validation(cert_text: str) -> None:
+    """Call the server-side SP to validate the PEM certificate."""
+    session = get_session()
+    if session is None:
+        st.session_state.cert_validation_result = {
+            "ok": False,
+            "message": "Snowflake session unavailable.",
+            "pem_fingerprint": None,
+        }
+        return
+
+    normalized = cert_text.strip().replace("\r\n", "\n")
+    try:
+        with st.spinner("Validating certificate…"):
+            result = _call_proc_json(
+                session, "app_public.validate_otlp_certificate_pem", normalized,
+            )
+    except Exception as e:
+        st.session_state.cert_validation_result = {
+            "ok": False,
+            "message": f"Certificate validation failed: {e!s}",
+            "pem_fingerprint": _pem_fingerprint(cert_text),
+        }
+        return
+
+    result["pem_fingerprint"] = result.get("pem_fingerprint") or _pem_fingerprint(cert_text)
+    st.session_state.cert_validation_result = result
+
+
+# ── Page render ──────────────────────────────────────────────────
 
 _init_session_state()
 
@@ -198,8 +309,18 @@ with tabs[0]:
             st.button("Clear", type="secondary", on_click=_on_clear)
 
         if test_clicked:
-            cert = st.session_state.get("otlp_cert_pem", "")
-            _run_connection_workflow(ep, cert)
+            fmt_err = _validate_endpoint_format(ep)
+            if fmt_err:
+                st.session_state.endpoint_format_error = fmt_err
+                st.session_state.connection_test_result = None
+            else:
+                st.session_state.endpoint_format_error = None
+                cert = st.session_state.get("otlp_cert_pem", "")
+                _run_connection_workflow(ep, cert)
+
+        fmt_err = st.session_state.endpoint_format_error
+        if fmt_err:
+            st.error(fmt_err)
 
         res = st.session_state.connection_test_result
         if res:
@@ -238,28 +359,14 @@ with tabs[0]:
         )
 
         if validate_clicked and not cert_empty:
-            if _PEM_HEADER not in cert_text or _PEM_FOOTER not in cert_text:
-                st.session_state.cert_validation_result = {
-                    "ok": False,
-                    "msg": "Not a valid PEM certificate — missing BEGIN/END CERTIFICATE markers.",
-                }
-            elif cert_text.count(_PEM_HEADER) != cert_text.count(_PEM_FOOTER):
-                st.session_state.cert_validation_result = {
-                    "ok": False,
-                    "msg": "Mismatched BEGIN/END CERTIFICATE markers.",
-                }
-            else:
-                st.session_state.cert_validation_result = {
-                    "ok": True,
-                    "msg": "PEM format looks valid.",
-                }
+            _run_cert_validation(cert_text)
 
         vr = st.session_state.cert_validation_result
         if vr:
-            if vr["ok"]:
-                st.success(vr["msg"])
+            if vr.get("ok"):
+                st.success(vr.get("message", "Certificate is valid"))
             else:
-                st.error(vr["msg"])
+                st.error(vr.get("message", "Certificate validation failed"))
 
     st.divider()
 
@@ -269,16 +376,26 @@ with tabs[0]:
             f"`{st.session_state.last_test_success_endpoint}`",
         )
 
+    # ── Save gating ─────────────────────────────────────────────
+    # Require a successful connection test whose endpoint matches the
+    # current field value.  When a cert is present it was already used
+    # in the TLS handshake during the test, so it is implicitly proven
+    # valid -- no separate "Validate certificate" click is required.
+    # Changing the endpoint OR the cert triggers _on_connection_inputs_change
+    # which clears connection_test_result, re-disabling Save until a
+    # fresh test passes.
+    connection_ok = (
+        st.session_state.connection_test_result
+        and st.session_state.connection_test_result.get("success")
+        and st.session_state.last_test_success_endpoint == ep
+    )
+    save_disabled = not connection_ok
+
     fc_msg, fc2, fc3 = st.columns([3, 2, 2], gap="small")
     with fc_msg:
         st.caption("You have unsaved changes.")
     with fc2:
         st.button("Reset to defaults", type="secondary", on_click=_on_reset)
-    save_disabled = not (
-        st.session_state.connection_test_result
-        and st.session_state.connection_test_result.get("success")
-        and st.session_state.last_test_success_endpoint == ep
-    )
     with fc3:
         save_clicked = st.button(
             "Save settings",

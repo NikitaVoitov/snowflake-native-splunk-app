@@ -2,19 +2,30 @@
 
 from __future__ import annotations
 
-import re
+import ipaddress
 from typing import Final
+
+import validators
 
 _DEFAULT_GRPC_PORT: Final[int] = 4317
 
-# Host labels: letters, digits, hyphen; dots between labels. Allows single-label (e.g. localhost).
-_HOST_RE = re.compile(
-    r"^(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$",
-)
+
+def _is_ipv4(host: str) -> bool:
+    """Return True when *host* is a valid dotted-decimal IPv4 address."""
+    try:
+        ipaddress.IPv4Address(host)
+        return True
+    except ValueError:
+        return False
 
 
 def parse_endpoint(endpoint: str) -> tuple[str, int]:
-    """Parse and validate OTLP endpoint; return (host, port). TLS gRPC; default port 4317."""
+    """Parse and validate an OTLP endpoint; return (host, port).
+
+    Accepts ``host:port``, ``host``, or ``https://host[:port]``.
+    The host must be a fully-qualified domain name (RFC 1034/1123) or a
+    valid IPv4 address.  Default port is 4317 (gRPC OTLP).
+    """
     if endpoint is None:
         raise ValueError("Endpoint is empty")
     s = endpoint.strip()
@@ -44,15 +55,23 @@ def parse_endpoint(endpoint: str) -> tuple[str, int]:
             raise ValueError("Port must be numeric")
         port = int(port_str)
         if port < 1 or port > 65535:
-            raise ValueError("Port out of range")
+            raise ValueError(f"Port {port} is out of the valid range (1-65535)")
 
     host = host_part.strip()
     if not host:
         raise ValueError("Host is empty")
-    if len(host) > 253:
-        raise ValueError("Hostname is too long")
-    if not _HOST_RE.match(host):
-        raise ValueError("Invalid hostname format")
+
+    if _is_ipv4(host):
+        raise ValueError(
+            "IP addresses are not supported for Snowflake external access. "
+            "Use a fully-qualified hostname instead (e.g. collector.example.com).",
+        )
+
+    if not validators.domain(host):
+        raise ValueError(
+            f"'{host}' is not a valid fully-qualified domain name. "
+            "Use a complete hostname like collector.example.com.",
+        )
 
     return host, port
 
