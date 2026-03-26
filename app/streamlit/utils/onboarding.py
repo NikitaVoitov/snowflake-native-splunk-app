@@ -24,6 +24,11 @@ class OnboardingTask(NamedTuple):
     page_path: str | None
 
 
+class OnboardingLoadState(NamedTuple):
+    completion: dict[int, bool]
+    error_message: str | None
+
+
 ONBOARDING_TASKS: list[OnboardingTask] = [
     OnboardingTask(
         step=1,
@@ -68,15 +73,15 @@ ONBOARDING_TASKS: list[OnboardingTask] = [
 ]
 
 
-def load_task_completion(session: Session | None) -> dict[int, bool]:
-    """Query ``_internal.config`` and return ``{step: completed}`` for each task.
+def load_task_completion_state(session: Session | None) -> OnboardingLoadState:
+    """Query ``_internal.config`` and return completion plus load status.
 
     Always re-queries (no caching) because task state can change mid-session.
-    Returns all-False when *session* is ``None`` or the table is missing.
+    Returns all-False when *session* is ``None`` or the table is unavailable.
     """
     result: dict[int, bool] = {t.step: False for t in ONBOARDING_TASKS}
     if session is None:
-        return result
+        return OnboardingLoadState(result, None)
 
     try:
         for task in ONBOARDING_TASKS:
@@ -85,14 +90,25 @@ def load_task_completion(session: Session | None) -> dict[int, bool]:
                 result[task.step] = bool(val)
             elif task.step == 2:
                 packs = load_config_like(session, task.config_key)
-                result[task.step] = any(v == "true" for v in packs.values())
+                result[task.step] = any((v or "").lower() == "true" for v in packs.values())
             else:
                 val = load_config(session, task.config_key)
-                result[task.step] = val == "true"
-    except SnowparkSQLException:
-        pass
+                result[task.step] = (val or "").lower() == "true"
+    except SnowparkSQLException as exc:
+        return OnboardingLoadState(
+            result,
+            (
+                "Could not load onboarding progress from Snowflake. "
+                f"Progress is temporarily shown as incomplete. Details: {exc!s}"
+            ),
+        )
 
-    return result
+    return OnboardingLoadState(result, None)
+
+
+def load_task_completion(session: Session | None) -> dict[int, bool]:
+    """Backward-compatible completion-only helper."""
+    return load_task_completion_state(session).completion
 
 
 def get_completed_count(completion: dict[int, bool]) -> int:

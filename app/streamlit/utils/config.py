@@ -41,7 +41,11 @@ def load_config(session: Session, key: str) -> str | None:
 def load_all_config(session: Session) -> dict[str, str]:
     """Return every key/value pair as a ``{key: value}`` dict."""
     rows = session.sql(_SELECT_ALL_SQL).collect()
-    return {str(r[0]): str(r[1]) for r in rows if r[0] is not None}
+    return {
+        str(r[0]): str(r[1]).strip()
+        for r in rows
+        if r[0] is not None and r[1] is not None
+    }
 
 
 def load_config_like(session: Session, prefix: str) -> dict[str, str]:

@@ -6,6 +6,8 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from snowflake.snowpark.exceptions import SnowparkSQLException
+
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "app" / "streamlit"))
 
@@ -13,6 +15,7 @@ from utils.onboarding import (
     ONBOARDING_TASKS,
     get_completed_count,
     load_task_completion,
+    load_task_completion_state,
 )
 
 
@@ -71,6 +74,16 @@ class TestLoadTaskCompletion:
 
     @patch("utils.onboarding.load_config", side_effect=_mock_load_config)
     @patch("utils.onboarding.load_config_like", side_effect=_mock_load_config_like)
+    def test_task2_is_case_insensitive(self, mock_like, mock_cfg):
+        session = MagicMock()
+        session._test_store = {
+            "pack_enabled.distributed_tracing": "TRUE",
+        }
+        result = load_task_completion(session)
+        assert result[2] is True
+
+    @patch("utils.onboarding.load_config", side_effect=_mock_load_config)
+    @patch("utils.onboarding.load_config_like", side_effect=_mock_load_config_like)
     def test_all_complete(self, mock_like, mock_cfg):
         session = MagicMock()
         session._test_store = {
@@ -82,10 +95,40 @@ class TestLoadTaskCompletion:
         result = load_task_completion(session)
         assert all(v is True for v in result.values())
 
+    @patch("utils.onboarding.load_config", side_effect=_mock_load_config)
+    @patch("utils.onboarding.load_config_like", side_effect=_mock_load_config_like)
+    def test_tasks_3_and_4_are_case_insensitive(self, mock_like, mock_cfg):
+        session = MagicMock()
+        session._test_store = {
+            "governance.acknowledged": "TRUE",
+            "activation.completed": "True",
+        }
+        result = load_task_completion(session)
+        assert result[3] is True
+        assert result[4] is True
+
     def test_none_session_returns_all_false(self):
         result = load_task_completion(None)
         assert all(v is False for v in result.values())
         assert len(result) == 4
+
+    @patch(
+        "utils.onboarding.load_config",
+        side_effect=SnowparkSQLException("config table unavailable"),
+    )
+    @patch("utils.onboarding.load_config_like", side_effect=_mock_load_config_like)
+    def test_sql_errors_return_default_completion_and_error(self, mock_like, mock_cfg):
+        session = MagicMock()
+        state = load_task_completion_state(session)
+        assert all(v is False for v in state.completion.values())
+        assert state.error_message is not None
+        assert "Could not load onboarding progress from Snowflake" in state.error_message
+        assert "config table unavailable" in state.error_message
+
+    def test_none_session_returns_no_error(self):
+        state = load_task_completion_state(None)
+        assert all(v is False for v in state.completion.values())
+        assert state.error_message is None
 
 
 class TestGetCompletedCount:

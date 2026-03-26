@@ -174,7 +174,6 @@ BEGIN
     WHERE config_key IN (
         'activation.completed',
         'governance.acknowledged',
-        'onboarding.complete',
         'otlp.endpoint',
         'otlp.pem_secret_ref'
     )

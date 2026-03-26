@@ -93,6 +93,19 @@ class TestLoadAllConfig:
         ]
         assert load_all_config(mock_session) == {"good.key": "good.value"}
 
+    def test_skips_null_values(self, mock_session):
+        mock_session.sql.return_value.collect.return_value = [
+            ("null.value", None),
+            ("good.key", "good.value"),
+        ]
+        assert load_all_config(mock_session) == {"good.key": "good.value"}
+
+    def test_strips_loaded_values(self, mock_session):
+        mock_session.sql.return_value.collect.return_value = [
+            ("good.key", "  good.value  "),
+        ]
+        assert load_all_config(mock_session) == {"good.key": "good.value"}
+
 
 class TestLoadConfigLike:
     def test_prefix_match(self, mock_session):

@@ -53,7 +53,7 @@
 
 generated: 2026-03-15
 last_updated: 2026-03-26
-updated_by: story 2-3 implementation complete, moved to review
+updated_by: story 2-3 marked done after manual UAT
 project: snowflake-native-splunk-app
 project_key: NOKEY
 tracking_system: file-system
@@ -96,7 +96,7 @@ sprints:
   # SPRINT 2: Splunk destination is configurable
   # ─────────────────────────────────────────────────────────────────────
   sprint-2:
-    status: active
+    status: done
     goal: "Maya can configure OTLP destination, test connection, and see Getting Started progress"
     deliverable: >
       Maya enters an OTLP endpoint, runs a connection test (pass/fail),
@@ -112,11 +112,11 @@ sprints:
       epic-2:
         name: "First-time setup and destination configuration"
         tags: [UI, Config]
-        status: in-progress
+        status: done
         stories:
           2-1-otlp-endpoint-and-connection-test: done
           2-2-optional-certificate-and-validation: done
-          2-3-persist-destination-config-and-getting-started-hub: review
+          2-3-persist-destination-config-and-getting-started-hub: done
         retrospective: optional
 
   # ─────────────────────────────────────────────────────────────────────

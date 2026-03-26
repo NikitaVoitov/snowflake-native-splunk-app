@@ -482,6 +482,7 @@ with tabs[0]:
                 if st.session_state.get("drilled_from_getting_started"):
                     st.session_state.drilled_from_getting_started = False
                     st.switch_page("pages/getting_started.py")
+                    st.stop()
 
                 st.rerun()
             except Exception as e:

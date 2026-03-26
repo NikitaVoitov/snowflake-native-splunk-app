@@ -1,4 +1,4 @@
-from utils.onboarding import get_completed_count, load_task_completion
+from utils.onboarding import get_completed_count, load_task_completion_state
 from utils.snowflake import get_session
 
 import streamlit as st
@@ -7,7 +7,8 @@ DOCS_URL = "https://docs.splunk.com"
 
 # ── Onboarding state (evaluated before sidebar build) ────────────
 _session = get_session()
-_completion = load_task_completion(_session)
+_onboarding_state = load_task_completion_state(_session)
+_completion = _onboarding_state.completion
 _completed = get_completed_count(_completion)
 _total = len(_completion)
 
@@ -218,6 +219,9 @@ pages.extend(
 pg = st.navigation(pages, position="hidden")
 
 with st.sidebar:
+    if _onboarding_state.error_message:
+        st.warning(_onboarding_state.error_message)
+
     st.markdown(
         '<div style="margin-bottom: 0.25rem;">'
         '<div style="font-size: 1.05rem; font-weight: 600; color: #0a0a0a;'

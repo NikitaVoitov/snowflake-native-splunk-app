@@ -7,7 +7,7 @@ from utils.config import save_config
 from utils.onboarding import (
     ONBOARDING_TASKS,
     get_completed_count,
-    load_task_completion,
+    load_task_completion_state,
 )
 from utils.snowflake import get_session
 
@@ -19,7 +19,8 @@ if "drilled_from_getting_started" in st.session_state:
     st.session_state.drilled_from_getting_started = False
 
 session = get_session()
-completion = load_task_completion(session)
+onboarding_state = load_task_completion_state(session)
+completion = onboarding_state.completion
 completed = get_completed_count(completion)
 total = len(ONBOARDING_TASKS)
 pct = int(completed / total * 100) if total else 0
@@ -112,6 +113,8 @@ st.header("Welcome to Splunk Observability for Snowflake")
 st.caption(
     "Follow the setup guide to start exporting telemetry to your collector."
 )
+if onboarding_state.error_message:
+    st.warning(onboarding_state.error_message)
 
 # Progress bar section
 prog_left, prog_right = st.columns([1, 1])
