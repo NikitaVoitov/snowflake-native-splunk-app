@@ -52,8 +52,8 @@
 #   the actual dependency order and removing forward-dependency workarounds.
 
 generated: 2026-03-15
-last_updated: 2026-03-25
-updated_by: story 2-2-optional-certificate-and-validation marked done after code review
+last_updated: 2026-03-26
+updated_by: story 2-3 implementation complete, moved to review
 project: snowflake-native-splunk-app
 project_key: NOKEY
 tracking_system: file-system
@@ -116,7 +116,7 @@ sprints:
         stories:
           2-1-otlp-endpoint-and-connection-test: done
           2-2-optional-certificate-and-validation: done
-          2-3-persist-destination-config-and-getting-started-hub: backlog
+          2-3-persist-destination-config-and-getting-started-hub: review
         retrospective: optional
 
   # ─────────────────────────────────────────────────────────────────────

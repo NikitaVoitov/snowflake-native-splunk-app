@@ -11,6 +11,7 @@ from typing import Any
 
 import validators
 from snowflake.snowpark.exceptions import SnowparkSQLException
+from utils.config import load_config, save_config
 from utils.snowflake import get_session
 
 import streamlit as st
@@ -100,19 +101,39 @@ def _load_saved_endpoint() -> str:
     if sess is None:
         return ""
     try:
-        rows = sess.sql(
-            "SELECT CONFIG_VALUE FROM _internal.config WHERE CONFIG_KEY = 'otlp.endpoint'",
-        ).collect()
-        if rows and rows[0][0]:
-            return str(rows[0][0]).strip()
+        return load_config(sess, "otlp.endpoint") or ""
     except SnowparkSQLException:
-        pass
-    return ""
+        return ""
+
+
+def _pem_secret_stored() -> bool:
+    """Return True when an app-owned PEM secret has been stored."""
+    sess = get_session()
+    if sess is None:
+        return False
+    try:
+        return (load_config(sess, "otlp.pem_secret_ref") or "") == "stored"
+    except SnowparkSQLException:
+        return False
+
+
+def _load_saved_pem() -> str:
+    """Load the stored PEM certificate from the app-owned secret via SP."""
+    sess = get_session()
+    if sess is None:
+        return ""
+    try:
+        result = sess.call("app_public.get_pem_secret")
+        return (result or "").strip() if isinstance(result, str) else ""
+    except SnowparkSQLException:
+        return ""
 
 
 def _init_session_state() -> None:
     if "otlp_endpoint_hydrated" not in st.session_state:
-        st.session_state.otlp_endpoint = _load_saved_endpoint()
+        saved = _load_saved_endpoint()
+        st.session_state.otlp_endpoint = saved
+        st.session_state.endpoint_saved = saved or None
         st.session_state.otlp_endpoint_hydrated = True
 
     if "connection_test_result" not in st.session_state:
@@ -127,6 +148,18 @@ def _init_session_state() -> None:
         st.session_state.cert_validation_result = None
     if "endpoint_format_error" not in st.session_state:
         st.session_state.endpoint_format_error = None
+    if "settings_just_saved" not in st.session_state:
+        st.session_state.settings_just_saved = False
+    if "pem_ref_bound" not in st.session_state:
+        st.session_state.pem_ref_bound = False
+
+    st.session_state.pem_ref_bound = _pem_secret_stored()
+
+    if "otlp_cert_pem_hydrated" not in st.session_state:
+        saved_pem = _load_saved_pem() if st.session_state.pem_ref_bound else ""
+        st.session_state.otlp_cert_pem = saved_pem
+        st.session_state.pem_saved_value = saved_pem
+        st.session_state.otlp_cert_pem_hydrated = True
 
 
 def _call_proc_json(session: Any, proc_fqn: str, *args: str) -> dict[str, Any]:
@@ -144,10 +177,17 @@ def _clear_connection_state() -> None:
 
 
 def _on_connection_inputs_change() -> None:
-    """Require a fresh test whenever connection inputs change."""
+    """Require a fresh test whenever the endpoint changes."""
     _clear_connection_state()
     st.session_state.cert_validation_result = None
     st.session_state.endpoint_format_error = None
+    st.session_state.settings_just_saved = False
+
+
+def _on_cert_change() -> None:
+    """Reset cert validation when the PEM text changes (does not invalidate connection test)."""
+    st.session_state.cert_validation_result = None
+    st.session_state.settings_just_saved = False
 
 
 def _on_clear() -> None:
@@ -160,9 +200,11 @@ def _on_clear() -> None:
 
 
 def _on_reset() -> None:
-    """Callback: reload saved endpoint, clear transient state."""
+    """Callback: reload saved endpoint and saved PEM, clear transient state."""
     st.session_state.otlp_endpoint = _load_saved_endpoint()
-    st.session_state.otlp_cert_pem = ""
+    saved_pem = _load_saved_pem() if _pem_secret_stored() else ""
+    st.session_state.otlp_cert_pem = saved_pem
+    st.session_state.pem_saved_value = saved_pem
     _clear_connection_state()
     st.session_state.cert_validation_result = None
     st.session_state.endpoint_format_error = None
@@ -201,9 +243,14 @@ def _run_connection_workflow(endpoint: str, cert_pem: str = "") -> None:
                 return
 
             normalized_pem = cert_pem.strip().replace("\r\n", "\n") if cert_pem else ""
-            test = _call_proc_json(
-                session, "app_public.test_otlp_connection", endpoint, normalized_pem,
-            )
+            if not normalized_pem and st.session_state.get("pem_ref_bound"):
+                test = _call_proc_json(
+                    session, "app_public.test_otlp_connection_with_secret", endpoint,
+                )
+            else:
+                test = _call_proc_json(
+                    session, "app_public.test_otlp_connection", endpoint, normalized_pem,
+                )
     except Exception as e:
         msg = str(e)
         if _is_approval_related(msg):
@@ -346,7 +393,7 @@ with tabs[0]:
                 "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n"
             ),
             label_visibility="collapsed",
-            on_change=_on_connection_inputs_change,
+            on_change=_on_cert_change,
         )
 
         cert_text = st.session_state.get("otlp_cert_pem", "").strip()
@@ -378,30 +425,64 @@ with tabs[0]:
 
     # ── Save gating ─────────────────────────────────────────────
     # Require a successful connection test whose endpoint matches the
-    # current field value.  When a cert is present it was already used
-    # in the TLS handshake during the test, so it is implicitly proven
-    # valid -- no separate "Validate certificate" click is required.
-    # Changing the endpoint OR the cert triggers _on_connection_inputs_change
-    # which clears connection_test_result, re-disabling Save until a
-    # fresh test passes.
+    # current field value.  Changing the endpoint clears the test result
+    # and re-disables Save until a fresh test passes.  Changing the cert
+    # only resets cert validation, not the connection test.
     connection_ok = (
         st.session_state.connection_test_result
         and st.session_state.connection_test_result.get("success")
         and st.session_state.last_test_success_endpoint == ep
     )
-    save_disabled = not connection_ok
+
+    just_saved = st.session_state.settings_just_saved
+    current_pem = st.session_state.get("otlp_cert_pem", "").strip()
+    saved_pem = st.session_state.get("pem_saved_value", "").strip()
+    cert_changed = current_pem != saved_pem
+    has_unsaved = (
+        (ep != (st.session_state.endpoint_saved or "") or cert_changed)
+        and not just_saved
+    )
+    save_disabled = not connection_ok or just_saved
 
     fc_msg, fc2, fc3 = st.columns([3, 2, 2], gap="small")
     with fc_msg:
-        st.caption("You have unsaved changes.")
+        if just_saved:
+            st.caption("Settings saved successfully.")
+        elif has_unsaved and not connection_ok:
+            st.caption("Run a connection test before saving.")
+        elif has_unsaved:
+            st.caption("You have unsaved changes.")
     with fc2:
         st.button("Reset to defaults", type="secondary", on_click=_on_reset)
     with fc3:
         save_clicked = st.button(
-            "Save settings",
+            "Saved" if just_saved else "Save settings",
             type="primary",
             disabled=save_disabled,
         )
 
     if save_clicked:
-        st.info("Save functionality is coming in the next story.")
+        session = get_session()
+        if session is None:
+            st.error("Snowflake session unavailable. Cannot save settings.")
+        else:
+            try:
+                save_config(session, "otlp.endpoint", ep)
+                st.session_state.endpoint_saved = ep
+
+                cert = st.session_state.get("otlp_cert_pem", "").strip()
+                if cert != saved_pem:
+                    session.call("app_public.save_pem_secret", cert)
+                    st.session_state.pem_ref_bound = bool(cert)
+                    st.session_state.pem_saved_value = cert
+
+                st.session_state.settings_just_saved = True
+                st.toast("Settings saved successfully.")
+
+                if st.session_state.get("drilled_from_getting_started"):
+                    st.session_state.drilled_from_getting_started = False
+                    st.switch_page("pages/getting_started.py")
+
+                st.rerun()
+            except Exception as e:
+                st.error(f"Failed to save settings: {e!s}")

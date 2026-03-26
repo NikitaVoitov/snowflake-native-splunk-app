@@ -1,11 +1,39 @@
+from utils.onboarding import get_completed_count, load_task_completion
+from utils.snowflake import get_session
+
 import streamlit as st
 
 DOCS_URL = "https://docs.splunk.com"
 
-st.markdown(
-    """
-    <style>
-    /* ── Sidebar flex layout ── */
+# ── Onboarding state (evaluated before sidebar build) ────────────
+_session = get_session()
+_completion = load_task_completion(_session)
+_completed = get_completed_count(_completion)
+_total = len(_completion)
+
+# Build sidebar badge CSS for Getting Started nav item.
+_sel = (
+    '[data-testid="stSidebarUserContent"]'
+    ' [data-testid="stElementContainer"]:has(hr)'
+    ' + [data-testid="stElementContainer"]'
+    ' [data-testid="stPageLink-NavLink"]'
+)
+_badge_css = (
+    f"{_sel} {{"
+    " position: relative; padding-right: 3rem !important; }"
+    f" {_sel}::after {{"
+    f' content: "{_completed}/{_total}";'
+    " position: absolute; right: 12px; top: 50%;"
+    " transform: translateY(-50%);"
+    " background: #ececf0; color: #0a0a0a;"
+    " font-size: 12px; font-weight: 600;"
+    " padding: 2px 8px; border-radius: 8px; }"
+)
+
+_GLOBAL_CSS = (
+    "<style>"
+    + _badge_css
+    + """
     [data-testid="stSidebarContent"] {
         display: flex !important;
         flex-direction: column !important;
@@ -39,14 +67,12 @@ st.markdown(
         flex-direction: column !important;
     }
 
-    /* ── Full-width dividers ── */
     [data-testid="stSidebarUserContent"] hr {
         margin-left: -20px !important;
         margin-right: -20px !important;
         width: calc(100% + 40px) !important;
     }
 
-    /* ── Header divider (2nd element): tight spacing ── */
     [data-testid="stSidebarUserContent"]
         [data-testid="stVerticalBlock"]
         > [data-testid="stElementContainer"]:nth-child(2) hr {
@@ -54,7 +80,6 @@ st.markdown(
         margin-bottom: 0.5rem !important;
     }
 
-    /* ── Footer divider: push to bottom ── */
     [data-testid="stSidebarUserContent"]
         [data-testid="stVerticalBlock"]
         > [data-testid="stElementContainer"]:nth-last-child(2) {
@@ -67,7 +92,6 @@ st.markdown(
         margin-bottom: 0.5rem !important;
     }
 
-    /* ── About button: left-align to match page links ── */
     [data-testid="stSidebarUserContent"] [data-testid="stButton"] button {
         justify-content: flex-start !important;
         padding-left: 8px !important;
@@ -76,11 +100,9 @@ st.markdown(
         justify-content: flex-start !important;
     }
 
-    /* ── Left-align content (Snowflake embed centres it by default) ── */
     [data-testid="stMain"] {
         align-items: flex-start !important;
     }
-    /* ── Collapse empty header but keep sidebar expand button reachable ── */
     [data-testid="stHeader"] {
         height: 0 !important;
         min-height: 0 !important;
@@ -98,12 +120,10 @@ st.markdown(
         padding-top: 2rem !important;
     }
 
-    /* ── Prevent button text wrapping inside narrow columns ── */
     [data-testid="stMainBlockContainer"] [data-testid="stButton"] button {
         white-space: nowrap !important;
     }
 
-    /* ── Tab-panel button columns: auto-size to content, tight spacing ── */
     [role="tabpanel"] [data-testid="stHorizontalBlock"] {
         gap: 0.5rem !important;
     }
@@ -117,7 +137,6 @@ st.markdown(
         flex: 1 1 0 !important;
     }
 
-    /* ── Tab-panel content: fill viewport, push footer to bottom ── */
     [role="tabpanel"] > [data-testid="stVerticalBlock"] {
         min-height: calc(100vh - 14rem);
     }
@@ -126,7 +145,6 @@ st.markdown(
         margin-top: auto !important;
     }
 
-    /* ── About dialog: hide title text, keep close button ── */
     div[data-testid="stDialog"] [data-testid="stDialogHeader"] {
         min-height: 2rem;
     }
@@ -134,13 +152,10 @@ st.markdown(
         display: none;
     }
     </style>
-    """,
-    unsafe_allow_html=True,
+    """
 )
 
-if "onboarding_complete" not in st.session_state:
-    st.session_state.onboarding_complete = False
-
+st.markdown(_GLOBAL_CSS, unsafe_allow_html=True)
 
 @st.dialog(" ")
 def show_about() -> None:
@@ -168,34 +183,37 @@ def show_about() -> None:
         )
 
 
-pages = [
-    st.Page(
-        "pages/getting_started.py",
-        title="Getting started",
-        icon=":material/rocket_launch:",
-        default=True,
-    ),
-    st.Page(
-        "pages/observability_health.py",
-        title="Observability health",
-        icon=":material/dashboard:",
-    ),
-    st.Page(
-        "pages/telemetry_sources.py",
-        title="Telemetry sources",
-        icon=":material/database:",
-    ),
-    st.Page(
-        "pages/splunk_settings.py",
-        title="Splunk settings",
-        icon=":material/settings:",
-    ),
-    st.Page(
-        "pages/data_governance.py",
-        title="Data governance",
-        icon=":material/shield:",
-    ),
-]
+pages: list = []
+pages.extend(
+    [
+        st.Page(
+            "pages/getting_started.py",
+            title="Getting started",
+            icon=":material/rocket_launch:",
+            default=True,
+        ),
+        st.Page(
+            "pages/observability_health.py",
+            title="Observability health",
+            icon=":material/dashboard:",
+        ),
+        st.Page(
+            "pages/telemetry_sources.py",
+            title="Telemetry sources",
+            icon=":material/database:",
+        ),
+        st.Page(
+            "pages/splunk_settings.py",
+            title="Splunk settings",
+            icon=":material/settings:",
+        ),
+        st.Page(
+            "pages/data_governance.py",
+            title="Data governance",
+            icon=":material/shield:",
+        ),
+    ]
+)
 
 pg = st.navigation(pages, position="hidden")
 

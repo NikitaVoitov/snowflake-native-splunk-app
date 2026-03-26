@@ -12,6 +12,13 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+from cert_validate import (
+    _MAX_PEM_SIZE,
+    _extract_first_pem_block,
+    _normalize_pem,
+    _pem_fingerprint,
+    validate_pem,
+)
 
 
 FIXTURES = Path(__file__).resolve().parent.parent / "grpc_test" / "tls-setup"
@@ -19,14 +26,6 @@ VALID_PEM = (FIXTURES / "ca.crt").read_text()
 EXPIRED_PEM = (FIXTURES / "wrong_ca.crt").read_text()
 
 _mock_session = MagicMock()
-
-from cert_validate import (  # noqa: E402
-    _MAX_PEM_SIZE,
-    _extract_first_pem_block,
-    _normalize_pem,
-    _pem_fingerprint,
-    validate_pem,
-)
 
 
 def _parse(json_str: str) -> dict:

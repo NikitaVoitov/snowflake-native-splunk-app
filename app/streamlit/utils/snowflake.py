@@ -31,5 +31,5 @@ def get_session() -> Session | None:
     """Return the cached Snowpark session, or ``None`` outside SiS."""
     try:
         return _active_session()
-    except Exception:  # noqa: BLE001 — unavailable outside SiS
+    except (ModuleNotFoundError, ImportError, RuntimeError, OSError):
         return None

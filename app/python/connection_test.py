@@ -238,3 +238,11 @@ def test_connection(_session: Session, endpoint: str, cert_pem: str = "") -> str
         )
     finally:
         channel.close()
+
+
+def test_connection_with_secret(session: Session, endpoint: str) -> str:
+    """Like :func:`test_connection` but reads the PEM from a bound Snowflake Secret."""
+    import _snowflake
+
+    cert_pem = _snowflake.get_generic_secret_string("otlp_pem_cert")
+    return test_connection(session, endpoint, cert_pem or "")
