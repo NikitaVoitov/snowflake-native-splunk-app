@@ -31,6 +31,8 @@ ENV/
 
 # ── IDE / Editor ────────────────────────────────────────────────
 .cursor/
+# Cortex CLI local skills (e.g. native-app-streamlit); not app source
+.cortex/
 .mcp
 mcp.json
 .playwright-mcp/
