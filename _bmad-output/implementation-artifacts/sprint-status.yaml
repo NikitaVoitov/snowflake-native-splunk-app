@@ -53,7 +53,7 @@
 
 generated: 2026-03-15
 last_updated: 2026-03-26
-updated_by: epic 2 retrospective completed
+updated_by: story 3-1 created and ready-for-dev
 project: snowflake-native-splunk-app
 project_key: NOKEY
 tracking_system: file-system
@@ -123,7 +123,7 @@ sprints:
   # SPRINT 3: Telemetry sources are selectable
   # ─────────────────────────────────────────────────────────────────────
   sprint-3:
-    status: planned
+    status: active
     goal: "Maya can discover sources, enable packs, select sources, configure intervals, and save"
     deliverable: >
       Maya opens the Telemetry Sources page, sees discovered Event Tables and
@@ -140,9 +140,9 @@ sprints:
       epic-3:
         name: "Telemetry source selection and pack management"
         tags: [UI, Config]
-        status: backlog
+        status: in-progress
         stories:
-          3-1-source-discovery-and-pack-toggles: backlog
+          3-1-source-discovery-and-pack-toggles: ready-for-dev
           3-2-per-source-selection-and-intervals: backlog
           3-3-save-source-configuration: backlog
         retrospective: optional
