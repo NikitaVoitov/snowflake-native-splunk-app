@@ -107,6 +107,28 @@ def _render_task_card(index: int, title: str, description: str, done: bool) -> N
     st.markdown(card_html, unsafe_allow_html=True)
 
 
+# ---------------------------------------------------------------------------
+# Interactive fragment — card clicks skip the outer SQL queries entirely
+# ---------------------------------------------------------------------------
+@st.fragment
+def _interactive_cards():
+    for task in ONBOARDING_TASKS:
+        done = completion.get(task.step, False)
+        with st.container():
+            _render_task_card(task.step, task.title, task.description, done)
+            if not done and st.button(
+                f"Open {task.title}",
+                key=f"task_nav_{task.step}",
+                use_container_width=True,
+                type="tertiary",
+            ):
+                if task.page_path is not None:
+                    st.session_state.drilled_from_getting_started = True
+                    st.switch_page(task.page_path)
+                else:
+                    _activate_export_dialog()
+
+
 # ── Page layout ──────────────────────────────────────────────────
 
 st.header("Welcome to Splunk Observability for Snowflake")
@@ -134,23 +156,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Task cards — each card + button grouped in st.container() so
-# CSS absolute-positioning overlays the button on the correct card.
-for task in ONBOARDING_TASKS:
-    done = completion.get(task.step, False)
-    with st.container():
-        _render_task_card(task.step, task.title, task.description, done)
-        if not done and st.button(
-            f"Open {task.title}",
-            key=f"task_nav_{task.step}",
-            use_container_width=True,
-            type="tertiary",
-        ):
-            if task.page_path is not None:
-                st.session_state.drilled_from_getting_started = True
-                st.switch_page(task.page_path)
-            else:
-                _activate_export_dialog()
+_interactive_cards()
 
 # Button overlay CSS — each card+button lives inside an st.container
 # whose inner stVerticalBlock becomes the positioning context.
@@ -193,6 +199,11 @@ _overlay_css = """<style>
     padding: 0 !important;
     margin: 0 !important;
     cursor: pointer !important;
+}
+
+/* Suppress Streamlit fragment container hover highlight */
+div[data-testid="stVerticalBlockBorderWrapper"]:hover {
+    background-color: transparent !important;
 }
 </style>"""
 st.markdown(_overlay_css, unsafe_allow_html=True)

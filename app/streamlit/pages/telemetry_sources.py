@@ -48,14 +48,18 @@ div[data-testid="stColumn"] div[data-testid="stElementContainer"]:has(button[kin
 }
 
 div[data-testid="stLayoutWrapper"]
-    > div[data-testid="stVerticalBlock"]:has(div[data-testid="stCheckbox"]) {
+    > div[data-testid="stVerticalBlock"]:has(> [data-testid="stElementContainer"] .category-tile-marker) {
     transition: border-color 0.15s ease, background-color 0.15s ease;
 }
 
 div[data-testid="stLayoutWrapper"]
-    > div[data-testid="stVerticalBlock"]:has(div[data-testid="stCheckbox"]):hover {
+    > div[data-testid="stVerticalBlock"]:has(> [data-testid="stElementContainer"] .category-tile-marker):hover {
     border-color: #4c78db !important;
     background-color: rgba(76, 120, 219, 0.04) !important;
+}
+
+div[data-testid="stElementContainer"]:has(.category-tile-marker) {
+    display: none !important;
 }
 
 div[data-testid="stElementContainer"]:has(.disabled-editor-marker) {
@@ -87,6 +91,7 @@ div[data-testid="stElementContainer"]:has(.footer-controls-marker)
     flex: 0 0 auto !important;
     width: auto !important;
 }
+
 </style>
 """
 
@@ -508,6 +513,10 @@ def _render_category(cat: CategoryDef) -> None:
     color = _dot_color(enabled, poll_count, total)
 
     with st.container(border=True):
+        st.markdown(
+            '<span class="category-tile-marker"></span>',
+            unsafe_allow_html=True,
+        )
         col_chevron, col_title, col_toggle = st.columns(
             [0.35, 7.65, 2],
             gap="small",
@@ -647,6 +656,24 @@ def _render_footer(
 
 
 # ---------------------------------------------------------------------------
+# Interactive fragment — widget reruns stay inside; static chrome is stable
+# ---------------------------------------------------------------------------
+@st.fragment
+def _interactive_content(session, grouped):
+    total_sources = sum(len(values) for values in grouped.values())
+    if total_sources == 0:
+        st.warning(
+            "No telemetry sources found. Ensure the app has the required "
+            "Snowflake privileges (IMPORTED PRIVILEGES ON SNOWFLAKE DB)."
+        )
+    else:
+        for category in CATEGORIES:
+            _render_category(category)
+
+    _render_footer(grouped, session)
+
+
+# ---------------------------------------------------------------------------
 # Page layout
 # ---------------------------------------------------------------------------
 st.markdown(_PAGE_CSS, unsafe_allow_html=True)
@@ -670,15 +697,4 @@ if st.session_state.get(_DISCOVERY_ERROR_KEY):
     st.error(st.session_state[_DISCOVERY_ERROR_KEY])
 elif grouped is not None:
     _load_saved_controls(session, grouped)
-
-    total_sources = sum(len(values) for values in grouped.values())
-    if total_sources == 0:
-        st.warning(
-            "No telemetry sources found. Ensure the app has the required "
-            "Snowflake privileges (IMPORTED PRIVILEGES ON SNOWFLAKE DB)."
-        )
-    else:
-        for category in CATEGORIES:
-            _render_category(category)
-
-    _render_footer(grouped, session)
+    _interactive_content(session, grouped)

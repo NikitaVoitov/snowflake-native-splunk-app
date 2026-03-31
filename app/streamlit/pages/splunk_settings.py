@@ -321,14 +321,11 @@ def _run_cert_validation(cert_text: str) -> None:
     st.session_state.cert_validation_result = result
 
 
-# ── Page render ──────────────────────────────────────────────────
-
-_init_session_state()
-
-st.header("Splunk Settings")
-
-tabs = st.tabs(["Export settings"])
-with tabs[0]:
+# ---------------------------------------------------------------------------
+# Interactive fragment — widget reruns stay inside; static chrome is stable
+# ---------------------------------------------------------------------------
+@st.fragment
+def _interactive_content():
     st.subheader("OTLP Export")
     st.caption("Configure OTLP/gRPC export to your remote OpenTelemetry collector.")
 
@@ -423,11 +420,6 @@ with tabs[0]:
             f"`{st.session_state.last_test_success_endpoint}`",
         )
 
-    # ── Save gating ─────────────────────────────────────────────
-    # Require a successful connection test whose endpoint matches the
-    # current field value.  Changing the endpoint clears the test result
-    # and re-disables Save until a fresh test passes.  Changing the cert
-    # only resets cert validation, not the connection test.
     connection_ok = (
         st.session_state.connection_test_result
         and st.session_state.connection_test_result.get("success")
@@ -487,3 +479,23 @@ with tabs[0]:
                 st.rerun()
             except Exception as e:
                 st.error(f"Failed to save settings: {e!s}")
+
+
+_PAGE_CSS = """<style>
+/* Suppress Streamlit fragment container hover highlight */
+div[data-testid="stVerticalBlockBorderWrapper"]:hover {
+    background-color: transparent !important;
+}
+</style>"""
+
+
+# ── Page render ──────────────────────────────────────────────────
+
+_init_session_state()
+
+st.markdown(_PAGE_CSS, unsafe_allow_html=True)
+st.header("Splunk Settings")
+
+tabs = st.tabs(["Export settings"])
+with tabs[0]:
+    _interactive_content()
