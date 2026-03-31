@@ -19,6 +19,7 @@ from utils.config import (
     load_config,
     load_config_like,
     save_config,
+    save_config_batch,
 )
 
 
@@ -43,6 +44,41 @@ class TestSaveConfig:
         mock_session.sql.assert_called_once_with(
             _MERGE_SQL, params=["some.key", ""]
         )
+
+
+class TestSaveConfigBatch:
+    def test_empty_dict_is_noop(self, mock_session):
+        save_config_batch(mock_session, {})
+        mock_session.sql.assert_not_called()
+
+    def test_single_pair(self, mock_session):
+        save_config_batch(mock_session, {"key1": "val1"})
+        call_args = mock_session.sql.call_args
+        sql = call_args[0][0]
+        params = call_args[1]["params"]
+        assert "MERGE INTO _internal.config" in sql
+        assert "(?, ?)" in sql
+        assert params == ["key1", "val1"]
+
+    def test_multiple_pairs_single_sql_call(self, mock_session):
+        pairs = {"a": "1", "b": "2", "c": "3"}
+        save_config_batch(mock_session, pairs)
+        mock_session.sql.assert_called_once()
+        call_args = mock_session.sql.call_args
+        sql = call_args[0][0]
+        params = call_args[1]["params"]
+        assert sql.count("(?, ?)") == 3
+        assert len(params) == 6
+        for key in pairs:
+            assert key in params
+
+    def test_params_preserve_key_value_pairing(self, mock_session):
+        pairs = {"pack_enabled.dt": "true", "pack_enabled.qp": "false"}
+        save_config_batch(mock_session, pairs)
+        params = mock_session.sql.call_args[1]["params"]
+        for i in range(0, len(params), 2):
+            key, val = params[i], params[i + 1]
+            assert pairs[key] == val
 
 
 class TestLoadConfig:

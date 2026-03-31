@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pandas as pd
 from snowflake.snowpark.exceptions import SnowparkSQLException
-from utils.config import load_config_like, save_config_batch
+from utils.config import load_config_like, save_config, save_config_batch
 from utils.snowflake import get_session
 from utils.source_discovery import (
     CATEGORIES,
@@ -359,7 +359,6 @@ def _save_current_configuration(
         pairs[f"source.{slug}.view_fqn"] = fqn
         pairs[f"source.{slug}.poll"] = "true" if poll else "false"
 
-    pairs["pack_enabled.dummy"] = "false"
     save_config_batch(session, pairs)
 
 
@@ -644,14 +643,18 @@ def _render_footer(
         else:
             try:
                 _save_current_configuration(session, current_state)
+                save_config(session, "pack_enabled.dummy", "false")
                 st.session_state[_SAVED_STATE_KEY] = current_state
                 st.session_state[_JUST_SAVED_KEY] = True
                 st.session_state[_POST_SAVE_RELOAD_KEY] = True
                 st.session_state[_DISCOVERY_SIGNATURE_KEY] = None
                 st.session_state.drilled_from_getting_started = False
                 st.toast("Configuration saved successfully.")
+                # Full page rerun (not fragment-scoped) is intentional:
+                # discovery signature was cleared so the outer page must
+                # reload saved state from _internal.config.
                 st.rerun()
-            except Exception as exc:
+            except SnowparkSQLException as exc:
                 st.error(f"Failed to save configuration: {exc!s}")
 
 

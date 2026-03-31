@@ -412,3 +412,53 @@ class TestPersistedPollStateLogic:
 
     def test_source_slug_normalizes_custom_view_name(self):
         assert source_slug("My DB.Public.Custom-View") == "my_db_public_custom_view"
+
+
+class TestSaveAndRestoreRoundTrip:
+    """Verify that saved poll states can be reconstructed from config keys."""
+
+    def test_slug_round_trip_for_account_usage(self):
+        fqn = "SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY"
+        slug = source_slug(fqn)
+        config_key = f"source.{slug}.view_fqn"
+        assert slug == "snowflake_account_usage_query_history"
+        assert config_key == "source.snowflake_account_usage_query_history.view_fqn"
+
+    def test_slug_round_trip_for_event_table(self):
+        fqn = "SNOWFLAKE.TELEMETRY.EVENTS"
+        slug = source_slug(fqn)
+        poll_key = f"source.{slug}.poll"
+        assert poll_key == "source.snowflake_telemetry_events.poll"
+
+    def test_resolve_from_simulated_config_load(self):
+        """Simulate loading saved config and resolving poll states."""
+        sources = [
+            DiscoveredSource("SNOWFLAKE.TELEMETRY.EVENTS", "SNOWFLAKE.TELEMETRY.EVENTS",
+                             "distributed_tracing", False, "", ""),
+            DiscoveredSource("SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY",
+                             "SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY",
+                             "query_performance", False, "", ""),
+        ]
+
+        saved_pairs = {}
+        for src, poll_val in zip(sources, [True, False]):
+            slug = source_slug(src.fqn)
+            saved_pairs[f"source.{slug}.view_fqn"] = src.fqn
+            saved_pairs[f"source.{slug}.poll"] = str(poll_val).lower()
+
+        slug_to_fqn = {}
+        slug_to_poll = {}
+        for key, value in saved_pairs.items():
+            if key.endswith(".view_fqn"):
+                s = key[len("source."):-len(".view_fqn")]
+                slug_to_fqn[s] = value
+            elif key.endswith(".poll"):
+                s = key[len("source."):-len(".poll")]
+                slug_to_poll[s] = value.lower() == "true"
+
+        saved_source_polls = {
+            fqn: slug_to_poll[s] for s, fqn in slug_to_fqn.items() if s in slug_to_poll
+        }
+
+        restored = resolve_saved_poll_states(sources, saved_source_polls)
+        assert restored == [True, False]
