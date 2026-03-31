@@ -30,6 +30,27 @@ def save_config(session: Session, key: str, value: str) -> None:
     session.sql(_MERGE_SQL, params=[key, value]).collect()
 
 
+def save_config_batch(session: Session, pairs: dict[str, str]) -> None:
+    """Upsert many key/value pairs in a single MERGE (one SQL round-trip)."""
+    if not pairs:
+        return
+    placeholders = ", ".join(["(?, ?)"] * len(pairs))
+    using_clause = f"USING (SELECT COLUMN1 AS k, COLUMN2 AS v FROM VALUES {placeholders}) AS s "  # noqa: S608
+    sql = (
+        "MERGE INTO _internal.config AS t "
+        + using_clause
+        + "ON t.CONFIG_KEY = s.k "
+        "WHEN MATCHED THEN UPDATE SET CONFIG_VALUE = s.v, "
+        "UPDATED_AT = CURRENT_TIMESTAMP() "
+        "WHEN NOT MATCHED THEN INSERT (CONFIG_KEY, CONFIG_VALUE) "
+        "VALUES (s.k, s.v)"
+    )
+    params: list[str] = []
+    for k, v in pairs.items():
+        params.extend([k, v])
+    session.sql(sql, params=params).collect()
+
+
 def load_config(session: Session, key: str) -> str | None:
     """Return the value for *key*, or ``None`` if the row does not exist."""
     rows = session.sql(_SELECT_ONE_SQL, params=[key]).collect()

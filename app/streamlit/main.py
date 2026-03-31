@@ -218,6 +218,12 @@ pages.extend(
 
 pg = st.navigation(pages, position="hidden")
 
+_current_page = pg.url_path or ""
+if st.session_state.get("_nav_current_page") != _current_page:
+    st.session_state["_nav_previous_page"] = st.session_state.get("_nav_current_page")
+    st.session_state["_nav_current_page"] = _current_page
+    st.session_state["_nav_visit_seq"] = int(st.session_state.get("_nav_visit_seq", 0)) + 1
+
 with st.sidebar:
     if _onboarding_state.error_message:
         st.warning(_onboarding_state.error_message)

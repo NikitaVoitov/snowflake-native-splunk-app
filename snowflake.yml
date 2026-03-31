@@ -40,6 +40,8 @@ entities:
         dest: streamlit/utils/config.py
       - src: app/streamlit/utils/onboarding.py
         dest: streamlit/utils/onboarding.py
+      - src: app/streamlit/utils/source_discovery.py
+        dest: streamlit/utils/source_discovery.py
       - src: app/python/endpoint_parse.py
         dest: python/endpoint_parse.py
       - src: app/python/provision_egress.py

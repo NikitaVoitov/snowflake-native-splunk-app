@@ -1,47 +1,47 @@
 # Story 3.1: Source discovery and pack toggles
 
-Status: ready-for-dev
+Status: in-progress
 
 ## Story
 
 As a Snowflake administrator (Maya),
-I want to see available Event Tables and ACCOUNT_USAGE views (and custom views that reference them), enable or disable Monitoring Packs, and check/uncheck individual sources,
+I want to see available Event Tables and ACCOUNT_USAGE views (and custom views that reference them) displayed as full FQNs, enable or disable Monitoring Packs, and check/uncheck individual sources,
 So that I can choose what telemetry to export without writing SQL.
 
 ## Acceptance Criteria
 
-1. **Given** I have the required Snowflake privileges (`IMPORTED PRIVILEGES ON SNOWFLAKE DB`), **When** I open the Telemetry sources page, **Then** the app discovers Event Tables (via `SNOWFLAKE.ACCOUNT_USAGE.TABLES`) and the supported MVP Performance Pack `ACCOUNT_USAGE` views (validated via `SNOWFLAKE.INFORMATION_SCHEMA.TABLES`) plus custom views that reference them (via `SNOWFLAKE.ACCOUNT_USAGE.VIEWS`). `INFORMATION_SCHEMA` table functions are **not** selectable telemetry sources in this story.
+1. **Given** I have the required Snowflake privileges (`IMPORTED PRIVILEGES ON SNOWFLAKE DB`), **When** I open the Telemetry sources page, **Then** the app discovers Event Tables (via `SNOWFLAKE.ACCOUNT_USAGE.TABLES`) and the supported MVP Performance Pack `ACCOUNT_USAGE` views (validated via `SNOWFLAKE.INFORMATION_SCHEMA.TABLES`) plus custom views that reference either those supported `ACCOUNT_USAGE` views or any discovered Event Table (via `SNOWFLAKE.ACCOUNT_USAGE.VIEWS`). `INFORMATION_SCHEMA` table functions are **not** selectable telemetry sources in this story.
 
 2. **Given** the app has discovered sources, **When** I view the Telemetry sources page, **Then** categories (Distributed Tracing, Query Performance & Execution) are shown with collapsible headers, a status dot, and an enable/disable toggle per category.
 
 3. **Given** categories are displayed, **When** I view a category header, **Then** each category shows a count of effectively-polled/total sources (e.g. "2/9") and a description of the category purpose. When the category toggle is OFF, the count is "0/{total}" regardless of checkbox states.
 
-4. **Given** I expand the **Distributed Tracing** category (Event Tables), **Then** I see an editable `st.data_editor` with columns: **Poll** (checkbox, editable), **View name** (text, read-only), **Collection** (text, read-only — account name or database name), **Telemetry types** (text, read-only — Logs/Traces/Metrics/Events), **Telemetry sources** (text, read-only — StoredProc/Function/StreamlitApp/etc.). When a source's Poll is unchecked, its entire row is visually greyed out. **Given** I expand the **Query Performance & Execution** category (ACCOUNT_USAGE views), **Then** I see an editable `st.data_editor` with columns: **Poll** (checkbox, editable) and **View name** (text, read-only) only — no Source type column since there is no universal "source of event" column across ACCOUNT_USAGE views.
+4. **Given** I expand either telemetry category, **Then** I see an editable `st.data_editor` with columns: **Poll** (checkbox, editable) and **View name** (text, read-only, shown as full FQN). For Event Tables, future columns such as telemetry types and telemetry sources remain hidden until a later story populates them with real data. When a source's Poll is unchecked, its entire row is visually greyed out.
 
 5. **Given** a category toggle is ON and I check a source's Poll checkbox, **When** I view the category header, **Then** the count increments (e.g. "3/9"). **When** I uncheck it, the count decrements and that source's row is visually greyed out.
 
-6. **Given** I toggle a category OFF, **When** I view the page, **Then** the status dot is gray, the `st.data_editor` is rendered as **read-only and greyed out** (all columns disabled, but the table and all checkbox states remain visible — nothing is hidden or unchecked), and the count reflects "0/{total}" because no sources in a disabled category are polled.
+6. **Given** I toggle a category OFF, **When** I view the page, **Then** the status dot is gray, the `st.data_editor` is rendered as **read-only and greyed out** (all columns disabled), Poll checkboxes **retain their visual state** (preserving the user's selection intent), and the count reflects "0/{total}" because no sources in a disabled category are effectively polled. Toggling OFF is a non-destructive "pause" — turning the category back ON restores the exact checkbox selections that were in place before.
 
-7. **Given** I toggle a category ON for the **first time**, **When** I view the page, **Then** all Poll checkboxes are checked by default (select-all-on-first-enable), the count shows "{total}/{total}", and the source table is fully interactive. **Given** I toggle a category OFF and then ON again (subsequent toggle), **Then** the user's previous checkbox selections are restored exactly as they were before the toggle-off.
+7. **Given** I toggle a category ON, **When** I view the page, **Then** the source table becomes fully interactive and Poll checkboxes **retain their current state** (they are NOT auto-checked). On first enable (no prior selections), all checkboxes start unchecked — the user must manually check the sources they want to poll. The count shows the actual number of checked sources (e.g. "0/4" on first enable, "3/4" after the user checks three).
 
-8. **Given** the page loads for the first time, **Then** all category toggles default to OFF (user must explicitly enable each category). All status dots show gray (meaning "awaiting activation" — export has not been activated via Getting Started step 4). Status dots remain gray until export activation is completed in a future story (Epic 6).
+8. **Given** the page loads for the first time, **Then** all category toggles default to OFF (user must explicitly enable each category), and all Poll checkboxes start unchecked because their parent category is disabled.
 
-9. **Given** the page renders, **Then** the page header shows title "Telemetry Sources" and subtitle per Figma, an `st.info` banner explains how to enable categories and custom views, and a footer area is reserved for future unsaved-changes controls (Story 3.3).
+9. **Given** the page renders, **Then** the page header shows title "Telemetry Sources" and subtitle per Figma, an `st.info` banner explains how to enable categories and custom views, and the footer shows unsaved-changes controls with **Reset to defaults** and **Save configuration** actions. Saving persists the real pack and per-source poll controls to `_internal.config`.
 
 ## Tasks / Subtasks
 
 - [ ] **Task 1: Source discovery logic** (AC: 1)
   - [ ] 1.1 Create `app/streamlit/utils/source_discovery.py` with functions to discover Event Tables and the validated MVP Performance Pack `ACCOUNT_USAGE` views. Use account-wide metadata queries that rely on `IMPORTED PRIVILEGES ON SNOWFLAKE DB`. Do **not** discover or expose `INFORMATION_SCHEMA` table functions as selectable sources in this story.
-  - [ ] 1.2 Event Table discovery: `SELECT TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME FROM SNOWFLAKE.ACCOUNT_USAGE.TABLES WHERE TABLE_TYPE = 'EVENT TABLE' AND DELETED IS NULL`. Derive the **Collection** column from `TABLE_CATALOG`: if `TABLE_CATALOG = 'SNOWFLAKE'` and `TABLE_SCHEMA = 'TELEMETRY'`, show the account name; otherwise show `Database: {TABLE_CATALOG}`. Set `telemetry_types` and `telemetry_sources` to "—" (populated in a future story when SELECT access is available via references). All discovered event tables are treated uniformly — no special labels. Do NOT use `SNOWFLAKE.ACCOUNT_USAGE.EVENT_TABLES` (does not exist) or `INFORMATION_SCHEMA.EVENT_TABLES` (database-scoped).
-  - [ ] 1.3 ACCOUNT_USAGE view validation: `SELECT TABLE_NAME FROM SNOWFLAKE.INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'ACCOUNT_USAGE' AND TABLE_TYPE = 'VIEW' AND TABLE_NAME IN (...)` with the validated MVP known list: `QUERY_HISTORY`, `TASK_HISTORY`, `COMPLETE_TASK_GRAPHS`, `LOCK_WAIT_HISTORY`. This query is metadata validation only; it does **not** make `INFORMATION_SCHEMA` table functions part of the MVP source model.
-  - [ ] 1.4 Custom view discovery: `SELECT TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, VIEW_DEFINITION FROM SNOWFLAKE.ACCOUNT_USAGE.VIEWS WHERE DELETED IS NULL AND TABLE_CATALOG != 'SNOWFLAKE' AND (VIEW_DEFINITION ILIKE '%ACCOUNT_USAGE%' OR ...)`. Do NOT use `INFORMATION_SCHEMA.VIEWS` (database-scoped, fails without `USE DATABASE`). Parse `VIEW_DEFINITION` to assign custom views to the matching source category, but only for the validated MVP source families.
-  - [ ] 1.5 Return structured data: list of sources with fields `view_name`, `fqn` (fully qualified name), `category` (Distributed Tracing or Query Performance & Execution), `is_custom` (bool). For Event Tables also include: `collection` (account name or `Database: {TABLE_CATALOG}`), `telemetry_types` (default "—" until SELECT access), `telemetry_sources` (default "—" until SELECT access). No `source_type` tag needed — column schemas differ per category.
+  - [ ] 1.2 Event Table discovery: `SELECT TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME FROM SNOWFLAKE.ACCOUNT_USAGE.TABLES WHERE TABLE_TYPE = 'EVENT TABLE' AND DELETED IS NULL`. Show the discovered Event Table as a full FQN in the UI. Keep `telemetry_types` and `telemetry_sources` as empty strings for now; these are intentionally not populated in this story because deriving them would require expensive row-content inspection of each Event Table. Do NOT use `SNOWFLAKE.ACCOUNT_USAGE.EVENT_TABLES` (does not exist) or `INFORMATION_SCHEMA.EVENT_TABLES` (database-scoped).
+  - [ ] 1.3 ACCOUNT_USAGE view validation: `SELECT TABLE_NAME FROM SNOWFLAKE.INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'ACCOUNT_USAGE' AND TABLE_TYPE = 'VIEW' AND TABLE_NAME IN (...)` with the validated MVP known list: `QUERY_HISTORY`, `TASK_HISTORY`, `COMPLETE_TASK_GRAPHS`, `LOCK_WAIT_HISTORY`. After validation, surface these objects in the UI as full FQNs (`SNOWFLAKE.ACCOUNT_USAGE.<VIEW_NAME>`). This query is metadata validation only; it does **not** make `INFORMATION_SCHEMA` table functions part of the MVP source model.
+  - [ ] 1.4 Custom view discovery: `SELECT TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, VIEW_DEFINITION FROM SNOWFLAKE.ACCOUNT_USAGE.VIEWS WHERE DELETED IS NULL AND TABLE_CATALOG != 'SNOWFLAKE' AND VIEW_DEFINITION IS NOT NULL`. Do NOT use `INFORMATION_SCHEMA.VIEWS` (database-scoped, fails without `USE DATABASE`). Parse `VIEW_DEFINITION` to assign custom views to the matching source category, but only for the validated MVP `ACCOUNT_USAGE` views and the discovered Event Tables.
+  - [ ] 1.5 Return structured data: list of sources with fields `view_name` (full FQN), `fqn` (fully qualified name), `category` (Distributed Tracing or Query Performance & Execution), `is_custom` (bool), `telemetry_types` (empty string for now), and `telemetry_sources` (empty string for now). No `source_type` tag needed — column schemas differ per category.
 
 - [ ] **Task 2: Category definitions and data model** (AC: 2, 3)
   - [ ] 2.1 Define MVP category constants in `app/streamlit/utils/source_discovery.py` or a shared constants location:
     - **Distributed Tracing**: Event Table-based sources (active account event table, task execution events, native app event tables, other discovered event tables, custom trace views).
-    - **Query Performance & Execution**: ACCOUNT_USAGE-based MVP sources (`QUERY_HISTORY`, `TASK_HISTORY`, `COMPLETE_TASK_GRAPHS`, `LOCK_WAIT_HISTORY`) and custom views referencing them.
-  - [ ] 2.2 Build a dataclass or NamedTuple for `DiscoveredSource` (view_name, fqn, category, is_custom). For Event Tables, extend with `collection`, `telemetry_types`, `telemetry_sources` (initially "—" for the latter two until SELECT access is available via references).
+    - **Query Performance & Execution**: ACCOUNT_USAGE-based MVP sources (`SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY`, `SNOWFLAKE.ACCOUNT_USAGE.TASK_HISTORY`, `SNOWFLAKE.ACCOUNT_USAGE.COMPLETE_TASK_GRAPHS`, `SNOWFLAKE.ACCOUNT_USAGE.LOCK_WAIT_HISTORY`) and custom views referencing them.
+  - [ ] 2.2 Build a dataclass or NamedTuple for `DiscoveredSource` (view_name, fqn, category, is_custom, telemetry_types, telemetry_sources). `view_name` is the full FQN for this story. `telemetry_types` and `telemetry_sources` remain empty strings until a future story populates them from collected telemetry data.
   - [ ] 2.3 Build a dataclass or NamedTuple for `CategoryDef` (name, description, source_family: "event_table" | "account_usage").
 
 - [ ] **Task 3: Telemetry sources page UI — category headers and pack toggles** (AC: 2, 3, 6, 7, 8, 9)
@@ -55,32 +55,30 @@ So that I can choose what telemetry to export without writing SQL.
        Description text
        st.data_editor table
     ```
-  - [ ] 3.5 Pack toggle state: store enabled/disabled per category in `st.session_state` (keys: `pack_enabled.distributed_tracing`, `pack_enabled.query_performance`). **Default: all toggles OFF** on first load. Do NOT persist to `_internal.config` yet — that is Story 3.3.
-  - [ ] 3.6 Toggle OFF behavior: render the `st.data_editor` as **read-only and greyed out** (`disabled=True` on all columns). Do NOT clear or modify checkbox states — the user's selections must be preserved visually. Count shows "0/{total}" because a disabled category means zero effective polls. Toggle ON behavior: **first-time enable** → set all Poll checkboxes to `True`; **subsequent re-enable** → restore the user's previous checkbox selections exactly as they were before the toggle-off. The source table becomes fully interactive.
+  - [ ] 3.5 Pack toggle state: store enabled/disabled per category in `st.session_state` and persist the saved state to `_internal.config` using the real keys `pack_enabled.distributed_tracing` and `pack_enabled.query_performance`. **Default: all toggles OFF** on first load.
+  - [ ] 3.6 Toggle OFF behavior: render the `st.data_editor` as **read-only and greyed out** (`disabled=True` on all columns); **preserve existing checkbox states** (do not reset to False); show count `0/{total}`. Toggle ON behavior: make the source table fully interactive; **preserve existing checkbox states** (do not auto-check to True). The category toggle and individual source checkboxes are decoupled: the toggle is a master enable/disable switch, checkboxes represent user selection intent.
   - [ ] 3.7 Count formula: when toggle is ON, `{sum of True polls}/{total}`; when toggle is OFF, `0/{total}`.
-  - [ ] 3.8 Status dot: gray (○) for all categories — meaning "awaiting activation" (export not yet activated). Green/amber/red come with Epic 7 after export activation.
+  - [ ] 3.8 Status dot: keep the current placeholder status-dot behavior in place for this story. Real health/status semantics arrive later with telemetry source health tracking.
 
 - [ ] **Task 4: Source table with Poll checkbox per category** (AC: 4, 5)
   - [ ] 4.1 **Distributed Tracing** (Event Tables) — `st.data_editor` columns:
     - **Poll** — `st.column_config.CheckboxColumn`, editable.
-    - **View name** — `st.column_config.TextColumn`, read-only. Event table name (e.g. `EVENTS`, `TEST_EVENTS`).
-    - **Collection** — `st.column_config.TextColumn`, read-only. Shows where the event table collects from: account name (for `SNOWFLAKE.TELEMETRY.EVENTS`) or database name (for database-scoped event tables). Derive from `TABLE_CATALOG` in discovery results.
-    - **Telemetry types** — `st.column_config.TextColumn`, read-only. Comma-separated list of telemetry kinds present: `Logs`, `Traces`, `Metrics`, `Events`. Derived from `RECORD_TYPE` values. Shows "—" until data is accessible (requires SELECT via references in a future story).
-    - **Telemetry sources** — `st.column_config.TextColumn`, read-only. Comma-separated normalized source categories: `Stored procedures`, `Functions`, `SQL queries`, `Streamlit apps`, `SnowServices`, `Dynamic tables`, `Iceberg refresh`, `Native Apps`. Derived from `RESOURCE_ATTRIBUTES`. Shows "—" until data is accessible.
+    - **View name** — `st.column_config.TextColumn`, read-only. Show the full FQN for the Event Table.
+    - **Telemetry types** / **Telemetry sources** — hidden in this story because their values are intentionally left empty until a future story computes them from collected telemetry data.
   - [ ] 4.2 **Query Performance & Execution** (ACCOUNT_USAGE views) — `st.data_editor` columns:
     - **Poll** — `st.column_config.CheckboxColumn`, editable.
-    - **View name** — `st.column_config.TextColumn`, read-only. View name (e.g. `QUERY_HISTORY`, `TASK_HISTORY`).
+    - **View name** — `st.column_config.TextColumn`, read-only. Show the full FQN for the validated MVP view (e.g. `SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY`, `SNOWFLAKE.ACCOUNT_USAGE.TASK_HISTORY`).
     - No Source type column — there is no universal "source of event" concept across ACCOUNT_USAGE views.
-  - [ ] 4.3 Build a pandas DataFrame per category with the columns above. Add a `poll` boolean column. On first-time category enable, default all polls to `True`. Store a `first_enabled` flag per category in session state to distinguish first-enable from re-enable.
-  - [ ] 4.4 Store the edited DataFrame in `st.session_state` (key per category, e.g. `sources_df.distributed_tracing`) so poll state and user edits survive reruns and toggle OFF/ON cycles.
+  - [ ] 4.3 Build a pandas DataFrame per category with the columns above. Add a `poll` boolean column. Default all polls to `False`. The poll column reflects the user's explicit selection intent and is **independent of the category toggle state** — enabling a category does not auto-check polls, and disabling a category does not reset polls.
+  - [ ] 4.4 Store the edited DataFrame in `st.session_state` (key per category, e.g. `sources_df.distributed_tracing`) so current UI state survives reruns.
   - [ ] 4.5 On every `st.data_editor` change, recalculate the category header count from the `poll` column (only when toggle is ON).
-  - [ ] 4.6 Use `hide_index=True`, `use_container_width=True`. Lock read-only columns: for Distributed Tracing `disabled=["view_name", "collection", "telemetry_types", "telemetry_sources"]`; for Query Performance `disabled=["view_name"]`.
-  - [ ] 4.7 When the category toggle is OFF, render the `st.data_editor` with `disabled=True` (ALL columns locked including Poll — table is visible but greyed out, checkbox states preserved). When a source's Poll is unchecked (and category is ON), visually grey out that source's entire row to indicate it won't be polled.
+  - [ ] 4.6 Use `hide_index=True`, `use_container_width=True`. Lock read-only columns: for both categories `disabled=["view_name"]` for editable mode, and `disabled=True` for the fully disabled category state.
+  - [ ] 4.7 When the category toggle is OFF, render the `st.data_editor` with `disabled=True` (ALL columns locked including Poll — table is visible but greyed out; checkboxes retain their visual state but all sources are functionally disabled). When a source's Poll is unchecked (and category is ON), visually grey out that source's entire row to indicate it won't be polled.
 
 - [ ] **Task 5: Preserve Getting Started drill-down behavior** (AC: 9)
   - [ ] 5.1 Preserve the existing `drilled_from_getting_started` session state flag from Story 2.3 so that the Getting Started → Telemetry Sources drill-down still works.
-  - [ ] 5.2 Keep the existing `pack_enabled.dummy` interim completion mechanism working until Story 3.3 replaces it with real completion logic. Do NOT break the Getting Started Task 2 completion — the dummy toggle must still function alongside the new real UI.
-  - [ ] 5.3 Place the interim dummy toggle in a clearly separated section (e.g. at the bottom in a collapsible "UAT Controls" expander) so it does not conflict with the real category toggles.
+  - [ ] 5.2 Replace the interim `pack_enabled.dummy` completion mechanism with the real saved controls. Getting Started Task 2 must now derive from the real `pack_enabled.<category>` values, not the dummy key.
+  - [ ] 5.3 After a successful save from the drilled-down Getting Started flow, keep the user on the Telemetry Sources page, show save confirmation there, and clear `drilled_from_getting_started` so there is no automatic redirect back to Getting Started.
 
 - [ ] **Task 6: Error handling and loading states** (AC: 1, 9)
   - [ ] 6.1 Wrap discovery queries in try/except; show `st.error` with a user-friendly message if discovery fails (e.g. missing `SNOWFLAKE` database access or insufficient privileges).
@@ -90,9 +88,9 @@ So that I can choose what telemetry to export without writing SQL.
 - [ ] **Task 7: Tests** (AC: 1–9)
   - [ ] 7.1 Unit tests for source discovery logic (mock Snowpark session, verify category assignment, custom view detection).
   - [ ] 7.2 Unit tests for category model (definitions, counts, toggle state transitions, poll count recalculation).
-  - [ ] 7.3 Unit tests for poll state: first-time enable sets all polls true, toggle off preserves checkbox state but count = 0, toggle on again restores previous checkboxes, manual uncheck updates count.
-  - [ ] 7.4 Unit tests for Event Table Collection derivation: `SNOWFLAKE.TELEMETRY.*` maps to account name, other `TABLE_CATALOG` values map to `Database: {name}`. Verify `telemetry_types` and `telemetry_sources` default to "—".
-  - [ ] 7.5 Unit tests for different column schemas per category: Distributed Tracing has 5 columns, Query Performance has 2 columns.
+  - [ ] 7.3 Unit tests for poll state: default (no saved config) resolves to all polls false regardless of pack state, saved source-poll config is restored independently of the category toggle state, and `resolve_saved_poll_states` returns saved values (defaulting to False for unknown sources).
+  - [ ] 7.4 Unit tests for Event Table discovery: discovered Event Tables use full FQNs, and `telemetry_types` / `telemetry_sources` intentionally default to empty strings.
+  - [ ] 7.5 Unit tests for custom view detection: custom views referencing supported `SNOWFLAKE.ACCOUNT_USAGE.<VIEW_NAME>` objects are included, unsupported `ACCOUNT_USAGE` views are excluded, and views over discovered Event Tables are categorized as Distributed Tracing.
   - [ ] 7.6 Integration test concept: verify discovery queries run against the dev account without error.
 
 ## Dev Notes
@@ -101,9 +99,9 @@ So that I can choose what telemetry to export without writing SQL.
 
 - **Streamlit version:** Target 1.52.2 on Snowflake Warehouse Runtime.
 - **Session:** Use `get_active_session()` via `utils.snowflake.get_session()` — already established in the project.
-- **State management:** `st.session_state` for toggle and poll states; no `_internal.config` writes in this story. Story 3.3 handles persistence.
+- **State management:** `st.session_state` remains the live UI source of truth, and saved pack/poll state is persisted to `_internal.config` in this story so Getting Started Task 2 reflects the real controls.
 - **Caching:** The project uses `@st.cache_resource` for session (`utils/snowflake.py`). Follow that pattern. Avoid `@st.cache_data` for discovery queries — SiS caches are single-session only and discovery results may change between page loads. Cache the session, not the data.
-- **Config key conventions:** When Story 3.3 persists state, it will use `pack_enabled.distributed_tracing`, `pack_enabled.query_performance`. This story must name session state keys consistently with these future config keys. Per-source poll state will use `source.<fqn>.poll` in Story 3.3.
+- **Config key conventions:** Persist real pack state to `pack_enabled.distributed_tracing` / `pack_enabled.query_performance`. Persist per-source poll state using `source.<slug>.view_fqn` plus `source.<slug>.poll`, where `<slug>` is a config-safe normalization of the source FQN.
 
 ### Permission model for source discovery (validated against Snowflake docs, live SQL, and telemetry source research on 2026-03-27)
 
@@ -172,7 +170,7 @@ Verified result (7 event tables on dev account):
 
 #### 2. Active account event table
 
-`SNOWFLAKE.TELEMETRY.EVENTS` is the well-known default active account event table and will appear in the discovery results from query 1. Do NOT give it special UI treatment (no bold, no "default" label) — display it uniformly with all other event tables. Its Collection column should show the account name (since it is the account-level event table). `SHOW PARAMETERS` is not available to Native Apps — do not attempt it.
+`SNOWFLAKE.TELEMETRY.EVENTS` is the well-known default active account event table and will appear in the discovery results from query 1. Do NOT give it special UI treatment (no bold, no "default" label) — display it uniformly with all other event tables as a full FQN. `SHOW PARAMETERS` is not available to Native Apps — do not attempt it.
 
 #### 3. ACCOUNT_USAGE view validation
 
@@ -201,18 +199,11 @@ SELECT TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, VIEW_DEFINITION
 FROM SNOWFLAKE.ACCOUNT_USAGE.VIEWS
 WHERE DELETED IS NULL
   AND TABLE_CATALOG != 'SNOWFLAKE'
-  AND (
-    VIEW_DEFINITION ILIKE '%ACCOUNT_USAGE%'
-    OR VIEW_DEFINITION ILIKE '%QUERY_HISTORY%'
-    OR VIEW_DEFINITION ILIKE '%TASK_HISTORY%'
-    OR VIEW_DEFINITION ILIKE '%COMPLETE_TASK_GRAPHS%'
-    OR VIEW_DEFINITION ILIKE '%LOCK_WAIT_HISTORY%'
-    OR VIEW_DEFINITION ILIKE '%TELEMETRY.EVENTS%'
-  )
+  AND VIEW_DEFINITION IS NOT NULL
 ORDER BY TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME;
 ```
 
-Verified: VIEW_DEFINITION is populated and parseable. Empty set on dev account (no custom views yet).
+Verified: `VIEW_DEFINITION` is populated and parseable. Match only against the validated MVP `ACCOUNT_USAGE` views and the set of discovered Event Tables.
 
 #### Error handling for missing privileges
 
@@ -228,10 +219,8 @@ st.error("Please grant IMPORTED PRIVILEGES ON SNOWFLAKE DB to the application to
 import pandas as pd
 
 df_et = pd.DataFrame([
-    {"poll": True, "view_name": "EVENTS", "collection": "Account",
-     "telemetry_types": "Logs, Traces, Metrics", "telemetry_sources": "Stored procedures, Functions"},
-    {"poll": True, "view_name": "TEST_EVENTS", "collection": "Database: HEALTHCARE_DB",
-     "telemetry_types": "—", "telemetry_sources": "—"},
+    {"poll": True, "view_name": "SNOWFLAKE.TELEMETRY.EVENTS"},
+    {"poll": True, "view_name": "HEALTHCARE_DB.OBSERVABILITY.TEST_EVENTS"},
 ])
 
 edited_df = st.data_editor(
@@ -239,11 +228,8 @@ edited_df = st.data_editor(
     column_config={
         "poll": st.column_config.CheckboxColumn("Poll", default=True),
         "view_name": st.column_config.TextColumn("View name"),
-        "collection": st.column_config.TextColumn("Collection"),
-        "telemetry_types": st.column_config.TextColumn("Telemetry types"),
-        "telemetry_sources": st.column_config.TextColumn("Telemetry sources"),
     },
-    disabled=["view_name", "collection", "telemetry_types", "telemetry_sources"],
+    disabled=["view_name"],
     hide_index=True,
     use_container_width=True,
     key="sources_editor_distributed_tracing",
@@ -253,9 +239,9 @@ edited_df = st.data_editor(
 **Query Performance & Execution (ACCOUNT_USAGE views):**
 ```python
 df_au = pd.DataFrame([
-    {"poll": True, "view_name": "QUERY_HISTORY"},
-    {"poll": True, "view_name": "TASK_HISTORY"},
-    {"poll": False, "view_name": "LOCK_WAIT_HISTORY"},
+    {"poll": True, "view_name": "SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY"},
+    {"poll": True, "view_name": "SNOWFLAKE.ACCOUNT_USAGE.TASK_HISTORY"},
+    {"poll": False, "view_name": "SNOWFLAKE.ACCOUNT_USAGE.LOCK_WAIT_HISTORY"},
 ])
 
 edited_df = st.data_editor(
@@ -272,27 +258,24 @@ edited_df = st.data_editor(
 ```
 
 Key `st.data_editor` behaviors to handle:
-- The returned `edited_df` reflects user edits. Store it in `st.session_state` so edits survive reruns AND toggle OFF/ON cycles.
+- The returned `edited_df` reflects user edits. Store or reconstruct effective poll values from session state so edits survive reruns.
 - Use a unique `key` per category to avoid widget key collisions.
-- When category toggle is OFF, render with `disabled=True` (all columns locked, table greyed out but visible — checkbox states preserved as-is).
+- When category toggle is OFF, render with `disabled=True` (all columns locked, table greyed out, all Poll values false).
 - When a source's Poll is unchecked (category ON), its entire row should appear visually dimmed. This can be achieved via row styling or conditional rendering.
 
-### Event Table column derivation rules
+### Event Table metadata notes
 
 See `_bmad-output/planning-artifacts/snowflake-event-tables-design.md` for full specification.
 
-**Collection** — derive at discovery time from `TABLE_CATALOG`:
-- `SNOWFLAKE.TELEMETRY.EVENTS` → show account name (account-level event table)
-- Other event tables → show `Database: {TABLE_CATALOG}` (database-scoped)
-
 **Telemetry types** — derived from `RECORD_TYPE` values in the event table:
 - `LOG` → `Logs`, `SPAN`/`SPAN_EVENT` → `Traces`, `METRIC` → `Metrics`, `EVENT` → `Events`
-- Requires SELECT access to the event table → show "—" until consumer binds references (future story). Once references are bound, populate by querying `SELECT DISTINCT RECORD_TYPE FROM <event_table>`.
+- Determining these values requires querying row contents from each Event Table. That is intentionally deferred because it is too expensive for this story's page load path.
+- For Story 3.1, keep `telemetry_types` as `""` and hide the column whenever the category contains no populated values.
 
 **Telemetry sources** — derived from `RESOURCE_ATTRIBUTES` in the event table:
 - Normalized to: `Stored procedures`, `Functions`, `SQL queries`, `Streamlit apps`, `SnowServices`, `Dynamic tables`, `Iceberg refresh`, `Native Apps`
 - Detection priority: `snow.executable.type` first, then `snow.app.*` attributes, then Iceberg-specific keys
-- Requires SELECT access → show "—" until consumer binds references (future story).
+- As with telemetry types, keep this field empty in Story 3.1 and hide the column until a later story computes real values.
 
 ### Category toggle + expander layout pattern
 
@@ -324,7 +307,7 @@ for cat in categories:
         )
 ```
 
-This pattern keeps the toggle always visible, always renders the source table (greyed out when disabled), and preserves checkbox states across toggle OFF/ON.
+This pattern keeps the toggle always visible, always renders the source table, and allows the page to swap between disabled/all-false and enabled/all-true category defaults.
 
 ### UX/UI specifications (from Figma and UX spec)
 
@@ -340,13 +323,13 @@ ENABLED CATEGORY — Distributed Tracing (toggle ON):
 ○ Distributed Tracing (2/3)                              Enabled [toggle=ON]
 ▼ Distributed Tracing sources
    Capture and correlate execution events from...
-   ┌──────┬─────────────┬────────────────┬─────────────────┬──────────────────────┐
-   │ Poll │ View name   │ Collection     │ Telemetry types │ Telemetry sources    │
-   ├──────┼─────────────┼────────────────┼─────────────────┼──────────────────────┤
-   │ ☑    │ EVENTS      │ Account        │ Logs, Traces    │ Stored procs, Funcs  │  ← normal
-   │ ☑    │ TEST_EVENTS │ DB: ANALYTICS  │ —               │ —                    │  ← normal
-   │ ☐    │ AI_OBS_EVE  │ DB: AI_DB      │ —               │ —                    │  ← greyed row
-   └──────┴─────────────┴────────────────┴─────────────────┴──────────────────────┘
+   ┌──────┬──────────────────────────────────────────────┐
+   │ Poll │ View name                                    │
+   ├──────┼──────────────────────────────────────────────┤
+   │ ☑    │ SNOWFLAKE.TELEMETRY.EVENTS                   │  ← normal
+   │ ☑    │ HEALTHCARE_DB.OBSERVABILITY.TEST_EVENTS      │  ← normal
+   │ ☐    │ AI_DB.OBS.PUBLIC.CUSTOM_TRACE_VIEW           │  ← greyed row
+   └──────┴──────────────────────────────────────────────┘
 
 ENABLED CATEGORY — Query Performance & Execution (toggle ON):
 ○ Query Performance & Execution (3/4)                    Enabled [toggle=ON]
@@ -355,33 +338,32 @@ ENABLED CATEGORY — Query Performance & Execution (toggle ON):
    ┌──────┬─────────────────────────┐
    │ Poll │ View name               │
    ├──────┼─────────────────────────┤
-   │ ☑    │ QUERY_HISTORY           │  ← normal row
-   │ ☑    │ TASK_HISTORY            │  ← normal row
-   │ ☐    │ COMPLETE_TASK_GRAPHS    │  ← greyed-out row (unchecked)
-   │ ☑    │ LOCK_WAIT_HISTORY       │  ← normal row
+   │ ☑    │ SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY        │  ← normal row
+   │ ☑    │ SNOWFLAKE.ACCOUNT_USAGE.TASK_HISTORY         │  ← normal row
+   │ ☐    │ SNOWFLAKE.ACCOUNT_USAGE.COMPLETE_TASK_GRAPHS │  ← greyed-out row (unchecked)
+   │ ☑    │ SNOWFLAKE.ACCOUNT_USAGE.LOCK_WAIT_HISTORY    │  ← normal row
    └──────┴─────────────────────────┘
 
 DISABLED CATEGORY (toggle OFF — any category):
 ○ Distributed Tracing (0/3)                              Disabled [toggle=OFF]
 ▼ Distributed Tracing sources (greyed out, read-only)
    Capture and correlate execution events from...
-   ┌──────┬─────────────┬────────────────┬─────────────────┬──────────────────────┐
-   │ ☑    │ EVENTS      │ Account        │ —               │ —                    │  ← all greyed,
-   │ ☑    │ TEST_EVENTS │ DB: ANALYTICS  │ —               │ —                    │    preserved,
-   │ ☐    │ AI_OBS_EVE  │ DB: AI_DB      │ —               │ —                    │    NOT editable
-   └──────┴─────────────┴────────────────┴─────────────────┴──────────────────────┘
+   ┌──────┬──────────────────────────────────────────────┐
+   │ ☐    │ SNOWFLAKE.TELEMETRY.EVENTS                   │  ← all greyed,
+   │ ☐    │ HEALTHCARE_DB.OBSERVABILITY.TEST_EVENTS      │    unchecked,
+   │ ☐    │ AI_DB.OBS.PUBLIC.CUSTOM_TRACE_VIEW           │    NOT editable
+   └──────┴──────────────────────────────────────────────┘
 ```
-- Status dot: gray (○) = "awaiting activation" for all categories until export activation (Epic 6). Green/amber/red come with Epic 7.
 - Count when ON: `{sum of checked polls}/{total}`. Count when OFF: `0/{total}`.
 - Toggle: `st.toggle` per category. Default OFF on first load. Toggle label shows "Disabled" when OFF per Figma.
 - Unchecked source rows: visually greyed out (entire row dimmed) when category is ON.
-- Disabled category: entire table greyed out, all columns locked, checkbox states preserved.
+- Disabled category: entire table greyed out, all columns locked, all Poll values false.
 
 **Column schemas differ by category:**
-- **Distributed Tracing**: Poll, View name, Collection, Telemetry types, Telemetry sources
-- **Query Performance & Execution**: Poll, View name (no Source type column)
+- **Distributed Tracing**: Poll, View name
+- **Query Performance & Execution**: Poll, View name
 
-**Footer:** Reserve space for "You have unsaved changes." + "Reset to defaults" + "Save configuration" (Story 3.3 implements this).
+**Footer:** "You have unsaved changes." + "Reset to defaults" + "Save configuration"
 
 ### Category definitions (from UX spec §4a)
 
@@ -391,7 +373,7 @@ DISABLED CATEGORY (toggle OFF — any category):
 
 **2. Query Performance & Execution**
 - Description: "Understand workload patterns and query behavior via ACCOUNT_USAGE views."
-- Sources: QUERY_HISTORY, TASK_HISTORY, COMPLETE_TASK_GRAPHS, LOCK_WAIT_HISTORY, plus custom views referencing them.
+- Sources: `SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY`, `SNOWFLAKE.ACCOUNT_USAGE.TASK_HISTORY`, `SNOWFLAKE.ACCOUNT_USAGE.COMPLETE_TASK_GRAPHS`, `SNOWFLAKE.ACCOUNT_USAGE.LOCK_WAIT_HISTORY`, plus custom views referencing them.
 
 ### What this story does NOT implement (scope boundaries)
 
@@ -399,9 +381,6 @@ DISABLED CATEGORY (toggle OFF — any category):
 |---------|---------------|
 | Per-source interval/overlap/batch editing | Story 3.2 |
 | Default vs custom source selection dropdown | Story 3.2 |
-| Save configuration to `_internal.config` | Story 3.3 |
-| Unsaved changes indicator and Save/Reset buttons | Story 3.3 |
-| Replace `pack_enabled.dummy` with real Task 2 completion | Story 3.3 |
 | Health columns (Freshness, Recent runs, Errors) | Epic 7 (Story 7.3) |
 | Status dot colors (green/amber/red) from health data | Epic 7 |
 
@@ -411,8 +390,8 @@ Key patterns and decisions from the last story that apply here:
 
 1. **Config loading pattern:** Use `utils/config.py` `load_config()` and `load_config_like()` for reading config. Parameterized SQL with `session.sql(params=[...])`.
 2. **Session state initialization:** Initialize all session state keys before widget calls (top-of-file pattern). Use `if "key" not in st.session_state:` guards.
-3. **Drill-down from Getting Started:** The `drilled_from_getting_started` session state flag and redirect-on-completion pattern are established. Preserve this behavior.
-4. **Dummy completion toggle:** `pack_enabled.dummy` in `_internal.config` drives Getting Started Task 2 completion. Keep this working; Story 3.3 replaces it.
+3. **Drill-down from Getting Started:** The `drilled_from_getting_started` session state flag is established and should be preserved for drill-down tracking only. Do **not** automatically redirect back to Getting Started after save; keep the user on Telemetry Sources and show confirmation in place.
+4. **Real completion signal:** Getting Started Task 2 should now derive from the real saved `pack_enabled.<category>` values rather than the legacy `pack_enabled.dummy` key.
 5. **`st.switch_page()` is terminal:** After calling `st.switch_page()`, call `st.stop()` to make control flow explicit.
 6. **Snowpark SQL:** Always use `session.sql(query, params=[...]).collect()` for parameterized queries. Never concatenate user input into SQL.
 7. **Error handling:** Wrap Snowpark calls in `try/except SnowparkSQLException` and surface with `st.error()`.
@@ -421,7 +400,7 @@ Key patterns and decisions from the last story that apply here:
 
 From the Epic 2 retro, these items are explicitly required for Epic 3:
 
-1. **Replace `pack_enabled.dummy` with real Task 2 completion logic.** Story 3.1 preserves the dummy; Story 3.3 replaces it. Do not break it here.
+1. **Replace `pack_enabled.dummy` with real Task 2 completion logic.** Story 3.1 now owns that replacement.
 2. **Keep completion state DB-backed, not session-only.** Discovery and poll state can be session-only for now, but when Story 3.3 adds persistence, all completion signals must come from `_internal.config`.
 3. **Preserve config-key conventions:** Use dotted key patterns: `pack_enabled.<pack_name>`, `source.<name>.view_fqn`, `source.<name>.poll`.
 4. **Validate discovery against real account behavior.** Test the actual SQL against the dev Snowflake account — do not rely on theoretical correctness alone.
@@ -433,6 +412,7 @@ From the Epic 2 retro, these items are explicitly required for Epic 3:
 | `app/streamlit/pages/telemetry_sources.py` | Replace placeholder with real Telemetry Sources page |
 | `app/streamlit/utils/source_discovery.py` | **New** — source discovery queries and category definitions |
 | `tests/test_source_discovery.py` | **New** — unit tests for discovery logic and poll state |
+| `tests/test_getting_started.py` | Update onboarding completion tests for real pack controls |
 
 ### Existing files to be aware of (do not break)
 
@@ -449,7 +429,7 @@ From the Epic 2 retro, these items are explicitly required for Epic 3:
 
 - Source discovery module goes in `app/streamlit/utils/source_discovery.py` — consistent with existing `utils/config.py` and `utils/onboarding.py`.
 - The Telemetry Sources page imports from `utils/source_discovery.py`, `utils/config.py`, `utils/snowflake.py`.
-- Tests go in `tests/test_source_discovery.py` using `PYTHONPATH=app/python .venv/bin/python -m pytest tests/ -v` (root venv, Python 3.13).
+- Tests go in `tests/test_source_discovery.py` and `tests/test_getting_started.py` using `PYTHONPATH=app/python .venv/bin/python -m pytest tests/ -v` (root venv, Python 3.13).
 
 ### References
 
@@ -467,10 +447,25 @@ From the Epic 2 retro, these items are explicitly required for Epic 3:
 
 ### Agent Model Used
 
-{{agent_model_name_version}}
+GPT-5.4
 
 ### Debug Log References
 
+- Live Snowflake Native App DOM inspection via Playwright MCP on 2026-03-30 to validate the real `st.data_editor` / `glide-data-grid` structure before implementing unchecked-row dimming.
+
 ### Completion Notes List
 
+- Updated Story 3.1 to reflect the agreed UI contract: full FQNs in `View name`, empty Event Table metadata fields hidden until a later story populates them, and real persisted save/reset controls in this story.
+- Replaced the interim dummy onboarding completion path with real config-backed pack and per-source poll persistence.
+- Tightened custom-view classification so only supported MVP `ACCOUNT_USAGE` views are accepted, while custom views over discovered Event Tables are included in Distributed Tracing.
+
 ### File List
+
+- `app/streamlit/pages/telemetry_sources.py`
+- `app/streamlit/main.py`
+- `app/streamlit/utils/source_discovery.py`
+- `app/streamlit/utils/config.py`
+- `app/streamlit/utils/onboarding.py`
+- `tests/test_source_discovery.py`
+- `tests/test_getting_started.py`
+- `_bmad-output/implementation-artifacts/3-1-source-discovery-and-pack-toggles.md`

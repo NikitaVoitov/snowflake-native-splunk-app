@@ -84,11 +84,33 @@ class TestLoadTaskCompletion:
 
     @patch("utils.onboarding.load_config", side_effect=_mock_load_config)
     @patch("utils.onboarding.load_config_like", side_effect=_mock_load_config_like)
+    def test_task2_ignores_legacy_dummy_pack_key(self, mock_like, mock_cfg):
+        session = MagicMock()
+        session._test_store = {
+            "pack_enabled.dummy": "true",
+            "pack_enabled.distributed_tracing": "false",
+        }
+        result = load_task_completion(session)
+        assert result[2] is False
+
+    @patch("utils.onboarding.load_config", side_effect=_mock_load_config)
+    @patch("utils.onboarding.load_config_like", side_effect=_mock_load_config_like)
+    def test_task2_ignores_unrelated_pack_enabled_keys(self, mock_like, mock_cfg):
+        session = MagicMock()
+        session._test_store = {
+            "pack_enabled.tracing": "true",
+            "pack_enabled.query_performance_legacy": "true",
+        }
+        result = load_task_completion(session)
+        assert result[2] is False
+
+    @patch("utils.onboarding.load_config", side_effect=_mock_load_config)
+    @patch("utils.onboarding.load_config_like", side_effect=_mock_load_config_like)
     def test_all_complete(self, mock_like, mock_cfg):
         session = MagicMock()
         session._test_store = {
             "otlp.endpoint": "collector:4317",
-            "pack_enabled.tracing": "true",
+            "pack_enabled.query_performance": "true",
             "governance.acknowledged": "true",
             "activation.completed": "true",
         }

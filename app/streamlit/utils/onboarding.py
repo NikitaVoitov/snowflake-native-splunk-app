@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, NamedTuple
 from snowflake.snowpark.exceptions import SnowparkSQLException
 
 from utils.config import load_config, load_config_like
+from utils.source_discovery import PACK_ENABLED_CONFIG_KEYS
 
 if TYPE_CHECKING:
     from snowflake.snowpark import Session
@@ -90,7 +91,10 @@ def load_task_completion_state(session: Session | None) -> OnboardingLoadState:
                 result[task.step] = bool(val)
             elif task.step == 2:
                 packs = load_config_like(session, task.config_key)
-                result[task.step] = any((v or "").lower() == "true" for v in packs.values())
+                result[task.step] = any(
+                    (packs.get(key) or "").lower() == "true"
+                    for key in PACK_ENABLED_CONFIG_KEYS
+                )
             else:
                 val = load_config(session, task.config_key)
                 result[task.step] = (val or "").lower() == "true"
