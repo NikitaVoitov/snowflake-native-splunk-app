@@ -401,7 +401,7 @@ Key patterns and decisions from the last story that apply here:
 From the Epic 2 retro, these items are explicitly required for Epic 3:
 
 1. **Replace `pack_enabled.dummy` with real Task 2 completion logic.** Story 3.1 now owns that replacement.
-2. **Keep completion state DB-backed, not session-only.** Discovery and poll state can be session-only for now, but when Story 3.3 adds persistence, all completion signals must come from `_internal.config`.
+2. **Keep completion state DB-backed, not session-only.** Story 3.1 already persists pack state and per-source poll state to `_internal.config`; Story 3.3 extends verification of that persistence across the full 3.1-3.2 configuration set.
 3. **Preserve config-key conventions:** Use dotted key patterns: `pack_enabled.<pack_name>`, `source.<name>.view_fqn`, `source.<name>.poll`.
 4. **Validate discovery against real account behavior.** Test the actual SQL against the dev Snowflake account — do not rely on theoretical correctness alone.
 

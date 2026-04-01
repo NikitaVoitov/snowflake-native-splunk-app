@@ -143,7 +143,7 @@ FR18: Epic 6 — Custom source with projection: blocked columns NULL, warning re
 FR19: Epic 5 — Export new Event Table telemetry incrementally (no re-export)
 FR20: Epic 5 — Scope Event Table export to MVP categories (SQL/Snowpark compute)
 FR21: Epic 5 — Each ACCOUNT_USAGE source on independent schedule
-FR22: Epic 3 — View and edit per-source settings (enabled, interval, overlap, batch size)
+FR22: Epic 3 — View and edit per-source settings (enabled, interval, overlap; batch size deferred)
 FR22a: Epic 3 — Adjust overlap window per ACCOUNT_USAGE source
 FR23: Epic 6 — Deliver all enabled telemetry through OTLP to Splunk after activation
 FR24: Epic 4 — Analyze exported spans in Splunk (identity, context, trace correlation)
@@ -174,7 +174,7 @@ Maya can complete first-time setup by configuring the OTLP export destination (e
 **FRs covered:** FR3, FR8, FR9, FR10
 
 ### Epic 3: Telemetry source selection and pack management
-Maya can discover available Event Tables and ACCOUNT_USAGE (and custom views), enable or disable Monitoring Packs, choose default or custom source per supported source, view and change execution intervals and per-source settings (interval, overlap for ACCOUNT_USAGE, batch size), and persist source configuration; the Telemetry sources page provides category-based st.data_editor with enable/interval/overlap and source discovery.
+Maya can discover available Event Tables and ACCOUNT_USAGE (and custom views), enable or disable Monitoring Packs, choose which discovered sources are polled, view and change execution intervals and overlap windows, and verify that the complete Telemetry Sources configuration persists correctly. Batch size is explicitly deferred out of scope for now.
 **FRs covered:** FR4, FR5, FR6, FR7, FR11, FR12, FR22, FR22a
 
 ### Epic 4: Splunk-compatible OTLP export foundation
@@ -311,7 +311,7 @@ So that my destination is persisted and I can complete the rest of setup in orde
 
 ## Epic 3: Telemetry source selection and pack management
 
-Maya can discover sources, enable packs, choose default or custom source per source, and set intervals/overlap; Telemetry sources page provides the data_editor and discovery.
+Maya can discover sources, enable packs, choose which discovered sources are polled, set intervals and overlap windows, and verify that the full Telemetry Sources configuration persists correctly. Batch size is deferred out of scope for now.
 
 ### Story 3.1: Source discovery and pack toggles
 
@@ -323,24 +323,25 @@ So that I can choose what telemetry to export without writing SQL.
 
 **Given** I have the required Snowflake privileges  
 **When** I open the Telemetry sources page  
-**Then** The app discovers Event Tables (e.g. via INFORMATION_SCHEMA / SHOW EVENT TABLES) and supported ACCOUNT_USAGE views plus custom views that reference them  
+**Then** The app discovers Event Tables and supported ACCOUNT_USAGE views plus custom views that reference them  
 **And** Categories (e.g. Distributed Tracing, Query Performance & Execution) are shown with collapsible headers and an enable toggle per category  
 **And** Each category shows a count of enabled/total sources (e.g. "2/9")
 
-### Story 3.2: Per-source selection and intervals
+### Story 3.2: Per-source intervals and overlap windows
 
 As a Snowflake administrator (Maya),
-I want to select default or custom source per row, set execution interval, and for ACCOUNT_USAGE set overlap window,
-So that I control what data is exported and how often it is polled.
+I want to set execution interval per source and for ACCOUNT_USAGE set overlap window,
+So that I control how often each selected source is polled and how much historical data is re-scanned for late-arriving rows.
 
 **Acceptance Criteria:**
 
 **Given** I am on the Telemetry sources page with sources discovered  
-**When** I use the table (st.data_editor): Poll checkbox, View name, Source type, Interval (editable), Overlap (editable for ACCOUNT_USAGE only), Batch size (editable)  
-**Then** I can select for each source either the default Snowflake source or a custom view/table (e.g. from a dropdown or selector)  
-**And** Each source shows its default execution interval before I change anything  
-**And** Interval is within published min/max bounds; Overlap defaults to documented max latency × 1.1 for AU sources  
-**And** Changes are reflected in session_state and can be saved
+**When** I use the table (`st.data_editor`) and edit the new `Interval` column for both source families and the `Overlap` column for ACCOUNT_USAGE only  
+**Then** each source shows its default execution interval before I change anything  
+**And** ACCOUNT_USAGE sources show the documented default overlap of documented max latency × 1.1  
+**And** Interval and Overlap are validated within published bounds  
+**And** edits survive fragment reruns and category toggle transitions in the current UI session  
+**And** Reset to defaults restores Interval and Overlap to their defaults
 
 ### Story 3.3: Save source configuration
 
@@ -350,12 +351,13 @@ So that I do not lose changes and know when the app state matches the UI.
 
 **Acceptance Criteria:**
 
-**Given** I have changed pack toggles, source selection, or intervals on Telemetry sources  
+**Given** I have changed pack toggles, source polling, intervals, or overlaps on Telemetry sources  
 **When** I have not yet saved  
 **Then** A footer or banner shows "You have unsaved changes" and "Save configuration" (primary) is available  
 **When** I click "Save configuration"  
-**Then** pack_enabled.* and source.<name>.* keys (view_fqn, source_type, poll_interval_seconds, overlap_minutes, etc.) are written to _internal.config  
-**And** The unsaved indicator clears and session_state is synced with config
+**Then** `pack_enabled.*` and `source.<name>.*` keys (`view_fqn`, `poll`, `poll_interval_seconds`, `overlap_minutes`) are written to `_internal.config`  
+**And** reloading the page restores the saved pack, poll, interval, and overlap values  
+**And** the unsaved indicator clears and `session_state` is synced with config
 
 ---
 
@@ -476,7 +478,7 @@ So that performance telemetry is exported reliably on independent per-source sch
 
 **Implementation Tasks:**
 
-- Read source-specific config including `view_fqn`, `overlap_minutes`, and `batch_size`.
+- Read source-specific config including `view_fqn` and `overlap_minutes`.
 - Apply watermark, overlap, latency cutoff, and dedup rules in Snowpark or SQL pushdown.
 - Serialize batches and invoke the Epic 4 export foundation.
 - Update per-source watermarks and health/log records independently.

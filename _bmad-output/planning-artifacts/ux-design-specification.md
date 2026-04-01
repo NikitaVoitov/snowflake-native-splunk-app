@@ -413,7 +413,7 @@ We recommend a **permanent Getting Started page** (Equals-, GitLab-, and Cake-st
 2. **Open app** → App detects unconfigured state and presents **Getting Started**: sidebar shows "Getting started" with progress badge (e.g. "0/4"); main area shows the **Getting Started** page with **big tiles** (Configure Splunk Settings, Select Telemetry Sources, Review Data Governance, Activate Export). User drills into a tile to complete that task (recommended order: connection first, then sources, then governance, then activate).
 3. **Privilege binding:** Getting Started shows native Snowsight permission prompts (Permission SDK). Maya clicks "Grant" for required privileges. No manual SQL.
 4. **Splunk settings (Export settings tab):** Maya drills into **Splunk settings** (from Getting started or via sidebar) and sees the **Export settings** tab. She enters the **OTLP endpoint** (gRPC URL with port) pointing to her remote OTEL collector (e.g. Splunk distribution). Optionally she pastes a **PEM certificate** for a collector using a private/self-signed cert. **Test connection** for OTLP; she cannot proceed until the test succeeds.
-5. **Telemetry sources (packs and sources):** Maya drills into **Telemetry sources**. **Performance Pack** = ACCOUNT_USAGE: she selects from default and custom views that reference ACCOUNT_USAGE. **Distributed Tracing Pack** = Event Tables: she binds one or more Event Tables and selects **custom view or event table** per source (app does not create views). Per-source intervals and sourcetypes are shown. She can enable **multiple packs in one run**.
+5. **Telemetry sources (packs and sources):** Maya drills into **Telemetry sources**. **Performance Pack** = ACCOUNT_USAGE: she selects from default and custom views that reference ACCOUNT_USAGE. **Distributed Tracing Pack** = Event Tables: she binds one or more Event Tables and selects **custom view or event table** per source (app does not create views). Per-source intervals (and ACCOUNT_USAGE overlap windows) are shown. She can enable **multiple packs in one run**.
 6. **Governance review:** Read-only display of **selected sources**. When a default view or event table is selected, the app **informs** that masking and row access policies cannot be applied and that she must create and select custom views to enforce governance. Maya confirms and continues.
 7. **Activate:** Maya clicks "Enable Auto-Export" (or equivalent). App provisions tasks, streams, and network/secret objects (no app-created views). Progress feedback via `st.spinner` or status callouts.
 8. **Completion:** `st.success` (and optionally `st.balloons()`). A green completion banner appears. **No auto-redirect** — Maya stays on the Getting Started page and manually clicks "Observability health" in the sidebar. She sees first green statuses and row counts.
@@ -454,7 +454,7 @@ flowchart LR
 1. **Open app** → Sidebar shows **Observability health** (home), **Telemetry sources**, **Splunk settings**, and **Data governance**. Getting started is no longer visible.
 2. **Go to Telemetry sources** (or **Splunk settings** as needed) → Ravi manages packs and sources on Telemetry sources; he manages the OTLP destination on the **Export settings** tab.
 3. **Distributed Tracing Pack section:** He sees currently bound Event Tables and an option to **Add Event Table** (or "Bind another Event Table"). He selects the new Event Table from the list of available tables (e.g. discovered from the account).
-4. **Splunk settings (Export settings tab):** He enters or confirms the OTLP endpoint and optional certificate. **Test connection** for OTLP. Stream polling interval and sourcetypes are on **Telemetry sources**; he can adjust if needed.
+4. **Splunk settings (Export settings tab):** He enters or confirms the OTLP endpoint and optional certificate. **Test connection** for OTLP. Stream polling interval and source selection are on **Telemetry sources**; he can adjust if needed.
 5. **Save/Activate:** He saves or activates the new binding. App creates stream on the selected source (his view or event table) and triggered task (or extends existing pipeline); no app-created views. Progress feedback.
 6. **Verify:** He returns to **Observability health** (sidebar); the new Event Table source appears with green status and row counts. He confirms in Splunk APM that spans from the new table appear in traces.
 
@@ -482,7 +482,7 @@ flowchart TD
 1. **Open app** → App loads with **Getting Started** if incomplete, or **Observability health** as default (home) if onboarding is done. User can switch to **Observability health** from the sidebar at any time; if no pipelines are configured, the empty state message is shown.
 2. **Scan helicopter view:** Observability health shows **destination health card** (OTLP status), **four aggregated KPI cards** (Sources OK, Rows exported 24h, Failed batches 24h, Avg freshness), an **export throughput trend chart**, a **category health summary table** (one row per content pack — Distributed Tracing, Query Performance, etc.), and a **recent errors feed** (if any errors in 24h). All green → Sam closes the app; check complete in ~3 seconds.
 3. **Drill down:** If "Failed batches" > 0 or a category is amber/red, Sam clicks the category row in the summary table → navigates to **Telemetry sources** page filtered to that category, where `st.data_editor` shows per-source status, freshness sparklines, recent-run scores, and error details. For root cause he follows the "View log" drill-down link or queries the app event table in Snowsight. High-level "what failed" on Observability health; per-source "where exactly" on Telemetry sources; "why" in Snowsight logs.
-4. **Optional:** Sam may adjust interval, overlap window, or batch size on **Telemetry sources**, or change destinations on **Splunk settings**; typical daily use is Observability health only.
+4. **Optional:** Sam may adjust interval or overlap window on **Telemetry sources**, or change destinations on **Splunk settings**; typical daily use is Observability health only.
 
 ```mermaid
 flowchart TD
@@ -505,14 +505,14 @@ flowchart TD
 **Flow:**
 
 1. **Open app** → Home is Observability health. Sidebar includes **Observability health**, **Telemetry sources**, **Splunk settings**, and **Data governance**.
-2. **Locate governance information:** User opens the **Data governance** page. Content includes: a **read-only table of enabled sources** with five columns — Status, View name, Source type, **per-row governance message**, and **Sensitive columns** (list of columns that may contain sensitive info and should be masked/redacted via policy). Same category headers as Telemetry sources (with status dot, no toggle). Read-only; no editing of Snowflake policies in the app.
+2. **Locate governance information:** User opens the **Data governance** page. Content includes: a **read-only table of enabled sources** with four columns — Status, View name, **per-row governance message**, and **Sensitive columns** (list of columns that may contain sensitive info and should be masked/redacted via policy). Same category headers as Telemetry sources (with status dot, no toggle). Read-only; no editing of Snowflake policies in the app.
 3. **Verify alignment with policy:** User confirms that:
    - Only intended sources (ACCOUNT_USAGE views, Event Tables) are included.
    - Sensitive fields (e.g. query text) are masked or redacted per internal policy.
    - Row-level access and projection apply when the user has selected a **custom view** as the source; the app does not create views — it only shows which source (custom view or default) is selected per pipeline so auditors know where to check policy attachment.
-4. **Evidence for audits:** User can use the **Data governance** page (enabled sources table with Status, View name, Source type, per-row governance message, Sensitive columns) and screenshots or exports as evidence that telemetry export is configured in line with data governance and privacy requirements. No separate "audit report" is required for MVP; the visible governance state is the artifact.
+4. **Evidence for audits:** User can use the **Data governance** page (enabled sources table with Status, View name, per-row governance message, Sensitive columns) and screenshots or exports as evidence that telemetry export is configured in line with data governance and privacy requirements. No separate "audit report" is required for MVP; the visible governance state is the artifact.
 
-**Design note:** The Data governance page is informational only. It does not create or modify Snowflake policies. It shows **enabled sources only** with Status, View name, Source type, **per-row governance message**, and **Sensitive columns** (columns that may contain sensitive info and should be masked/redacted via policy); same category headers as Telemetry sources, no toggle.
+**Design note:** The Data governance page is informational only. It does not create or modify Snowflake policies. It shows **enabled sources only** with Status, View name, **per-row governance message**, and **Sensitive columns** (columns that may contain sensitive info and should be masked/redacted via policy); same category headers as Telemetry sources, no toggle.
 
 ```mermaid
 flowchart LR
@@ -541,7 +541,7 @@ flowchart LR
 - **Low cognitive load:** After onboarding, sidebar order is Observability health → Telemetry sources → Splunk settings → Data governance (no Getting started). Single OTLP endpoint field plus optional certificate keeps Splunk settings minimal; Test connection reduces errors.
 - **Clear progress and success:** Test Connection and Activate give immediate feedback; completion is celebrated and followed by **automatic** redirect to Observability health. When the user opens Observability health before setup is complete, the page clearly explains why there is no data yet.
 - **Graceful degradation:** If the destination is unreachable, the UI shows a clear error and does not advance. Observability health destination card shows OTLP status so users see export health at a glance; category summary and drill-down let them identify affected sources.
-- **Governance transparency:** Security and auditors have a dedicated **Data governance** page: **enabled sources only**, columns Status, View name, Source type, per-row governance message, and Sensitive columns (list of columns to mask/redact via policy); same category headers as Telemetry sources (no toggle).
+- **Governance transparency:** Security and auditors have a dedicated **Data governance** page: **enabled sources only**, columns Status, View name, per-row governance message, and Sensitive columns (list of columns to mask/redact via policy); same category headers as Telemetry sources (no toggle).
 
 ## Component Strategy
 
@@ -561,7 +561,7 @@ The app uses the **Native Streamlit UI (Strict Compliance Mode)** defined in Ste
 - **Status & feedback:** `st.success`, `st.error`, `st.warning`, `st.info`, `st.spinner`, `st.progress`, `st.toast`, `st.balloons`
 - **Other:** `st.badge` for labels
 
-**Components needed for the app (from journeys):** Getting started tiles and hub; **Splunk settings** page with **Export settings** tab (OTLP endpoint, optional PEM certificate, Test connection, Save settings); **Telemetry sources** page (`st.data_editor` with per-source health columns, category headers with roll-up status, editable interval/overlap/batch, source discovery for ACCOUNT_USAGE + custom views + Event Tables); **Observability health** page (helicopter view: destination health card, aggregated KPIs via `st.metric`, export throughput trend chart, category health summary table with drill-down, recent errors feed); **Data governance** page (read-only `st.dataframe`: **enabled sources only**, columns Status, View name, Source type, Governance message per row, Sensitive columns per row; same category headers as Telemetry sources, no toggle); empty state.
+**Components needed for the app (from journeys):** Getting started tiles and hub; **Splunk settings** page with **Export settings** tab (OTLP endpoint, optional PEM certificate, Test connection, Save settings); **Telemetry sources** page (`st.data_editor` with per-source health columns, category headers with roll-up status, editable interval/overlap/batch, source discovery for ACCOUNT_USAGE + custom views + Event Tables); **Observability health** page (helicopter view: destination health card, aggregated KPIs via `st.metric`, export throughput trend chart, category health summary table with drill-down, recent errors feed); **Data governance** page (read-only `st.dataframe`: **enabled sources only**, columns Status, View name, Governance message per row, Sensitive columns per row; same category headers as Telemetry sources, no toggle); empty state.
 
 **Gap analysis:** No new primitive components. Gaps are composition and patterns: reusable Connection Card, Getting Started Tile, Empty State, **`st.data_editor`-based source table** (with category headers, status dots, freshness/recent-runs sparklines, editable interval/overlap/batch), **Observability health helicopter layout** (destination cards, KPI row, throughput chart, category summary, errors feed), and a **source discovery query** that enumerates default ACCOUNT_USAGE views plus custom views that reference them, plus Event Tables. Implemented as composed native components plus optional inline UI.
 
@@ -689,7 +689,7 @@ The Telemetry sources page is the **primary operational view** for source config
 
 **Page header (from Figma):**
 - Title: **"Telemetry Sources"**
-- Subtitle: **"Configure monitoring packs and select data sources from Event Tables and ACCOUNT_USAGE views. Set polling intervals, overlap windows, and batch sizes for each source."**
+- Subtitle: **"Configure monitoring packs and select data sources from Event Tables and ACCOUNT_USAGE views. Set polling intervals and overlap windows for each source."**
 
 **Info banner:** `st.info()` with text: **"Enable categories and individual sources to start collecting telemetry. Custom views allow you to apply Snowflake masking and row-access policies to exported data."**
 
@@ -763,13 +763,7 @@ Each row in the `st.data_editor` represents one telemetry source (view or event 
 - Custom views show a subtle tag: e.g. "masked_query_history · custom".
 - Row click or secondary action can open a side panel with full metadata and SQL definition; cell itself stays clean.
 
-**4. Source type** (tag/chip, read-only)
-- Examples from Figma: `event_table`, `query_history`, `task_history`, `view` (for custom views).
-- Small pill/chip with colored background (blue for event_table, purple for query_history, etc.).
-- Custom views show "custo" badge next to the source type tag (e.g. "custo" label indicating custom view).
-- Tooltip: "Source type · describes what this telemetry represents (not the physical object name)."
-
-**5. Freshness chart** (mini line, read-only)
+**4. Freshness chart** (mini line, read-only)
 - Data: time series of lag in hours at each run (watermark vs current time at that run).
 - X-axis: last N runs (no axis labels). Y-axis: lag in hours; baseline at 0.
 - Line above 0 indicates backlog; flat near zero = consistently fresh.
@@ -777,7 +771,7 @@ Each row in the `st.data_editor` represents one telemetry source (view or event 
 - Cell number (right or overlay): current lag, e.g. "0.3 h" or "7.5 h".
 - Tooltip: "Current lag 0.3 h · range last 10 runs: 0–1.2 h".
 
-**6. Recent runs** (net score + sparkline, read-only)
+**5. Recent runs** (net score + sparkline, read-only)
 - Encoding: each run contributes +1 (success) or −1 (failure). Net score = sum over last N runs.
 - Line chart: last N runs, y-axis bounces above/below zero (success vs failure).
 - Numeric label: "+8 (10 runs)" or "−3 (10 runs)". Color green if ≥ 0, red if < 0.
@@ -794,22 +788,24 @@ Each row in the `st.data_editor` represents one telemetry source (view or event 
 
 **8. Interval** (editable numeric/text)
 - Column header: **"Interval"**
-- Values shown as duration strings: e.g. "15m", "1h", "6h".
-- Editable via inline input or select.
+- MVP display uses numeric seconds.
+- Editable via inline numeric input in `st.data_editor`.
 - Guardrails: if average run duration ≈ configured interval, show subtle warning icon.
 - Changing interval auto-recomputes SLA heuristics for status/lag thresholds.
 
 **9. Overlap** (editable numeric/text, ACCOUNT_USAGE sources only)
 - Column header: **"Overlap"**
-- Values shown as duration strings: e.g. "50m", "66m".
-- Editable via inline input or select.
+- MVP display uses numeric minutes.
+- Editable via inline numeric input in `st.data_editor`.
 - **Purpose:** Controls the overlap window for watermark-based dedup. The overlap re-scans past the watermark to catch late-arriving rows (ACCOUNT_USAGE latency is variable — "up to X minutes" is a maximum, not a fixed delay). Rows already exported are deduplicated via natural key.
 - **Default:** `documented_max_latency × 1.1` (e.g. 50 min for QUERY_HISTORY with "up to 45 min" max latency).
 - **Guidance:** Admin can decrease if they observe faster latency in their account (minimizes re-scans) or increase as a safety margin. Smaller overlap = less redundant scanning but higher risk of missing late rows. Dedup always runs regardless of overlap size.
 - **Visibility:** Shown only for ACCOUNT_USAGE sources (poll-based pipeline). Hidden for Event Table sources (event-driven pipeline uses streams, no overlap needed).
 - Config key: `source.<source_name>.overlap_minutes`
 
-**Note:** Batch size column is not shown in the Figma design; may be hidden by default or deferred to post-MVP.
+**MVP note:** Friendly duration-string display such as `15m` or `50m` is deferred to later polish.
+
+**Note:** Batch size is out of scope for the current MVP Telemetry Sources UI and deferred for now.
 
 **Optional columns** (hidden by default, available via `st.data_editor` built-in column menu):
 - Last successful run timestamp (exact)
@@ -820,16 +816,16 @@ Each row in the `st.data_editor` represents one telemetry source (view or event 
 
 ##### 4d. Evaluation timing
 
-Health is computed **only when the page loads or when the user manually refreshes**. No live polling or auto-refresh while the page is open. This keeps behavior predictable and avoids surprise state changes while the user is editing intervals, overlap windows, or batch sizes; a reload is needed to see the latest task outcomes.
+Health is computed **only when the page loads or when the user manually refreshes**. No live polling or auto-refresh while the page is open. This keeps behavior predictable and avoids surprise state changes while the user is editing intervals or overlap windows; a reload is needed to see the latest task outcomes.
 
 ##### 4e. Relationship to Data governance page
 
-The **Data governance** page does **not** duplicate the full Telemetry sources table. It shows **enabled sources only**, with **five columns**: Status, View name, Source type, **Governance message** (per row), and **Sensitive columns** (per-row list of column names that may contain sensitive info and should be masked/redacted via policy). Same category headers as Telemetry sources (status dot, no enable toggle). Data comes from the same source list query, filtered to enabled and projected to these columns; Sensitive columns derived per source from metadata or a known mapping.
+The **Data governance** page does **not** duplicate the full Telemetry sources table. It shows **enabled sources only**, with **four columns**: Status, View name, **Governance message** (per row), and **Sensitive columns** (per-row list of column names that may contain sensitive info and should be masked/redacted via policy). Same category headers as Telemetry sources (status dot, no enable toggle). Data comes from the same source list query, filtered to enabled and projected to these columns; Sensitive columns derived per source from metadata or a known mapping.
 
 ##### 4f. Implementation
 
-- `st.data_editor` with `column_config`: `CheckboxColumn` (Enable poll), `TextColumn` (Status, View name, Source type, Errors), `LineChartColumn` or `BarChartColumn` (Freshness, Recent runs), `SelectboxColumn` (Interval), `NumberColumn` (Overlap — ACCOUNT_USAGE only, hidden for Event Table rows), `NumberColumn` (Batch size).
-- Status dot and source-type chip can use inline HTML/CSS via `st.markdown(unsafe_allow_html=True)` in a custom cell renderer, or text + emoji as fallback.
+- `st.data_editor` with `column_config`: `CheckboxColumn` (Enable poll), `TextColumn` (Status, View name, Errors), `LineChartColumn` or `BarChartColumn` (Freshness, Recent runs), `SelectboxColumn` or `NumberColumn` (Interval), `NumberColumn` (Overlap — ACCOUNT_USAGE only, hidden for Event Table rows).
+- Status dot can use inline HTML/CSS via `st.markdown(unsafe_allow_html=True)` in a custom cell renderer, or text + emoji as fallback.
 - Category headers: `st.expander` wrapping each category's `st.data_editor`; header text includes status dot (inline HTML or emoji), category name, count (n/m enabled), and `st.toggle` for the category enable/disable.
 - Source discovery: query `INFORMATION_SCHEMA.EVENT_TABLES` / `SHOW EVENT TABLES` for Distributed Tracing; query `INFORMATION_SCHEMA.VIEWS` + view definition parsing for ACCOUNT_USAGE custom views.
 - Hide optional columns by default using `st.data_editor` column configuration; users toggle them via the built-in column menu.
@@ -970,7 +966,7 @@ Same as Telemetry sources: health computed **on page load or manual refresh only
 
 #### 8. Data governance page
 
-**Purpose:** Read-only view for auditors and security. Shows **enabled sources only** (no duplication of the full Telemetry sources table). Focused columns: **Status**, **View name**, **Source type**, **Governance** (message per row), and **Sensitive columns** (list of columns that may contain sensitive info). Same category headers as Telemetry sources (with status dot), but **without** the category enable toggle.
+**Purpose:** Read-only view for auditors and security. Shows **enabled sources only** (no duplication of the full Telemetry sources table). Focused columns: **Status**, **View name**, **Governance** (message per row), and **Sensitive columns** (list of columns that may contain sensitive info). Same category headers as Telemetry sources (with status dot), but **without** the category enable toggle.
 
 **Page header (from Figma):**
 - Title: **"Data governance"**
@@ -991,17 +987,16 @@ Same as Telemetry sources: health computed **on page load or manual refresh only
 |---|---|---|
 | **Status** | Green/amber/red dot | ● (green for healthy) |
 | **View name** | Source name + optional "custom" badge | `ACCOUNT_EVENT_TABLE`, `MASKED_TASK_EVENTS custom` |
-| **Source type** | Colored tag/chip | `event_table` (blue), `task_events` (purple), `native_app_events` (teal) |
 | **Governance** | Per-row governance message | "Default source — masking/row access policies cannot be applied; use a custom view for governance." OR "Custom view — Snowflake masking/row policies apply." |
 | **Sensitive columns** | Per-row list of sensitive column names as tags | `RESOURCE_ATTRIBUTES` `SCOPE_ATTRIBUTES` `RECORD_ATTRIBUTES` OR `QUERY_TEXT` `USER_NAME` OR `RECORD` `RECORD_ATTRIBUTES` |
 
 **Example rows (from Figma):**
 
-| Status | View name | Source type | Governance | Sensitive columns |
-|---|---|---|---|---|
-| ● | ACCOUNT_EVENT_TABLE | `event_table` | Default source — masking/row access policies cannot be applied; use a custom view for governance. | `RESOURCE_ATTRIBUTES` `SCOPE_ATTRIBUTES` `RECORD_ATTRIBUTES` |
-| ● | MASKED_TASK_EVENTS `custom` | `task_events` | Custom view — Snowflake masking/row policies apply. | `QUERY_TEXT` `USER_NAME` |
-| ● | APP_EVENT_TABLE | `native_app_events` | Default source — masking/row access policies cannot be applied; use a custom view for governance. | `RECORD` `RECORD_ATTRIBUTES` |
+| Status | View name | Governance | Sensitive columns |
+|---|---|---|---|
+| ● | ACCOUNT_EVENT_TABLE | Default source — masking/row access policies cannot be applied; use a custom view for governance. | `RESOURCE_ATTRIBUTES` `SCOPE_ATTRIBUTES` `RECORD_ATTRIBUTES` |
+| ● | MASKED_TASK_EVENTS `custom` | Custom view — Snowflake masking/row policies apply. | `QUERY_TEXT` `USER_NAME` |
+| ● | APP_EVENT_TABLE | Default source — masking/row access policies cannot be applied; use a custom view for governance. | `RECORD` `RECORD_ATTRIBUTES` |
 
 **Footer (from Figma):**
 - **Summary:** "Showing 9 enabled sources across 2 categories" — left-aligned, gray text
@@ -1016,17 +1011,17 @@ Same as Telemetry sources: health computed **on page load or manual refresh only
 
 **Accessibility:** Table has clear headers; governance message in text per row, not color alone; sensitive columns as distinct tags.
 
-**Implementation:** Use the same source list as Telemetry sources; **filter to enabled sources only**; project to the five columns (Status, View name, Source type, Governance, Sensitive columns). Compute Governance message per row from source type (default vs custom view). Compute Sensitive columns per row from view/table column metadata or a known list per source type. Render with `st.dataframe` + `column_config` (read-only). Category headers via `st.expander` (status dot + label, no toggle). "Agree" button records acknowledgment in `st.session_state`.
+**Implementation:** Use the same source list as Telemetry sources; **filter to enabled sources only**; project to the four columns (Status, View name, Governance, Sensitive columns). Compute Governance message per row from source selection mode (default object vs custom view). Compute Sensitive columns per row from view/table column metadata or a known list per source family. Render with `st.dataframe` + `column_config` (read-only). Category headers via `st.expander` (status dot + label, no toggle). "Agree" button records acknowledgment in `st.session_state`.
 
 ---
 
 ### Component Implementation Strategy
 
 - **Foundation:** All UI uses design system components only; no external CSS/fonts/scripts. Inline HTML/CSS/JS only when necessary and self-contained.
-- **`st.data_editor` as primary source table:** Telemetry sources uses `st.data_editor` with rich `column_config`. Data governance shows **enabled sources only** in a read-only `st.dataframe` with five columns: Status, View name, Source type, Governance message (per row), Sensitive columns (per row); no duplication of full table.
+- **`st.data_editor` as primary source table:** Telemetry sources uses `st.data_editor` with rich `column_config`. Data governance shows **enabled sources only** in a read-only `st.dataframe` with four columns: Status, View name, Governance message (per row), Sensitive columns (per row); no duplication of full table.
 - **Charts:** Prefer native charts or Altair for simple sparklines; use **Plotly 6.5.0** for the Observability health throughput trend chart.
 - **Composed patterns:** Custom components above are implemented as repeated patterns or shared helpers; state via `st.session_state` for OTLP configuration, completion, Test connection results, certificate state, and source enable/disable state.
-- **Single source of truth for source data:** One source list query feeds: (1) Telemetry sources `st.data_editor` (full columns), (2) Data governance `st.dataframe` (enabled only, five columns: Status, View name, Source type, Governance message per row, Sensitive columns per row), (3) Observability health category summary (aggregated).
+- **Single source of truth for source data:** One source list query feeds: (1) Telemetry sources `st.data_editor` (full columns), (2) Data governance `st.dataframe` (enabled only, four columns: Status, View name, Governance message per row, Sensitive columns per row), (3) Observability health category summary (aggregated).
 - **No per-source rows on Observability health:** Observability health shows aggregated KPIs, destination health, category roll-ups, and drill-down links to Telemetry sources. Per-source detail lives only on Telemetry sources.
 - **Accessibility:** Labels on all inputs; status via text and color dots with tooltips; not color alone.
 - **Splunk settings (Export settings tab) UX:** Single OTLP endpoint field plus optional PEM certificate. No Splunk-specific fields in the app; the remote OTEL collector manages Splunk connectivity.
@@ -1040,7 +1035,7 @@ Same as Telemetry sources: health computed **on page load or manual refresh only
 
 - **Splunk settings** page with **Export settings** tab (OTLP endpoint, optional PEM certificate, Connection Card, Test connection, Save settings).
 - **Getting started Tile** (×4) and hub layout.
-- **Telemetry sources** page: `st.data_editor` with category headers, source discovery (ACCOUNT_USAGE + custom views, Event Tables), editable Enable poll / Interval / Batch size, read-only Status / View name / Source type / Errors columns. Category header status roll-up.
+- **Telemetry sources** page: `st.data_editor` with category headers, source discovery (ACCOUNT_USAGE + custom views, Event Tables), editable Enable poll / Interval / Overlap, read-only Status / View name / Errors columns. Category header status roll-up.
 
 **Phase 2 — Health instrumentation:**
 
@@ -1050,7 +1045,7 @@ Same as Telemetry sources: health computed **on page load or manual refresh only
 
 **Phase 3 — Governance, polish, drill-down:**
 
-- **Data governance** page: read-only `st.dataframe` with **enabled sources only**, five columns (Status, View name, Source type, Governance message per row, Sensitive columns per row). Same category headers as Telemetry sources (status dot, no toggle).
+- **Data governance** page: read-only `st.dataframe` with **enabled sources only**, four columns (Status, View name, Governance message per row, Sensitive columns per row). Same category headers as Telemetry sources (status dot, no toggle).
 - Recent errors feed on Observability health (conditional, drill-down to Snowsight logs).
 - Refinements to destination cards, sparklines, and tooltip content; inline UI only where justified.
 
@@ -1132,10 +1127,9 @@ This section documents the complete user journey from initial app load through o
 
 **User sees:**
 - Same collapsible category headers (read-only, no toggles)
-- Table showing only enabled sources with 5 columns:
+- Table showing only enabled sources with 4 columns:
   - Status
   - View name
-  - Source type
   - Governance (per row: "Default source — masking/row policies cannot be applied; use custom view" or "Custom view — Snowflake policies apply")
   - Sensitive columns (per row: list of columns to mask, e.g., QUERY_TEXT, USER_NAME)
 
@@ -1317,8 +1311,9 @@ Now shows (Getting started permanently hidden after user navigates away):
 |---|---|---|
 | OTLP endpoint | `st.text_input` | Required; URL format (https://…:port); validated on "Test connection" |
 | PEM certificate | `st.text_area` (paste only, no file uploader) | Optional; PEM format; validated on "Validate certificate"; shows expiration date on success |
-| Interval | `st.data_editor` cell (text or select column) | Required; predefined options (5m, 15m, 1h, 6h, 24h) |
-| Batch size | `st.data_editor` cell (numeric column) | Required; positive integer; min/max bounds |
+| Interval | `st.data_editor` cell (numeric column) | Required; integer seconds; min 60; max 86400 |
+| Overlap | `st.data_editor` cell (numeric column, ACCOUNT_USAGE only) | Required for ACCOUNT_USAGE only; integer minutes; min 1; max 1440 |
+| Batch size | Deferred | Out of scope for the current MVP Telemetry Sources UI; internal pipeline defaults may still apply |
 
 **Validation approach:**
 - Inline error below the field or via `st.status` when validation fails.
