@@ -3,6 +3,8 @@ from utils.snowflake import get_session
 
 import streamlit as st
 
+st.set_page_config(layout="wide")
+
 DOCS_URL = "https://docs.splunk.com"
 
 # ── Onboarding state (evaluated before sidebar build) ────────────
@@ -119,6 +121,8 @@ _GLOBAL_CSS = (
     }
     [data-testid="stMainBlockContainer"] {
         padding-top: 2rem !important;
+        padding-left: 3rem !important;
+        padding-right: 3rem !important;
     }
 
     [data-testid="stMainBlockContainer"] [data-testid="stButton"] button {

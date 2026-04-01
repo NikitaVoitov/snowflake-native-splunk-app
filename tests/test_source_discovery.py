@@ -14,14 +14,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "app" / "streaml
 from utils.source_discovery import (
     ACCOUNT_USAGE_MVP_VIEWS,
     CATEGORIES,
-    DiscoveredSource,
+    EVENT_TABLE_DEFAULT_INTERVAL_SECONDS,
+    MAX_INTERVAL_SECONDS,
+    MAX_OVERLAP_MINUTES,
+    MIN_INTERVAL_SECONDS,
+    MIN_OVERLAP_MINUTES,
     PACK_ENABLED_CONFIG_KEYS,
+    SOURCE_DEFAULTS,
+    DiscoveredSource,
     build_event_table_match_tokens,
     classify_custom_view,
     discover_account_usage_views,
     discover_all_sources,
     discover_custom_views,
     discover_event_tables,
+    get_source_defaults,
     normalize_view_definition,
     resolve_saved_poll_states,
     source_slug,
@@ -140,6 +147,8 @@ class TestCustomViewClassification:
 
 
 class TestDiscoverEventTables:
+    """Tests for ACCOUNT_USAGE.TABLES-based event table discovery."""
+
     @pytest.fixture
     def mock_session(self):
         session = MagicMock()
@@ -148,6 +157,13 @@ class TestDiscoverEventTables:
 
     def test_empty_result(self, mock_session):
         assert discover_event_tables(mock_session) == []
+
+    def test_queries_account_usage_tables(self, mock_session):
+        discover_event_tables(mock_session)
+        mock_session.sql.assert_called_once()
+        call_sql = mock_session.sql.call_args[0][0]
+        assert "ACCOUNT_USAGE.TABLES" in call_sql
+        assert "EVENT" in call_sql
 
     def test_event_table_uses_fqn_for_view_name(self, mock_session):
         mock_session.sql.return_value.collect.return_value = [
@@ -238,6 +254,20 @@ class TestDiscoverCustomViews:
         assert source.category == "query_performance"
         assert source.is_custom is True
         assert source.fqn == "MY_DB.PUBLIC.MY_QUERY_HIST"
+        assert source.parent_account_usage_view == "QUERY_HISTORY"
+
+    def test_lock_wait_custom_view_tracks_parent_view(self, mock_session):
+        mock_session.sql.return_value.collect.return_value = [
+            (
+                "MY_DB",
+                "PUBLIC",
+                "MY_LOCKS",
+                "SELECT * FROM SNOWFLAKE.ACCOUNT_USAGE.LOCK_WAIT_HISTORY",
+            ),
+        ]
+        result = discover_custom_views(mock_session, [])
+        assert len(result) == 1
+        assert result[0].parent_account_usage_view == "LOCK_WAIT_HISTORY"
 
     def test_unsupported_account_usage_view_is_excluded(self, mock_session):
         mock_session.sql.return_value.collect.return_value = [
@@ -318,6 +348,9 @@ class TestDiscoverAllSources:
         def sql_side_effect(query, **kwargs):
             nonlocal call_count
             result = MagicMock()
+            # call 0: ACCOUNT_USAGE.TABLES event table query
+            # call 1: discover_account_usage_views SELECT
+            # call 2: discover_custom_views SELECT
             if call_count == 0:
                 result.collect.return_value = event_table_rows
             elif call_count == 1:
@@ -462,3 +495,122 @@ class TestSaveAndRestoreRoundTrip:
 
         restored = resolve_saved_poll_states(sources, saved_source_polls)
         assert restored == [True, False]
+
+
+# ===========================================================================
+# Story 3.2 — Per-source defaults and get_source_defaults()
+# ===========================================================================
+
+
+class TestSourceDefaultsConstants:
+    """Validate constant definitions for interval/overlap bounds."""
+
+    def test_min_interval_seconds(self):
+        assert MIN_INTERVAL_SECONDS == 60
+
+    def test_max_interval_seconds(self):
+        assert MAX_INTERVAL_SECONDS == 86400
+
+    def test_min_overlap_minutes(self):
+        assert MIN_OVERLAP_MINUTES == 1
+
+    def test_max_overlap_minutes(self):
+        assert MAX_OVERLAP_MINUTES == 1440
+
+    def test_event_table_default_interval(self):
+        assert EVENT_TABLE_DEFAULT_INTERVAL_SECONDS == 60
+
+    def test_source_defaults_has_all_au_views(self):
+        for view in ACCOUNT_USAGE_MVP_VIEWS:
+            assert view in SOURCE_DEFAULTS
+
+    def test_query_history_defaults(self):
+        assert SOURCE_DEFAULTS["QUERY_HISTORY"] == {"interval_seconds": 900, "overlap_minutes": 50}
+
+    def test_lock_wait_history_overlap(self):
+        assert SOURCE_DEFAULTS["LOCK_WAIT_HISTORY"]["overlap_minutes"] == 66
+
+    def test_all_au_defaults_have_required_keys(self):
+        for _view, defaults in SOURCE_DEFAULTS.items():
+            assert "interval_seconds" in defaults
+            assert "overlap_minutes" in defaults
+
+
+class TestGetSourceDefaults:
+    """Validate get_source_defaults() returns correct per-source settings."""
+
+    def _make_source(self, fqn: str, category: str, is_custom: bool = False) -> DiscoveredSource:
+        return DiscoveredSource(fqn, fqn, category, is_custom, "", "")
+
+    def test_query_history_defaults(self):
+        source = self._make_source("SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY", "query_performance")
+        result = get_source_defaults(source)
+        assert result["interval_seconds"] == 900
+        assert result["overlap_minutes"] == 50
+
+    def test_task_history_defaults(self):
+        source = self._make_source("SNOWFLAKE.ACCOUNT_USAGE.TASK_HISTORY", "query_performance")
+        result = get_source_defaults(source)
+        assert result["interval_seconds"] == 900
+        assert result["overlap_minutes"] == 50
+
+    def test_complete_task_graphs_defaults(self):
+        source = self._make_source("SNOWFLAKE.ACCOUNT_USAGE.COMPLETE_TASK_GRAPHS", "query_performance")
+        result = get_source_defaults(source)
+        assert result["interval_seconds"] == 900
+        assert result["overlap_minutes"] == 50
+
+    def test_lock_wait_history_defaults(self):
+        source = self._make_source("SNOWFLAKE.ACCOUNT_USAGE.LOCK_WAIT_HISTORY", "query_performance")
+        result = get_source_defaults(source)
+        assert result["interval_seconds"] == 900
+        assert result["overlap_minutes"] == 66
+
+    def test_event_table_interval(self):
+        source = self._make_source("SNOWFLAKE.TELEMETRY.EVENTS", "distributed_tracing")
+        result = get_source_defaults(source)
+        assert result["interval_seconds"] == EVENT_TABLE_DEFAULT_INTERVAL_SECONDS
+
+    def test_event_table_overlap_is_none(self):
+        source = self._make_source("SNOWFLAKE.TELEMETRY.EVENTS", "distributed_tracing")
+        result = get_source_defaults(source)
+        assert result["overlap_minutes"] is None
+
+    def test_custom_au_view_gets_safe_default(self):
+        source = self._make_source("MY_DB.PUBLIC.MY_QUERY_VIEW", "query_performance", is_custom=True)
+        result = get_source_defaults(source)
+        assert result["interval_seconds"] == 900
+        assert result["overlap_minutes"] == 50
+
+    def test_custom_au_view_uses_identified_parent_defaults(self):
+        source = DiscoveredSource(
+            "MY_DB.PUBLIC.MY_LOCKS",
+            "MY_DB.PUBLIC.MY_LOCKS",
+            "query_performance",
+            True,
+            "",
+            "",
+            "LOCK_WAIT_HISTORY",
+        )
+        result = get_source_defaults(source)
+        assert result["interval_seconds"] == 900
+        assert result["overlap_minutes"] == 66
+
+    def test_custom_event_table_view(self):
+        source = self._make_source("MY_DB.PUBLIC.MY_TRACES", "distributed_tracing", is_custom=True)
+        result = get_source_defaults(source)
+        assert result["interval_seconds"] == EVENT_TABLE_DEFAULT_INTERVAL_SECONDS
+        assert result["overlap_minutes"] is None
+
+    def test_all_defaults_within_bounds(self):
+        all_sources = [
+            self._make_source(f"SNOWFLAKE.ACCOUNT_USAGE.{v}", "query_performance")
+            for v in ACCOUNT_USAGE_MVP_VIEWS
+        ] + [
+            self._make_source("SNOWFLAKE.TELEMETRY.EVENTS", "distributed_tracing"),
+        ]
+        for source in all_sources:
+            result = get_source_defaults(source)
+            assert MIN_INTERVAL_SECONDS <= result["interval_seconds"] <= MAX_INTERVAL_SECONDS
+            if result["overlap_minutes"] is not None:
+                assert MIN_OVERLAP_MINUTES <= result["overlap_minutes"] <= MAX_OVERLAP_MINUTES

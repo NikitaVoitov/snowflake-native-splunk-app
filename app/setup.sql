@@ -221,3 +221,41 @@ GRANT USAGE ON PROCEDURE app_public.validate_otlp_certificate_pem(VARCHAR)
 
 -- The PEM certificate is stored in _internal.otlp_pem_secret (app-owned).
 -- The save_pem_secret SP writes the PEM; test_otlp_connection_with_secret reads it.
+
+-- ─────────────────────────────────────────────────────────────────
+-- RCR Source Discovery — DISABLED (warehouse runtime limitation)
+--
+-- Restricted Caller's Rights procedures cannot work from Streamlit
+-- warehouse runtime: the session always runs as the app owner, so
+-- the "caller" in the RCR procedure is the app owner role — not
+-- the consumer. SHOW commands return 0 rows because the app owner
+-- lacks visibility into consumer objects.
+--
+-- RCR would only work with container-runtime Streamlit
+-- (st.connection("snowflake-callers-rights")), which entered Preview
+-- on 2026-02-27 and is NOT available for Native App Streamlit.
+--
+-- Current discovery uses SNOWFLAKE.ACCOUNT_USAGE.TABLES (owner's
+-- rights) via IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE.
+--
+-- Kept here for future migration to container runtime.
+-- ─────────────────────────────────────────────────────────────────
+-- CREATE OR REPLACE PROCEDURE app_public.discover_event_tables_caller()
+-- RETURNS TABLE (database_name VARCHAR, schema_name VARCHAR, table_name VARCHAR)
+-- LANGUAGE SQL
+-- EXECUTE AS RESTRICTED CALLER
+-- AS
+-- $$
+-- BEGIN
+--     SHOW EVENT TABLES IN ACCOUNT;
+--     LET rs RESULTSET := (
+--         SELECT "database_name", "schema_name", "name"
+--         FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+--         ORDER BY "database_name", "schema_name", "name"
+--     );
+--     RETURN TABLE(rs);
+-- END;
+-- $$;
+--
+-- GRANT USAGE ON PROCEDURE app_public.discover_event_tables_caller()
+--     TO APPLICATION ROLE app_admin;

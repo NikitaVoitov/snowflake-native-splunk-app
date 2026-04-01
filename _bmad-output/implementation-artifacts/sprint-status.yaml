@@ -52,8 +52,8 @@
 #   the actual dependency order and removing forward-dependency workarounds.
 
 generated: 2026-03-15
-last_updated: 2026-03-31
-updated_by: story 3-1 done (code review fixes applied)
+last_updated: 2026-04-01
+updated_by: story 3-2 done (implemented and reviewed)
 project: snowflake-native-splunk-app
 project_key: NOKEY
 tracking_system: file-system
@@ -143,7 +143,7 @@ sprints:
         status: in-progress
         stories:
           3-1-source-discovery-and-pack-toggles: done
-          3-2-per-source-selection-and-intervals: backlog
+          3-2-per-source-selection-and-intervals: done
           3-3-save-source-configuration: backlog
         retrospective: optional
 

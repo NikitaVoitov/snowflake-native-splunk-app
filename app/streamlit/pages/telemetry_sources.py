@@ -1,6 +1,9 @@
 # Target: Streamlit 1.52.2 on Snowflake Warehouse Runtime
 from __future__ import annotations
 
+import contextlib
+from datetime import datetime
+
 import pandas as pd
 from snowflake.snowpark.exceptions import SnowparkSQLException
 from utils.config import load_config_like, save_config, save_config_batch
@@ -10,6 +13,7 @@ from utils.source_discovery import (
     CategoryDef,
     DiscoveredSource,
     discover_all_sources,
+    get_source_defaults,
     resolve_saved_poll_states,
     source_slug,
 )
@@ -22,7 +26,9 @@ import streamlit as st
 _DISCOVERY_KEY = "ts_discovered_sources"
 _DISCOVERY_ERROR_KEY = "ts_discovery_error"
 _DISCOVERY_SIGNATURE_KEY = "ts_discovery_signature"
-_DISCOVERY_VISIT_KEY = "ts_discovery_visit"
+_DISCOVERY_RUNNING_KEY = "ts_discovery_running"
+_DISCOVERY_TIMESTAMP_KEY = "ts_last_discovered"
+_DISCOVERY_DONE_KEY = "ts_discovery_done_once"
 _SAVED_STATE_KEY = "ts_saved_state"
 _JUST_SAVED_KEY = "ts_just_saved"
 _POST_SAVE_RELOAD_KEY = "ts_post_save_reload"
@@ -92,6 +98,64 @@ div[data-testid="stElementContainer"]:has(.footer-controls-marker)
     width: auto !important;
 }
 
+div[data-testid="stElementContainer"]:has(.info-bar-marker) {
+    display: none !important;
+}
+div[data-testid="stElementContainer"]:has(.info-bar-marker)
+    + div[data-testid="stLayoutWrapper"] div[data-testid="stHorizontalBlock"] {
+    background-color: rgba(151, 166, 195, 0.15);
+    border-radius: 0.5rem;
+    padding: 0.75rem 1rem;
+    align-items: center !important;
+    flex-wrap: nowrap !important;
+}
+div[data-testid="stElementContainer"]:has(.info-bar-marker)
+    + div[data-testid="stLayoutWrapper"] div[data-testid="stHorizontalBlock"]
+    div[data-testid="stMarkdownContainer"] {
+    margin-bottom: 0 !important;
+}
+div[data-testid="stElementContainer"]:has(.info-bar-marker)
+    + div[data-testid="stLayoutWrapper"] div[data-testid="stHorizontalBlock"]
+    div[data-testid="stMarkdownContainer"] p {
+    margin: 0 !important;
+}
+div[data-testid="stElementContainer"]:has(.info-bar-marker)
+    + div[data-testid="stLayoutWrapper"] div[data-testid="stHorizontalBlock"]
+    div[data-testid="stColumn"] {
+    margin: 0 !important;
+}
+div[data-testid="stElementContainer"]:has(.info-bar-marker)
+    + div[data-testid="stLayoutWrapper"] div[data-testid="stHorizontalBlock"]
+    div[data-testid="stColumn"]:first-child {
+    flex: 0 0 auto !important;
+    width: auto !important;
+}
+div[data-testid="stElementContainer"]:has(.info-bar-marker)
+    + div[data-testid="stLayoutWrapper"] div[data-testid="stHorizontalBlock"]
+    div[data-testid="stColumn"]:first-child span[role="img"] {
+    font-size: 1.25rem !important;
+    color: rgba(49, 51, 63, 0.6) !important;
+    vertical-align: middle !important;
+}
+div[data-testid="stElementContainer"]:has(.info-bar-marker)
+    + div[data-testid="stLayoutWrapper"] div[data-testid="stHorizontalBlock"]
+    div[data-testid="stColumn"]:nth-child(2) {
+    flex: 1 1 0 !important;
+    min-width: 0 !important;
+}
+div[data-testid="stElementContainer"]:has(.info-bar-marker)
+    + div[data-testid="stLayoutWrapper"] div[data-testid="stHorizontalBlock"]
+    div[data-testid="stColumn"]:last-child {
+    flex: 0 0 auto !important;
+    width: auto !important;
+}
+div[data-testid="stElementContainer"]:has(.info-bar-marker)
+    + div[data-testid="stLayoutWrapper"] div[data-testid="stHorizontalBlock"]
+    div[data-testid="stColumn"]:last-child div[data-testid="stButton"] button {
+    white-space: nowrap !important;
+    min-width: 10.5rem !important;
+}
+
 </style>
 """
 
@@ -119,6 +183,12 @@ def _editor_key(cat_key: str) -> str:
 
 if _DISCOVERY_ERROR_KEY not in st.session_state:
     st.session_state[_DISCOVERY_ERROR_KEY] = None
+if _DISCOVERY_RUNNING_KEY not in st.session_state:
+    st.session_state[_DISCOVERY_RUNNING_KEY] = False
+if _DISCOVERY_TIMESTAMP_KEY not in st.session_state:
+    st.session_state[_DISCOVERY_TIMESTAMP_KEY] = None
+if _DISCOVERY_DONE_KEY not in st.session_state:
+    st.session_state[_DISCOVERY_DONE_KEY] = False
 if _JUST_SAVED_KEY not in st.session_state:
     st.session_state[_JUST_SAVED_KEY] = False
 if _POST_SAVE_RELOAD_KEY not in st.session_state:
@@ -126,7 +196,13 @@ if _POST_SAVE_RELOAD_KEY not in st.session_state:
 
 for category in CATEGORIES:
     if _ss_pack_key(category.key) not in st.session_state:
-        st.session_state[_ss_pack_key(category.key)] = False
+        # Streamlit removes widget keys when navigating away from the page.
+        # Restore from the saved-state snapshot so the toggle reflects
+        # what was last persisted (or loaded from DB), not a hard False.
+        _saved = st.session_state.get(_SAVED_STATE_KEY, {})
+        st.session_state[_ss_pack_key(category.key)] = (
+            _saved.get("packs", {}).get(category.key, False)
+        )
     if _ss_expanded_key(category.key) not in st.session_state:
         st.session_state[_ss_expanded_key(category.key)] = False
     if _ss_editor_version_key(category.key) not in st.session_state:
@@ -143,27 +219,85 @@ def _source_signature(grouped: dict[str, list[DiscoveredSource]]) -> tuple[str, 
     return tuple(signature)
 
 
-def _run_discovery(session) -> dict[str, list[DiscoveredSource]] | None:
-    """Execute discovery and cache results in session state."""
-    current_visit = int(st.session_state.get("_nav_visit_seq", 0))
-    if st.session_state.get(_DISCOVERY_VISIT_KEY) != current_visit:
-        st.session_state.pop(_DISCOVERY_KEY, None)
-        st.session_state.pop(_DISCOVERY_SIGNATURE_KEY, None)
-        st.session_state[_DISCOVERY_VISIT_KEY] = current_visit
+def _start_discovery() -> None:
+    st.session_state[_DISCOVERY_RUNNING_KEY] = True
 
-    if _DISCOVERY_KEY in st.session_state and st.session_state[_DISCOVERY_KEY] is not None:
+
+def _render_info_bar() -> None:
+    """Render the info bar with separate icon, text, and 'Discover sources' button."""
+    timestamp = st.session_state.get(_DISCOVERY_TIMESTAMP_KEY)
+    is_running = st.session_state.get(_DISCOVERY_RUNNING_KEY, False)
+
+    st.markdown('<span class="info-bar-marker"></span>', unsafe_allow_html=True)
+    icon_col, text_col, btn_col = st.columns(
+        [0.3, 7.7, 2], vertical_alignment="center",
+    )
+
+    with icon_col:
+        st.markdown(":material/info:")
+
+    with text_col:
+        text = (
+            "Enable categories and individual sources to start collecting telemetry. "
+            "Custom views allow you to apply Snowflake masking and row-access policies "
+            "to exported data."
+        )
+        if timestamp:
+            ts_str = timestamp.strftime("%-I:%M:%S %p")
+            text += f" · :blue[Last discovered: {ts_str}]"
+        st.markdown(text)
+
+    with btn_col:
+        if is_running:
+            st.button(
+                "Discovering...",
+                icon="spinner",
+                disabled=True,
+                key="discover_btn",
+            )
+        else:
+            st.button(
+                "Discover sources",
+                icon=":material/sync:",
+                on_click=_start_discovery,
+                key="discover_btn",
+            )
+
+
+def _run_discovery(session) -> dict[str, list[DiscoveredSource]] | None:
+    """Execute discovery and cache results in session state.
+
+    Auto-runs on the very first visit to the page.  Subsequent runs require an
+    explicit click on the "Discover sources" button.
+    """
+    is_running = st.session_state.get(_DISCOVERY_RUNNING_KEY, False)
+    has_run_before = st.session_state.get(_DISCOVERY_DONE_KEY, False)
+    has_cache = (
+        _DISCOVERY_KEY in st.session_state
+        and st.session_state[_DISCOVERY_KEY] is not None
+    )
+
+    if has_cache and not is_running:
         return st.session_state[_DISCOVERY_KEY]
+
+    should_run = is_running or not has_run_before
+    if not should_run:
+        return st.session_state.get(_DISCOVERY_KEY)
 
     if session is None:
         st.session_state[_DISCOVERY_ERROR_KEY] = "Snowflake session unavailable."
         st.session_state[_DISCOVERY_KEY] = None
+        st.session_state[_DISCOVERY_RUNNING_KEY] = False
         return None
 
     try:
-        with st.spinner("Discovering telemetry sources..."):
-            grouped = discover_all_sources(session)
+        grouped = discover_all_sources(session)
         st.session_state[_DISCOVERY_KEY] = grouped
         st.session_state[_DISCOVERY_ERROR_KEY] = None
+        st.session_state[_DISCOVERY_DONE_KEY] = True
+        st.session_state[_DISCOVERY_RUNNING_KEY] = False
+        st.session_state[_DISCOVERY_TIMESTAMP_KEY] = datetime.now()
+        st.session_state.pop(_DISCOVERY_SIGNATURE_KEY, None)
         return grouped
     except SnowparkSQLException as exc:
         st.session_state[_DISCOVERY_ERROR_KEY] = (
@@ -171,27 +305,38 @@ def _run_discovery(session) -> dict[str, list[DiscoveredSource]] | None:
             f"to the application to enable source discovery. Details: {exc!s}"
         )
         st.session_state[_DISCOVERY_KEY] = None
+        st.session_state[_DISCOVERY_RUNNING_KEY] = False
         return None
+
+
+_ALL_DF_COLUMNS = [
+    "fqn", "poll", "view_name", "interval_seconds",
+    "overlap_minutes", "telemetry_types", "telemetry_sources",
+]
 
 
 def _build_category_df(
     sources: list[DiscoveredSource],
     poll_values: list[bool],
+    category: CategoryDef,  # noqa: ARG001 — reserved for future per-category logic
 ) -> pd.DataFrame:
     rows = []
     for source, poll in zip(sources, poll_values, strict=False):
+        defaults = get_source_defaults(source)
         rows.append(
             {
                 "fqn": source.fqn,
                 "poll": poll,
                 "view_name": source.view_name,
+                "interval_seconds": defaults["interval_seconds"],
+                "overlap_minutes": defaults["overlap_minutes"],
                 "telemetry_types": source.telemetry_types,
                 "telemetry_sources": source.telemetry_sources,
             }
         )
 
     return pd.DataFrame(rows) if rows else pd.DataFrame(
-        columns=["fqn", "poll", "view_name", "telemetry_types", "telemetry_sources"]
+        columns=_ALL_DF_COLUMNS,
     )
 
 
@@ -216,7 +361,10 @@ def _load_saved_controls(
     """Load persisted pack/source state into session state."""
     signature = _source_signature(grouped)
     if st.session_state.get(_DISCOVERY_SIGNATURE_KEY) == signature:
-        return
+        # Verify saved-state snapshot exists (first visit may have stale
+        # signature from a prior discovery without a DB load yet).
+        if _SAVED_STATE_KEY in st.session_state:
+            return
 
     pack_config: dict[str, str] = {}
     source_config: dict[str, str] = {}
@@ -232,6 +380,8 @@ def _load_saved_controls(
 
     slug_to_fqn: dict[str, str] = {}
     slug_to_poll: dict[str, bool] = {}
+    slug_to_interval: dict[str, int] = {}
+    slug_to_overlap: dict[str, int] = {}
     for key, value in source_config.items():
         if key.endswith(".view_fqn"):
             slug = key[len("source.") : -len(".view_fqn")]
@@ -239,11 +389,29 @@ def _load_saved_controls(
         elif key.endswith(".poll"):
             slug = key[len("source.") : -len(".poll")]
             slug_to_poll[slug] = value.strip().lower() == "true"
+        elif key.endswith(".poll_interval_seconds"):
+            slug = key[len("source.") : -len(".poll_interval_seconds")]
+            with contextlib.suppress(ValueError, TypeError):
+                slug_to_interval[slug] = int(value.strip())
+        elif key.endswith(".overlap_minutes"):
+            slug = key[len("source.") : -len(".overlap_minutes")]
+            with contextlib.suppress(ValueError, TypeError):
+                slug_to_overlap[slug] = int(value.strip())
 
     saved_source_polls = {
         fqn: slug_to_poll[slug]
         for slug, fqn in slug_to_fqn.items()
         if slug in slug_to_poll
+    }
+    saved_intervals: dict[str, int] = {
+        fqn: slug_to_interval[slug]
+        for slug, fqn in slug_to_fqn.items()
+        if slug in slug_to_interval
+    }
+    saved_overlaps: dict[str, int] = {
+        fqn: slug_to_overlap[slug]
+        for slug, fqn in slug_to_fqn.items()
+        if slug in slug_to_overlap
     }
 
     for category in CATEGORIES:
@@ -256,10 +424,19 @@ def _load_saved_controls(
             grouped.get(category.key, []),
             saved_source_polls,
         )
-        st.session_state[_ss_df_key(category.key)] = _build_category_df(
+        df = _build_category_df(
             grouped.get(category.key, []),
             poll_values,
+            category,
         )
+        for idx, source in enumerate(grouped.get(category.key, [])):
+            if idx >= len(df):
+                break
+            if source.fqn in saved_intervals and "interval_seconds" in df.columns:
+                df.at[idx, "interval_seconds"] = saved_intervals[source.fqn]
+            if source.fqn in saved_overlaps and "overlap_minutes" in df.columns:
+                df.at[idx, "overlap_minutes"] = saved_overlaps[source.fqn]
+        st.session_state[_ss_df_key(category.key)] = df
         _reset_editor_widget(category.key)
 
     st.session_state[_SAVED_STATE_KEY] = _capture_current_state(grouped)
@@ -270,45 +447,58 @@ def _load_saved_controls(
         st.session_state[_JUST_SAVED_KEY] = False
 
 
-def _effective_polls(df: pd.DataFrame, editor_key: str) -> pd.Series:
-    """Overlay editor edits onto the base poll column."""
-    if "poll" not in df.columns or df.empty:
-        return pd.Series(dtype=bool)
+def _effective_values(df: pd.DataFrame, editor_key: str, column: str) -> pd.Series:
+    """Overlay editor edits for *column* onto the base DataFrame."""
+    if column not in df.columns or df.empty:
+        return pd.Series(dtype=object)
 
-    polls = df["poll"].copy()
+    values = df[column].copy()
     edits = st.session_state.get(editor_key)
     if edits and isinstance(edits, dict):
         for row_idx, changes in edits.get("edited_rows", {}).items():
-            if "poll" not in changes:
+            if column not in changes:
                 continue
             idx = int(row_idx)
-            if 0 <= idx < len(polls):
-                polls.iloc[idx] = bool(changes["poll"])
-    return polls
+            if 0 <= idx < len(values):
+                values.iloc[idx] = changes[column]
+    return values
+
+
+def _effective_polls(df: pd.DataFrame, editor_key: str) -> pd.Series:
+    """Overlay editor edits onto the base poll column."""
+    series = _effective_values(df, editor_key, "poll")
+    return series.astype(bool) if not series.empty else pd.Series(dtype=bool)
 
 
 def _capture_current_state(
     grouped: dict[str, list[DiscoveredSource]],
-) -> dict[str, dict[str, bool]]:
-    """Capture the current pack and per-source poll values."""
+) -> dict[str, object]:
+    """Capture the current pack and per-source control values."""
     pack_state: dict[str, bool] = {}
-    source_state: dict[str, bool] = {}
+    source_state: dict[str, dict[str, object]] = {}
 
     for category in CATEGORIES:
         pack_state[category.key] = bool(st.session_state.get(_ss_pack_key(category.key), False))
         df: pd.DataFrame = st.session_state.get(
             _ss_df_key(category.key),
-            _build_category_df([], []),
+            _build_category_df([], [], category),
         )
-        polls = _effective_polls(df, _editor_key(category.key))
+        editor_key = _editor_key(category.key)
+        polls = _effective_polls(df, editor_key)
+        intervals = _effective_values(df, editor_key, "interval_seconds")
+        overlaps = _effective_values(df, editor_key, "overlap_minutes")
         if "fqn" not in df.columns:
             continue
-        for fqn, poll in zip(df["fqn"], polls, strict=False):
-            source_state[str(fqn)] = bool(poll)
+        for i, fqn in enumerate(df["fqn"]):
+            entry: dict[str, object] = {"poll": bool(polls.iloc[i])}
+            if not intervals.empty:
+                entry["interval_seconds"] = int(intervals.iloc[i])
+            if not overlaps.empty and overlaps.iloc[i] is not None and pd.notna(overlaps.iloc[i]):
+                entry["overlap_minutes"] = int(overlaps.iloc[i])
+            source_state[str(fqn)] = entry
 
-        # Ensure newly discovered sources with no editor state are still tracked.
         for source in grouped.get(category.key, []):
-            source_state.setdefault(source.fqn, False)
+            source_state.setdefault(source.fqn, {"poll": False})
 
     return {"packs": pack_state, "sources": source_state}
 
@@ -326,13 +516,18 @@ def _apply_pack_state(cat_key: str, _enabled: bool) -> None:
     df: pd.DataFrame = st.session_state[df_key].copy()
     if "poll" in df.columns:
         df["poll"] = _effective_polls(df, editor_key)
+    for col in ("interval_seconds", "overlap_minutes"):
+        if col in df.columns:
+            df[col] = _effective_values(df, editor_key, col)
     st.session_state[df_key] = df
 
     _reset_editor_widget(cat_key)
     _mark_unsaved_changes()
 
 
-def _reset_to_defaults() -> None:
+def _reset_to_defaults(
+    grouped: dict[str, list[DiscoveredSource]] | None = None,
+) -> None:
     """Reset all controls to default UI values (unsaved until persisted)."""
     for category in CATEGORIES:
         st.session_state[_ss_pack_key(category.key)] = False
@@ -340,6 +535,17 @@ def _reset_to_defaults() -> None:
         df: pd.DataFrame = st.session_state[df_key].copy()
         if "poll" in df.columns:
             df["poll"] = False
+
+        sources = (grouped or {}).get(category.key, [])
+        for idx, source in enumerate(sources):
+            if idx >= len(df):
+                break
+            defaults = get_source_defaults(source)
+            if "interval_seconds" in df.columns:
+                df.at[idx, "interval_seconds"] = defaults["interval_seconds"]
+            if "overlap_minutes" in df.columns:
+                df.at[idx, "overlap_minutes"] = defaults["overlap_minutes"]
+
         st.session_state[df_key] = df
         _reset_editor_widget(category.key)
     _mark_unsaved_changes()
@@ -347,17 +553,21 @@ def _reset_to_defaults() -> None:
 
 def _save_current_configuration(
     session,
-    current_state: dict[str, dict[str, bool]],
+    current_state: dict[str, object],
 ) -> None:
-    """Persist pack and per-source poll state to _internal.config (single SQL)."""
+    """Persist pack and per-source state to _internal.config (single SQL)."""
     pairs: dict[str, str] = {}
     for cat_key, enabled in current_state["packs"].items():
         pairs[f"pack_enabled.{cat_key}"] = "true" if enabled else "false"
 
-    for fqn, poll in current_state["sources"].items():
+    for fqn, entry in current_state["sources"].items():
         slug = source_slug(fqn)
         pairs[f"source.{slug}.view_fqn"] = fqn
-        pairs[f"source.{slug}.poll"] = "true" if poll else "false"
+        pairs[f"source.{slug}.poll"] = "true" if entry.get("poll") else "false"
+        if "interval_seconds" in entry:
+            pairs[f"source.{slug}.poll_interval_seconds"] = str(entry["interval_seconds"])
+        if "overlap_minutes" in entry:
+            pairs[f"source.{slug}.overlap_minutes"] = str(entry["overlap_minutes"])
 
     save_config_batch(session, pairs)
 
@@ -392,8 +602,10 @@ def _dot_color(enabled: bool, effective: int, total: int) -> str:
 
 
 def _display_columns(df: pd.DataFrame, cat: CategoryDef) -> list[str]:
-    columns = ["poll", "view_name"]
-    if cat.source_family == "event_table":
+    columns = ["poll", "view_name", "interval_seconds"]
+    if cat.source_family == "account_usage":
+        columns.append("overlap_minutes")
+    elif cat.source_family == "event_table":
         if "telemetry_types" in df.columns and df["telemetry_types"].astype(str).str.strip().ne("").any():
             columns.append("telemetry_types")
         if "telemetry_sources" in df.columns and df["telemetry_sources"].astype(str).str.strip().ne("").any():
@@ -573,7 +785,22 @@ def _render_category(cat: CategoryDef) -> None:
                 pinned=True,
             ),
             "view_name": st.column_config.TextColumn("View name"),
+            "interval_seconds": st.column_config.NumberColumn(
+                "Interval (s)",
+                min_value=60,
+                max_value=86400,
+                step=60,
+                help="Polling interval in seconds (min: 60, max: 86400)",
+            ),
         }
+        if "overlap_minutes" in display_cols:
+            column_config["overlap_minutes"] = st.column_config.NumberColumn(
+                "Overlap (min)",
+                min_value=1,
+                max_value=1440,
+                step=1,
+                help="Overlap window in minutes for watermark dedup (min: 1, max: 1440)",
+            )
         if "telemetry_types" in display_cols:
             column_config["telemetry_types"] = st.column_config.TextColumn(
                 "Telemetry types",
@@ -585,8 +812,9 @@ def _render_category(cat: CategoryDef) -> None:
                 width="medium",
             )
 
+        editable_cols = {"poll", "interval_seconds", "overlap_minutes"}
         disabled_cols: list[str] | bool = True if not enabled else [
-            column for column in display_cols if column != "poll"
+            column for column in display_cols if column not in editable_cols
         ]
 
         if not enabled:
@@ -629,7 +857,12 @@ def _render_footer(
         elif has_unsaved:
             st.caption("You have unsaved changes.")
     with fc2:
-        st.button("Reset to defaults", type="secondary", on_click=_reset_to_defaults)
+        st.button(
+            "Reset to defaults",
+            type="secondary",
+            on_click=_reset_to_defaults,
+            args=(grouped,),
+        )
     with fc3:
         save_clicked = st.button(
             "Saved" if just_saved else "Save configuration",
@@ -687,14 +920,19 @@ st.caption(
     "and ACCOUNT_USAGE views. Set polling intervals and batch sizes for each source."
 )
 
-st.info(
-    "Enable categories and individual sources to start collecting telemetry. "
-    "Custom views allow you to apply Snowflake masking and row-access policies "
-    "to exported data."
-)
+if not st.session_state.get(_DISCOVERY_DONE_KEY) and not st.session_state.get(
+    _DISCOVERY_RUNNING_KEY,
+):
+    st.session_state[_DISCOVERY_RUNNING_KEY] = True
+
+_render_info_bar()
 
 session = get_session()
+_discovery_was_running = st.session_state.get(_DISCOVERY_RUNNING_KEY, False)
 grouped = _run_discovery(session)
+
+if _discovery_was_running and grouped is not None:
+    st.rerun()
 
 if st.session_state.get(_DISCOVERY_ERROR_KEY):
     st.error(st.session_state[_DISCOVERY_ERROR_KEY])

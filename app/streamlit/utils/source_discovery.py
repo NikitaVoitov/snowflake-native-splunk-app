@@ -28,6 +28,24 @@ ACCOUNT_USAGE_MVP_VIEWS: tuple[str, ...] = (
     "LOCK_WAIT_HISTORY",
 )
 
+# ---------------------------------------------------------------------------
+# Per-source operational defaults
+# ---------------------------------------------------------------------------
+
+SOURCE_DEFAULTS: dict[str, dict[str, int]] = {
+    "QUERY_HISTORY": {"interval_seconds": 900, "overlap_minutes": 50},
+    "TASK_HISTORY": {"interval_seconds": 900, "overlap_minutes": 50},
+    "COMPLETE_TASK_GRAPHS": {"interval_seconds": 900, "overlap_minutes": 50},
+    "LOCK_WAIT_HISTORY": {"interval_seconds": 900, "overlap_minutes": 66},
+}
+
+EVENT_TABLE_DEFAULT_INTERVAL_SECONDS = 60
+
+MIN_INTERVAL_SECONDS = 60
+MAX_INTERVAL_SECONDS = 86400
+MIN_OVERLAP_MINUTES = 1
+MAX_OVERLAP_MINUTES = 1440
+
 
 class CategoryDef(NamedTuple):
     key: str
@@ -69,6 +87,7 @@ class DiscoveredSource(NamedTuple):
     is_custom: bool
     telemetry_types: str
     telemetry_sources: str
+    parent_account_usage_view: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -174,6 +193,66 @@ def resolve_saved_poll_states(
     return [saved_source_polls.get(source.fqn, False) for source in sources]
 
 
+def _extract_au_view_name(fqn: str) -> str | None:
+    """Extract the bare ACCOUNT_USAGE view name from an FQN like
+    ``SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY``."""
+    parts = fqn.upper().split(".")
+    if len(parts) == 3 and parts[1] == "ACCOUNT_USAGE":
+        return parts[2]
+    return None
+
+
+def _extract_parent_account_usage_view(
+    view_definition: str | None,
+) -> str | None:
+    """Return the referenced MVP ACCOUNT_USAGE view when it is unambiguous."""
+    normalized = normalize_view_definition(view_definition)
+    if not normalized:
+        return None
+
+    matches = {
+        view_name
+        for view_name in ACCOUNT_USAGE_MVP_VIEWS
+        if f"ACCOUNT_USAGE.{view_name}" in normalized
+    }
+    if len(matches) == 1:
+        return next(iter(matches))
+    return None
+
+
+def get_source_defaults(source: DiscoveredSource) -> dict[str, int | None]:
+    """Return default operational settings for a discovered source.
+
+    Returns ``{"interval_seconds": int, "overlap_minutes": int | None}``.
+    For ACCOUNT_USAGE sources, overlap is looked up from ``SOURCE_DEFAULTS``
+    by the bare view name.  For Event Table sources, overlap is ``None``.
+    """
+    if source.category == "distributed_tracing":
+        return {
+            "interval_seconds": EVENT_TABLE_DEFAULT_INTERVAL_SECONDS,
+            "overlap_minutes": None,
+        }
+
+    view_name = source.parent_account_usage_view or _extract_au_view_name(source.fqn)
+    if view_name and view_name in SOURCE_DEFAULTS:
+        defaults = SOURCE_DEFAULTS[view_name]
+        return {
+            "interval_seconds": defaults["interval_seconds"],
+            "overlap_minutes": defaults["overlap_minutes"],
+        }
+
+    if source.is_custom:
+        return {
+            "interval_seconds": 900,
+            "overlap_minutes": 50,
+        }
+
+    return {
+        "interval_seconds": 900,
+        "overlap_minutes": 50,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Custom view category assignment
 # ---------------------------------------------------------------------------
@@ -205,25 +284,31 @@ def classify_custom_view(
 def discover_event_tables(
     session: Session,
 ) -> list[DiscoveredSource]:
-    """Discover all event tables via ACCOUNT_USAGE.TABLES."""
+    """Discover all event tables via ``SNOWFLAKE.ACCOUNT_USAGE.TABLES``.
+
+    Requires ``IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE`` (requested in
+    ``manifest.yml``).  New event tables appear in ACCOUNT_USAGE with up to
+    ~45 min latency — acceptable because consumers typically create event
+    tables during onboarding, not continuously at runtime.
+
+    Note: RCR (Restricted Caller's Rights) procedures were evaluated but
+    cannot work from Streamlit warehouse runtime — the session always runs
+    as the app owner, so the "caller" in an RCR procedure is the app owner
+    role which lacks visibility into consumer objects.  RCR would only work
+    with container-runtime Streamlit (Preview, not available for Native Apps).
+    """
     rows = session.sql(_EVENT_TABLE_SQL).collect()
-    results: list[DiscoveredSource] = []
-    for row in rows:
-        catalog = str(row[0])
-        schema = str(row[1])
-        name = str(row[2])
-        fqn = f"{catalog}.{schema}.{name}"
-        results.append(
-            DiscoveredSource(
-                view_name=fqn,
-                fqn=fqn,
-                category="distributed_tracing",
-                is_custom=False,
-                telemetry_types="",
-                telemetry_sources="",
-            )
+    return [
+        DiscoveredSource(
+            view_name=f"{row[0]}.{row[1]}.{row[2]}",
+            fqn=f"{row[0]}.{row[1]}.{row[2]}",
+            category="distributed_tracing",
+            is_custom=False,
+            telemetry_types="",
+            telemetry_sources="",
         )
-    return results
+        for row in rows
+    ]
 
 
 def discover_account_usage_views(
@@ -268,6 +353,11 @@ def discover_custom_views(
         category = classify_custom_view(definition, event_table_tokens)
         if category is None:
             continue
+        parent_account_usage_view = (
+            _extract_parent_account_usage_view(definition)
+            if category == "query_performance"
+            else None
+        )
         results.append(
             DiscoveredSource(
                 view_name=fqn,
@@ -276,6 +366,7 @@ def discover_custom_views(
                 is_custom=True,
                 telemetry_types="",
                 telemetry_sources="",
+                parent_account_usage_view=parent_account_usage_view,
             )
         )
     return results
