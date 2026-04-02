@@ -6,7 +6,7 @@ from datetime import datetime
 
 import pandas as pd
 from snowflake.snowpark.exceptions import SnowparkSQLException
-from utils.config import load_config_like, save_config, save_config_batch
+from utils.config import load_config_like, save_config_batch
 from utils.snowflake import get_session
 from utils.source_discovery import (
     CATEGORIES,
@@ -876,7 +876,6 @@ def _render_footer(
         else:
             try:
                 _save_current_configuration(session, current_state)
-                save_config(session, "pack_enabled.dummy", "false")
                 st.session_state[_SAVED_STATE_KEY] = current_state
                 st.session_state[_JUST_SAVED_KEY] = True
                 st.session_state[_POST_SAVE_RELOAD_KEY] = True

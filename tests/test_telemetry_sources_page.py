@@ -6,13 +6,15 @@ import importlib
 import sys
 import types
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
+from snowflake.snowpark.exceptions import SnowparkSQLException
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "app" / "streamlit"))
 
-from utils.source_discovery import CATEGORIES, DiscoveredSource
+from utils.source_discovery import CATEGORIES, DiscoveredSource, source_slug
 
 
 class _SessionState(dict):
@@ -293,3 +295,364 @@ class TestTelemetrySourcesPageHelpers:
         assert et_df["overlap_minutes"].iloc[0] is None
         assert telemetry_page.st.session_state[telemetry_page._ss_pack_key(au_category.key)] is False
         assert telemetry_page.st.session_state[telemetry_page._ss_pack_key(et_category.key)] is False
+
+
+# ---------------------------------------------------------------------------
+# Helpers for persistence round-trip tests
+# ---------------------------------------------------------------------------
+def _mixed_grouped():
+    """Two AU sources and one ET source — the canonical mixed test scenario."""
+    au_cat = _account_usage_category()
+    et_cat = _event_table_category()
+    return {
+        au_cat.key: [
+            _make_source("SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY", au_cat.key),
+            _make_source("SNOWFLAKE.ACCOUNT_USAGE.LOCK_WAIT_HISTORY", au_cat.key),
+        ],
+        et_cat.key: [
+            _make_source("SNOWFLAKE.TELEMETRY.EVENTS", et_cat.key),
+        ],
+    }
+
+
+def _setup_for_save(module, grouped, *, au_polls=None, et_polls=None):
+    """Prime session state with DataFrames so capture/save can run."""
+    au_cat = _account_usage_category()
+    et_cat = _event_table_category()
+    au_sources = grouped.get(au_cat.key, [])
+    et_sources = grouped.get(et_cat.key, [])
+    au_polls = au_polls or [False] * len(au_sources)
+    et_polls = et_polls or [False] * len(et_sources)
+
+    module.st.session_state[module._ss_df_key(au_cat.key)] = (
+        module._build_category_df(au_sources, au_polls, au_cat)
+    )
+    module.st.session_state[module._ss_df_key(et_cat.key)] = (
+        module._build_category_df(et_sources, et_polls, et_cat)
+    )
+    module.st.session_state[module._ss_pack_key(au_cat.key)] = True
+    module.st.session_state[module._ss_pack_key(et_cat.key)] = True
+    module.st.session_state[module._ss_editor_version_key(au_cat.key)] = 0
+    module.st.session_state[module._ss_editor_version_key(et_cat.key)] = 0
+
+
+def _capture_save_pairs(module, state):
+    """Call _save_current_configuration and return the pairs dict it would write."""
+    captured: dict[str, str] = {}
+    original = module.save_config_batch
+
+    def spy(session, pairs):
+        captured.update(pairs)
+
+    module.save_config_batch = spy
+    try:
+        module._save_current_configuration(MagicMock(), state)
+    finally:
+        module.save_config_batch = original
+    return captured
+
+
+class TestSaveCurrentConfiguration:
+    """Task 5.1 — verify _save_current_configuration produces correct config pairs."""
+
+    def test_save_produces_correct_keys_for_mixed_sources(self, telemetry_page):
+        grouped = _mixed_grouped()
+        _setup_for_save(telemetry_page, grouped, au_polls=[True, False], et_polls=[True])
+
+        telemetry_page.st.session_state[
+            telemetry_page._ss_df_key(_account_usage_category().key)
+        ].at[0, "interval_seconds"] = 1800
+
+        state = telemetry_page._capture_current_state(grouped)
+        captured_pairs = _capture_save_pairs(telemetry_page, state)
+
+        assert captured_pairs["pack_enabled.distributed_tracing"] == "true"
+        assert captured_pairs["pack_enabled.query_performance"] == "true"
+
+        qh_slug = source_slug("SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY")
+        assert captured_pairs[f"source.{qh_slug}.view_fqn"] == "SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY"
+        assert captured_pairs[f"source.{qh_slug}.poll"] == "true"
+        assert captured_pairs[f"source.{qh_slug}.poll_interval_seconds"] == "1800"
+        assert f"source.{qh_slug}.overlap_minutes" in captured_pairs
+
+        lw_slug = source_slug("SNOWFLAKE.ACCOUNT_USAGE.LOCK_WAIT_HISTORY")
+        assert captured_pairs[f"source.{lw_slug}.poll"] == "false"
+        assert f"source.{lw_slug}.overlap_minutes" in captured_pairs
+
+        et_slug = source_slug("SNOWFLAKE.TELEMETRY.EVENTS")
+        assert captured_pairs[f"source.{et_slug}.view_fqn"] == "SNOWFLAKE.TELEMETRY.EVENTS"
+        assert captured_pairs[f"source.{et_slug}.poll"] == "true"
+        assert captured_pairs[f"source.{et_slug}.poll_interval_seconds"] == "60"
+        assert f"source.{et_slug}.overlap_minutes" not in captured_pairs
+
+    def test_save_does_not_write_pack_enabled_dummy(self, telemetry_page):
+        grouped = _mixed_grouped()
+        _setup_for_save(telemetry_page, grouped)
+
+        state = telemetry_page._capture_current_state(grouped)
+        captured_pairs = _capture_save_pairs(telemetry_page, state)
+
+        assert "pack_enabled.dummy" not in captured_pairs
+
+
+class TestLoadSavedControlsRoundTrip:
+    """Task 5.2 — verify save→load round-trip restores exact state."""
+
+    def test_round_trip_restores_saved_values(self, telemetry_page):
+        grouped = _mixed_grouped()
+        _setup_for_save(
+            telemetry_page, grouped,
+            au_polls=[True, False], et_polls=[True],
+        )
+        au_cat = _account_usage_category()
+        et_cat = _event_table_category()
+
+        telemetry_page.st.session_state[
+            telemetry_page._ss_df_key(au_cat.key)
+        ].at[0, "interval_seconds"] = 1800
+        telemetry_page.st.session_state[
+            telemetry_page._ss_df_key(au_cat.key)
+        ].at[0, "overlap_minutes"] = 120
+
+        state_before_save = telemetry_page._capture_current_state(grouped)
+        saved_db = _capture_save_pairs(telemetry_page, state_before_save)
+
+        def mock_load_config_like(_session, prefix):
+            return {k: v for k, v in saved_db.items() if k.startswith(prefix)}
+
+        original_load = telemetry_page.load_config_like
+        telemetry_page.load_config_like = mock_load_config_like
+        telemetry_page.st.session_state.pop(telemetry_page._DISCOVERY_SIGNATURE_KEY, None)
+        telemetry_page.st.session_state.pop(telemetry_page._SAVED_STATE_KEY, None)
+        try:
+            telemetry_page._load_saved_controls(MagicMock(), grouped)
+        finally:
+            telemetry_page.load_config_like = original_load
+
+        state_after_load = telemetry_page._capture_current_state(grouped)
+        assert state_after_load == state_before_save
+
+        au_df = telemetry_page.st.session_state[telemetry_page._ss_df_key(au_cat.key)]
+        assert au_df["interval_seconds"].iloc[0] == 1800
+        assert au_df["overlap_minutes"].iloc[0] == 120
+        assert bool(au_df["poll"].iloc[0]) is True
+        assert bool(au_df["poll"].iloc[1]) is False
+
+        et_df = telemetry_page.st.session_state[telemetry_page._ss_df_key(et_cat.key)]
+        assert bool(et_df["poll"].iloc[0]) is True
+
+        assert telemetry_page.st.session_state[telemetry_page._ss_pack_key(au_cat.key)] is True
+        assert telemetry_page.st.session_state[telemetry_page._ss_pack_key(et_cat.key)] is True
+
+
+class TestCaptureCurrentState:
+    """Task 5.3 — verify _capture_current_state reflects editor-modified values."""
+
+    def test_reflects_editor_interval_change(self, telemetry_page):
+        grouped = _mixed_grouped()
+        _setup_for_save(telemetry_page, grouped, au_polls=[True, False])
+        au_cat = _account_usage_category()
+
+        editor_key = telemetry_page._editor_key(au_cat.key)
+        telemetry_page.st.session_state[editor_key] = {
+            "edited_rows": {"0": {"interval_seconds": 7200}},
+        }
+
+        state = telemetry_page._capture_current_state(grouped)
+        qh_state = state["sources"]["SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY"]
+        assert qh_state["interval_seconds"] == 7200
+
+    def test_et_source_has_no_overlap_key(self, telemetry_page):
+        grouped = _mixed_grouped()
+        _setup_for_save(telemetry_page, grouped, et_polls=[True])
+
+        state = telemetry_page._capture_current_state(grouped)
+        et_state = state["sources"]["SNOWFLAKE.TELEMETRY.EVENTS"]
+        assert "overlap_minutes" not in et_state
+
+    def test_au_source_has_overlap_key(self, telemetry_page):
+        grouped = _mixed_grouped()
+        _setup_for_save(telemetry_page, grouped, au_polls=[True, False])
+
+        state = telemetry_page._capture_current_state(grouped)
+        qh_state = state["sources"]["SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY"]
+        assert "overlap_minutes" in qh_state
+
+
+class TestUnsavedChangesDetection:
+    """Task 5.4 — verify no false positives after load and correct diffs on edit."""
+
+    def test_no_false_positive_after_load(self, telemetry_page):
+        grouped = _mixed_grouped()
+        _setup_for_save(telemetry_page, grouped)
+
+        saved_state = telemetry_page._capture_current_state(grouped)
+        telemetry_page.st.session_state[telemetry_page._SAVED_STATE_KEY] = saved_state
+
+        current_state = telemetry_page._capture_current_state(grouped)
+        assert current_state == saved_state
+
+    def test_detects_poll_change(self, telemetry_page):
+        grouped = _mixed_grouped()
+        _setup_for_save(telemetry_page, grouped, au_polls=[False, False])
+
+        saved_state = telemetry_page._capture_current_state(grouped)
+        telemetry_page.st.session_state[telemetry_page._SAVED_STATE_KEY] = saved_state
+
+        editor_key = telemetry_page._editor_key(_account_usage_category().key)
+        telemetry_page.st.session_state[editor_key] = {
+            "edited_rows": {"0": {"poll": True}},
+        }
+
+        current_state = telemetry_page._capture_current_state(grouped)
+        assert current_state != saved_state
+
+    def test_detects_pack_toggle_change(self, telemetry_page):
+        grouped = _mixed_grouped()
+        _setup_for_save(telemetry_page, grouped)
+
+        saved_state = telemetry_page._capture_current_state(grouped)
+        telemetry_page.st.session_state[telemetry_page._SAVED_STATE_KEY] = saved_state
+
+        au_cat = _account_usage_category()
+        telemetry_page.st.session_state[telemetry_page._ss_pack_key(au_cat.key)] = False
+
+        current_state = telemetry_page._capture_current_state(grouped)
+        assert current_state != saved_state
+
+    def test_detects_interval_change(self, telemetry_page):
+        grouped = _mixed_grouped()
+        _setup_for_save(telemetry_page, grouped, au_polls=[True, False])
+
+        saved_state = telemetry_page._capture_current_state(grouped)
+        telemetry_page.st.session_state[telemetry_page._SAVED_STATE_KEY] = saved_state
+
+        editor_key = telemetry_page._editor_key(_account_usage_category().key)
+        telemetry_page.st.session_state[editor_key] = {
+            "edited_rows": {"0": {"interval_seconds": 9999}},
+        }
+
+        current_state = telemetry_page._capture_current_state(grouped)
+        assert current_state != saved_state
+
+    def test_detects_overlap_change(self, telemetry_page):
+        grouped = _mixed_grouped()
+        _setup_for_save(telemetry_page, grouped, au_polls=[True, False])
+
+        saved_state = telemetry_page._capture_current_state(grouped)
+        telemetry_page.st.session_state[telemetry_page._SAVED_STATE_KEY] = saved_state
+
+        editor_key = telemetry_page._editor_key(_account_usage_category().key)
+        telemetry_page.st.session_state[editor_key] = {
+            "edited_rows": {"0": {"overlap_minutes": 999}},
+        }
+
+        current_state = telemetry_page._capture_current_state(grouped)
+        assert current_state != saved_state
+
+
+class TestResetSaveRoundTrip:
+    """Task 5.5 — verify reset-to-defaults → save correctly persists defaults."""
+
+    def test_reset_then_save_persists_defaults(self, telemetry_page):
+        grouped = _mixed_grouped()
+        _setup_for_save(telemetry_page, grouped, au_polls=[True, False], et_polls=[True])
+        au_cat = _account_usage_category()
+
+        telemetry_page.st.session_state[
+            telemetry_page._ss_df_key(au_cat.key)
+        ].at[0, "interval_seconds"] = 9999
+        telemetry_page.st.session_state[
+            telemetry_page._ss_df_key(au_cat.key)
+        ].at[0, "overlap_minutes"] = 999
+
+        telemetry_page._reset_to_defaults(grouped)
+
+        state = telemetry_page._capture_current_state(grouped)
+        captured_pairs = _capture_save_pairs(telemetry_page, state)
+
+        qh_slug = source_slug("SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY")
+        assert captured_pairs[f"source.{qh_slug}.poll_interval_seconds"] == "900"
+        assert captured_pairs[f"source.{qh_slug}.overlap_minutes"] == "50"
+        assert captured_pairs[f"source.{qh_slug}.poll"] == "false"
+        assert captured_pairs["pack_enabled.query_performance"] == "false"
+        assert captured_pairs["pack_enabled.distributed_tracing"] == "false"
+
+
+class TestSaveErrorHandling:
+    """Task 5.6 — verify SnowparkSQLException during save preserves unsaved state."""
+
+    def test_save_error_preserves_unsaved_state(self, telemetry_page):
+        grouped = _mixed_grouped()
+        _setup_for_save(telemetry_page, grouped, au_polls=[True, False])
+
+        telemetry_page.st.session_state[telemetry_page._JUST_SAVED_KEY] = False
+        telemetry_page.st.session_state[telemetry_page._SAVED_STATE_KEY] = {
+            "packs": {}, "sources": {},
+        }
+
+        state = telemetry_page._capture_current_state(grouped)
+
+        def exploding_batch(session, pairs):
+            raise SnowparkSQLException("simulated write failure")
+
+        original = telemetry_page.save_config_batch
+        telemetry_page.save_config_batch = exploding_batch
+        try:
+            with pytest.raises(SnowparkSQLException, match="simulated write failure"):
+                telemetry_page._save_current_configuration(MagicMock(), state)
+        finally:
+            telemetry_page.save_config_batch = original
+
+        assert telemetry_page.st.session_state[telemetry_page._JUST_SAVED_KEY] is False
+
+
+class TestEventTableOverlapExclusion:
+    """Task 5.1/AC7 — overlap_minutes is absent for ET sources in save output."""
+
+    def test_et_source_overlap_not_in_saved_pairs(self, telemetry_page):
+        grouped = _mixed_grouped()
+        _setup_for_save(telemetry_page, grouped, et_polls=[True])
+
+        state = telemetry_page._capture_current_state(grouped)
+        captured_pairs = _capture_save_pairs(telemetry_page, state)
+
+        et_slug = source_slug("SNOWFLAKE.TELEMETRY.EVENTS")
+        overlap_keys = [k for k in captured_pairs if k.endswith(".overlap_minutes")]
+        et_overlap_keys = [k for k in overlap_keys if et_slug in k]
+        assert et_overlap_keys == []
+
+    def test_load_tolerates_missing_overlap_for_et(self, telemetry_page):
+        et_cat = _event_table_category()
+        et_fqn = "SNOWFLAKE.TELEMETRY.EVENTS"
+        et_slug = source_slug(et_fqn)
+        grouped = {
+            _account_usage_category().key: [],
+            et_cat.key: [_make_source(et_fqn, et_cat.key)],
+        }
+        saved_db = {
+            f"pack_enabled.{et_cat.key}": "true",
+            f"source.{et_slug}.view_fqn": et_fqn,
+            f"source.{et_slug}.poll": "true",
+            f"source.{et_slug}.poll_interval_seconds": "120",
+        }
+
+        def mock_load_config_like(_session, prefix):
+            return {k: v for k, v in saved_db.items() if k.startswith(prefix)}
+
+        original_load = telemetry_page.load_config_like
+        telemetry_page.load_config_like = mock_load_config_like
+
+        for cat in CATEGORIES:
+            telemetry_page.st.session_state[telemetry_page._ss_editor_version_key(cat.key)] = 0
+        telemetry_page.st.session_state.pop(telemetry_page._DISCOVERY_SIGNATURE_KEY, None)
+        telemetry_page.st.session_state.pop(telemetry_page._SAVED_STATE_KEY, None)
+        try:
+            telemetry_page._load_saved_controls(MagicMock(), grouped)
+        finally:
+            telemetry_page.load_config_like = original_load
+
+        et_df = telemetry_page.st.session_state[telemetry_page._ss_df_key(et_cat.key)]
+        assert bool(et_df["poll"].iloc[0]) is True
+        assert et_df["interval_seconds"].iloc[0] == 120
+        assert et_df["overlap_minutes"].iloc[0] is None
