@@ -1,6 +1,6 @@
 # Story 3.3: Save source configuration
 
-Status: review
+Status: done
 
 ## Story
 
@@ -102,8 +102,7 @@ Stories 3.1 and 3.2 **already implemented** the save/load infrastructure. Story 
 ```python
 # _render_footer() line 873:
 if save_clicked:
-    _save_current_configuration(session, current_state)
-    save_config(session, "pack_enabled.dummy", "false")  # legacy artifact to remove in this story
+    _save_current_configuration(session, current_state, grouped)
     st.session_state[_SAVED_STATE_KEY] = current_state
     st.session_state[_JUST_SAVED_KEY] = True
     st.session_state[_POST_SAVE_RELOAD_KEY] = True
@@ -122,9 +121,14 @@ The `st.rerun()` triggers a full page rerun. Because `_DISCOVERY_SIGNATURE_KEY` 
 # 1. pack_config = load_config_like(session, "pack_enabled.")
 # 2. source_config = load_config_like(session, "source.")
 # 3. Parses slug→FQN, slug→poll, slug→interval, slug→overlap
-# 4. Sets session state: pack toggles, per-source DataFrames with saved values
-# 5. Captures _SAVED_STATE_KEY snapshot
+# 4. Applies saved overlaps only to ACCOUNT_USAGE rows
+# 5. Sets session state: pack toggles, per-source DataFrames with saved values
+# 6. Captures _SAVED_STATE_KEY snapshot and returns True
 ```
+
+If config loading fails with `SnowparkSQLException`, `_load_saved_controls()` now returns
+`False`, preserves the previously loaded UI/session snapshot, and surfaces the error instead
+of rebuilding a default state and treating it as saved.
 
 ### Unsaved-changes detection
 
@@ -163,17 +167,29 @@ for category in CATEGORIES:
 
 In `_capture_current_state()`:
 ```python
-if not overlaps.empty and overlaps.iloc[i] is not None and pd.notna(overlaps.iloc[i]):
+if (
+    category.source_family == "account_usage"
+    and not overlaps.empty
+    and overlaps.iloc[i] is not None
+    and pd.notna(overlaps.iloc[i])
+):
     entry["overlap_minutes"] = int(overlaps.iloc[i])
 ```
 
-This skips `None` and `NaN` overlap values, which is the case for Event Table sources (their `overlap_minutes` column is `None` from `get_source_defaults()`). In `_save_current_configuration()`:
+This story now enforces the Event Table rule in **all three** persistence phases:
+
+1. **Load:** `_load_saved_controls()` only applies saved overlaps to ACCOUNT_USAGE rows, so stale `source.<et_slug>.overlap_minutes` rows in `_internal.config` are ignored.
+2. **Capture:** `_capture_current_state()` only includes `overlap_minutes` for ACCOUNT_USAGE categories.
+3. **Save:** `_save_current_configuration()` only writes `source.<slug>.overlap_minutes` for discovered ACCOUNT_USAGE sources.
+
+That means even if a legacy or manually inserted Event Table overlap key exists in `_internal.config`,
+the UI will not rehydrate it and a subsequent save will not write it back.
+
+In `_save_current_configuration()`:
 ```python
-if "overlap_minutes" in entry:
+if fqn in overlap_supported_fqns and "overlap_minutes" in entry:
     pairs[f"source.{slug}.overlap_minutes"] = str(entry["overlap_minutes"])
 ```
-
-Since `overlap_minutes` won't be in the entry dict for ET sources, no config key is written. **Verify this path with a test.**
 
 ### Files to modify
 
@@ -238,18 +254,19 @@ Claude claude-4.6-opus-high-thinking (Cursor Agent)
 
 ### Debug Log References
 
-None — clean implementation with no unexpected issues.
+- `PYTHONPATH=app/streamlit .venv/bin/python -m pytest tests/test_telemetry_sources_page.py tests/test_getting_started.py -q`
+- `PRIVATE_KEY_PASSPHRASE=qwerty123 snow app run -c dev`
 
 ### Completion Notes List
 
 - **Task 1 (Save flow audit):** `_save_current_configuration()` correctly writes all config keys via `save_config_batch()`. `_capture_current_state()` correctly overlays editor edits via `_effective_values()`. Unsaved-changes comparison in `_render_footer()` uses plain dict equality and works correctly. `_JUST_SAVED_KEY` clears via `_mark_unsaved_changes()` on any user edit.
-- **Task 2 (Load flow audit):** `_load_saved_controls()` correctly reads from `_internal.config` via `load_config_like()`, parses slug→FQN/poll/interval/overlap mappings, and restores into session state DataFrames. Discovery signature caching works correctly with the `_SAVED_STATE_KEY` existence guard. Getting Started Task 2 uses real `PACK_ENABLED_CONFIG_KEYS` (confirmed in `onboarding.py` and `test_getting_started.py`). Widget key cleanup resilience from Story 3.2 is in place.
-- **Task 3 (ET overlap verification):** Code correctly skips `overlap_minutes` for Event Table sources. `_capture_current_state()` gates overlap inclusion on `not None and pd.notna()`. `_save_current_configuration()` only writes `overlap_minutes` when present in entry dict. Live DB confirms zero `overlap_minutes` keys for ET sources. Added tests `test_et_source_overlap_not_in_saved_pairs` and `test_load_tolerates_missing_overlap_for_et` to lock this.
+- **Task 2 (Load flow audit):** `_load_saved_controls()` correctly reads from `_internal.config` via `load_config_like()`, parses slug→FQN/poll/interval/overlap mappings, and restores into session state DataFrames. Discovery signature caching works correctly with the `_SAVED_STATE_KEY` existence guard. Getting Started Task 2 uses real `PACK_ENABLED_CONFIG_KEYS` (confirmed in `onboarding.py` and `test_getting_started.py`). Widget key cleanup resilience from Story 3.2 is in place. Post-review hardening now preserves the last good UI state when config reload fails, instead of rebuilding defaults and treating them as saved.
+- **Task 3 (ET overlap verification):** Code now skips `overlap_minutes` for Event Table sources during load, capture, and save. This closes the edge case where a stale `source.<et_slug>.overlap_minutes` row in `_internal.config` could otherwise be rehydrated and re-persisted. Live DB confirms zero `overlap_minutes` keys for ET sources. Added tests `test_et_source_overlap_not_in_saved_pairs`, `test_load_tolerates_missing_overlap_for_et`, and `test_load_ignores_stale_overlap_for_et_and_does_not_resave_it` to lock this behavior.
 - **Task 4 (Remove dummy write):** Removed `save_config(session, "pack_enabled.dummy", "false")` from `_render_footer()` save handler. Also removed unused `save_config` import. Verified no code depends on `pack_enabled.dummy` — `test_task2_ignores_legacy_dummy_pack_key` in `test_getting_started.py` confirms this. Added `test_save_does_not_write_pack_enabled_dummy` to prevent regression.
-- **Task 5 (Tests):** Added 15 new tests in 7 test classes covering: save key correctness for mixed AU/ET sources, dummy key exclusion, save→load round-trip, capture state with editor overlays, ET overlap absence, unsaved-changes detection (5 scenarios: no false positive, poll change, pack toggle, interval, overlap), reset→save round-trip, error handling. All 161 tests pass with zero regressions.
-- **Task 6 (Live verification):** Deployed via `snow app run -c dev`. Verified live `_internal.config`: pack keys correct, AU sources have `overlap_minutes`, ET sources have none. App is running.
+- **Task 5 (Tests):** Expanded the telemetry page/unit coverage to exercise the real footer save error path, stale Event Table overlap contamination, and load-failure state preservation in addition to the original round-trip persistence checks. Focused suites now pass: `tests/test_telemetry_sources_page.py` and `tests/test_getting_started.py` (`41 passed`).
+- **Task 6 (Live verification):** Re-deployed via `snow app run -c dev` after post-review hardening. Snowflake upgraded `splunk_observability_dev_app` successfully, so the UAT environment reflects the final story implementation.
 
 ### File List
 
-- `app/streamlit/pages/telemetry_sources.py` — Removed `save_config(session, "pack_enabled.dummy", "false")` and unused `save_config` import
-- `tests/test_telemetry_sources_page.py` — Added 15 new persistence round-trip tests across 7 test classes
+- `app/streamlit/pages/telemetry_sources.py` — Removed the legacy dummy write, guarded Event Table overlap handling across load/capture/save, and preserved the last good UI state on config-load failure
+- `tests/test_telemetry_sources_page.py` — Expanded persistence tests to cover stale ET overlap rows, load-failure preservation, and the real footer-level save error flow

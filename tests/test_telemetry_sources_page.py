@@ -43,6 +43,13 @@ class _FakeStreamlit(types.ModuleType):
         super().__init__("streamlit")
         self.session_state = _SessionState()
         self.rerun_count = 0
+        self.button_responses: list[bool] = []
+        self.button_labels: list[str] = []
+        self.caption_messages: list[str] = []
+        self.error_messages: list[str] = []
+        self.warning_messages: list[str] = []
+        self.info_messages: list[str] = []
+        self.toast_messages: list[str] = []
 
     def markdown(self, *args, **kwargs) -> None:
         return None
@@ -51,24 +58,40 @@ class _FakeStreamlit(types.ModuleType):
         return None
 
     def caption(self, *args, **kwargs) -> None:
+        if args:
+            self.caption_messages.append(str(args[0]))
         return None
 
     def error(self, *args, **kwargs) -> None:
+        if args:
+            self.error_messages.append(str(args[0]))
         return None
 
     def warning(self, *args, **kwargs) -> None:
+        if args:
+            self.warning_messages.append(str(args[0]))
         return None
 
     def info(self, *args, **kwargs) -> None:
+        if args:
+            self.info_messages.append(str(args[0]))
         return None
 
     def divider(self, *args, **kwargs) -> None:
         return None
 
     def toast(self, *args, **kwargs) -> None:
+        if args:
+            self.toast_messages.append(str(args[0]))
         return None
 
     def button(self, *args, **kwargs) -> bool:
+        label = str(args[0]) if args else ""
+        self.button_labels.append(label)
+        if kwargs.get("disabled"):
+            return False
+        if self.button_responses:
+            return self.button_responses.pop(0)
         return False
 
     def toggle(self, *args, **kwargs) -> bool:
@@ -336,7 +359,7 @@ def _setup_for_save(module, grouped, *, au_polls=None, et_polls=None):
     module.st.session_state[module._ss_editor_version_key(et_cat.key)] = 0
 
 
-def _capture_save_pairs(module, state):
+def _capture_save_pairs(module, state, grouped):
     """Call _save_current_configuration and return the pairs dict it would write."""
     captured: dict[str, str] = {}
     original = module.save_config_batch
@@ -346,7 +369,7 @@ def _capture_save_pairs(module, state):
 
     module.save_config_batch = spy
     try:
-        module._save_current_configuration(MagicMock(), state)
+        module._save_current_configuration(MagicMock(), state, grouped)
     finally:
         module.save_config_batch = original
     return captured
@@ -364,7 +387,7 @@ class TestSaveCurrentConfiguration:
         ].at[0, "interval_seconds"] = 1800
 
         state = telemetry_page._capture_current_state(grouped)
-        captured_pairs = _capture_save_pairs(telemetry_page, state)
+        captured_pairs = _capture_save_pairs(telemetry_page, state, grouped)
 
         assert captured_pairs["pack_enabled.distributed_tracing"] == "true"
         assert captured_pairs["pack_enabled.query_performance"] == "true"
@@ -390,7 +413,7 @@ class TestSaveCurrentConfiguration:
         _setup_for_save(telemetry_page, grouped)
 
         state = telemetry_page._capture_current_state(grouped)
-        captured_pairs = _capture_save_pairs(telemetry_page, state)
+        captured_pairs = _capture_save_pairs(telemetry_page, state, grouped)
 
         assert "pack_enabled.dummy" not in captured_pairs
 
@@ -415,7 +438,7 @@ class TestLoadSavedControlsRoundTrip:
         ].at[0, "overlap_minutes"] = 120
 
         state_before_save = telemetry_page._capture_current_state(grouped)
-        saved_db = _capture_save_pairs(telemetry_page, state_before_save)
+        saved_db = _capture_save_pairs(telemetry_page, state_before_save, grouped)
 
         def mock_load_config_like(_session, prefix):
             return {k: v for k, v in saved_db.items() if k.startswith(prefix)}
@@ -443,6 +466,43 @@ class TestLoadSavedControlsRoundTrip:
 
         assert telemetry_page.st.session_state[telemetry_page._ss_pack_key(au_cat.key)] is True
         assert telemetry_page.st.session_state[telemetry_page._ss_pack_key(et_cat.key)] is True
+
+    def test_load_failure_preserves_existing_state(self, telemetry_page):
+        grouped = _mixed_grouped()
+        _setup_for_save(telemetry_page, grouped, au_polls=[True, False], et_polls=[True])
+
+        saved_state = telemetry_page._capture_current_state(grouped)
+        au_cat = _account_usage_category()
+        et_cat = _event_table_category()
+        au_df_before = telemetry_page.st.session_state[
+            telemetry_page._ss_df_key(au_cat.key)
+        ].copy(deep=True)
+        et_df_before = telemetry_page.st.session_state[
+            telemetry_page._ss_df_key(et_cat.key)
+        ].copy(deep=True)
+        telemetry_page.st.session_state[telemetry_page._SAVED_STATE_KEY] = saved_state
+
+        def exploding_load(_session, _prefix):
+            raise SnowparkSQLException("simulated load failure")
+
+        original_load = telemetry_page.load_config_like
+        telemetry_page.load_config_like = exploding_load
+        try:
+            loaded = telemetry_page._load_saved_controls(MagicMock(), grouped)
+        finally:
+            telemetry_page.load_config_like = original_load
+
+        assert loaded is False
+        assert telemetry_page.st.session_state[telemetry_page._SAVED_STATE_KEY] == saved_state
+        assert telemetry_page.st.session_state[
+            telemetry_page._ss_df_key(au_cat.key)
+        ].equals(au_df_before)
+        assert telemetry_page.st.session_state[
+            telemetry_page._ss_df_key(et_cat.key)
+        ].equals(et_df_before)
+        assert "Could not load saved telemetry source configuration." in (
+            telemetry_page.st.session_state[telemetry_page._DISCOVERY_ERROR_KEY]
+        )
 
 
 class TestCaptureCurrentState:
@@ -569,7 +629,7 @@ class TestResetSaveRoundTrip:
         telemetry_page._reset_to_defaults(grouped)
 
         state = telemetry_page._capture_current_state(grouped)
-        captured_pairs = _capture_save_pairs(telemetry_page, state)
+        captured_pairs = _capture_save_pairs(telemetry_page, state, grouped)
 
         qh_slug = source_slug("SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY")
         assert captured_pairs[f"source.{qh_slug}.poll_interval_seconds"] == "900"
@@ -582,16 +642,18 @@ class TestResetSaveRoundTrip:
 class TestSaveErrorHandling:
     """Task 5.6 — verify SnowparkSQLException during save preserves unsaved state."""
 
-    def test_save_error_preserves_unsaved_state(self, telemetry_page):
+    def test_footer_save_error_preserves_unsaved_state(self, telemetry_page):
         grouped = _mixed_grouped()
         _setup_for_save(telemetry_page, grouped, au_polls=[True, False])
+        telemetry_page.st.error_messages.clear()
+        telemetry_page.st.toast_messages.clear()
 
         telemetry_page.st.session_state[telemetry_page._JUST_SAVED_KEY] = False
+        telemetry_page.st.session_state[telemetry_page._POST_SAVE_RELOAD_KEY] = False
         telemetry_page.st.session_state[telemetry_page._SAVED_STATE_KEY] = {
             "packs": {}, "sources": {},
         }
-
-        state = telemetry_page._capture_current_state(grouped)
+        telemetry_page.st.button_responses = [False, True]
 
         def exploding_batch(session, pairs):
             raise SnowparkSQLException("simulated write failure")
@@ -599,12 +661,21 @@ class TestSaveErrorHandling:
         original = telemetry_page.save_config_batch
         telemetry_page.save_config_batch = exploding_batch
         try:
-            with pytest.raises(SnowparkSQLException, match="simulated write failure"):
-                telemetry_page._save_current_configuration(MagicMock(), state)
+            telemetry_page._render_footer(grouped, MagicMock())
         finally:
             telemetry_page.save_config_batch = original
 
+        assert telemetry_page.st.error_messages == [
+            "Failed to save configuration: simulated write failure",
+        ]
         assert telemetry_page.st.session_state[telemetry_page._JUST_SAVED_KEY] is False
+        assert telemetry_page.st.session_state[telemetry_page._POST_SAVE_RELOAD_KEY] is False
+        assert telemetry_page.st.session_state[telemetry_page._SAVED_STATE_KEY] == {
+            "packs": {},
+            "sources": {},
+        }
+        assert telemetry_page.st.rerun_count == 0
+        assert telemetry_page.st.toast_messages == []
 
 
 class TestEventTableOverlapExclusion:
@@ -615,7 +686,7 @@ class TestEventTableOverlapExclusion:
         _setup_for_save(telemetry_page, grouped, et_polls=[True])
 
         state = telemetry_page._capture_current_state(grouped)
-        captured_pairs = _capture_save_pairs(telemetry_page, state)
+        captured_pairs = _capture_save_pairs(telemetry_page, state, grouped)
 
         et_slug = source_slug("SNOWFLAKE.TELEMETRY.EVENTS")
         overlap_keys = [k for k in captured_pairs if k.endswith(".overlap_minutes")]
@@ -656,3 +727,40 @@ class TestEventTableOverlapExclusion:
         assert bool(et_df["poll"].iloc[0]) is True
         assert et_df["interval_seconds"].iloc[0] == 120
         assert et_df["overlap_minutes"].iloc[0] is None
+
+    def test_load_ignores_stale_overlap_for_et_and_does_not_resave_it(self, telemetry_page):
+        grouped = _mixed_grouped()
+        et_fqn = "SNOWFLAKE.TELEMETRY.EVENTS"
+        et_slug = source_slug(et_fqn)
+        saved_db = {
+            f"pack_enabled.{_account_usage_category().key}": "true",
+            f"pack_enabled.{_event_table_category().key}": "true",
+            f"source.{et_slug}.view_fqn": et_fqn,
+            f"source.{et_slug}.poll": "true",
+            f"source.{et_slug}.poll_interval_seconds": "120",
+            f"source.{et_slug}.overlap_minutes": "15",
+        }
+
+        def mock_load_config_like(_session, prefix):
+            return {k: v for k, v in saved_db.items() if k.startswith(prefix)}
+
+        original_load = telemetry_page.load_config_like
+        telemetry_page.load_config_like = mock_load_config_like
+        telemetry_page.st.session_state.pop(telemetry_page._DISCOVERY_SIGNATURE_KEY, None)
+        telemetry_page.st.session_state.pop(telemetry_page._SAVED_STATE_KEY, None)
+        try:
+            loaded = telemetry_page._load_saved_controls(MagicMock(), grouped)
+        finally:
+            telemetry_page.load_config_like = original_load
+
+        assert loaded is True
+        et_df = telemetry_page.st.session_state[
+            telemetry_page._ss_df_key(_event_table_category().key)
+        ]
+        assert et_df["overlap_minutes"].iloc[0] is None
+
+        state = telemetry_page._capture_current_state(grouped)
+        assert "overlap_minutes" not in state["sources"][et_fqn]
+
+        captured_pairs = _capture_save_pairs(telemetry_page, state, grouped)
+        assert f"source.{et_slug}.overlap_minutes" not in captured_pairs

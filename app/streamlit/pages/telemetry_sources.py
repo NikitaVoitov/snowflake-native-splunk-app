@@ -357,14 +357,16 @@ def _reset_editor_widget(cat_key: str) -> None:
 def _load_saved_controls(
     session,
     grouped: dict[str, list[DiscoveredSource]],
-) -> None:
+) -> bool:
     """Load persisted pack/source state into session state."""
     signature = _source_signature(grouped)
-    if st.session_state.get(_DISCOVERY_SIGNATURE_KEY) == signature:
+    if (
+        st.session_state.get(_DISCOVERY_SIGNATURE_KEY) == signature
+        and _SAVED_STATE_KEY in st.session_state
+    ):
         # Verify saved-state snapshot exists (first visit may have stale
         # signature from a prior discovery without a DB load yet).
-        if _SAVED_STATE_KEY in st.session_state:
-            return
+        return True
 
     pack_config: dict[str, str] = {}
     source_config: dict[str, str] = {}
@@ -377,6 +379,7 @@ def _load_saved_controls(
                 "Could not load saved telemetry source configuration. "
                 f"Details: {exc!s}"
             )
+            return False
 
     slug_to_fqn: dict[str, str] = {}
     slug_to_poll: dict[str, bool] = {}
@@ -434,7 +437,11 @@ def _load_saved_controls(
                 break
             if source.fqn in saved_intervals and "interval_seconds" in df.columns:
                 df.at[idx, "interval_seconds"] = saved_intervals[source.fqn]
-            if source.fqn in saved_overlaps and "overlap_minutes" in df.columns:
+            if (
+                category.source_family == "account_usage"
+                and source.fqn in saved_overlaps
+                and "overlap_minutes" in df.columns
+            ):
                 df.at[idx, "overlap_minutes"] = saved_overlaps[source.fqn]
         st.session_state[_ss_df_key(category.key)] = df
         _reset_editor_widget(category.key)
@@ -445,6 +452,7 @@ def _load_saved_controls(
         st.session_state[_POST_SAVE_RELOAD_KEY] = False
     else:
         st.session_state[_JUST_SAVED_KEY] = False
+    return True
 
 
 def _effective_values(df: pd.DataFrame, editor_key: str, column: str) -> pd.Series:
@@ -493,7 +501,12 @@ def _capture_current_state(
             entry: dict[str, object] = {"poll": bool(polls.iloc[i])}
             if not intervals.empty:
                 entry["interval_seconds"] = int(intervals.iloc[i])
-            if not overlaps.empty and overlaps.iloc[i] is not None and pd.notna(overlaps.iloc[i]):
+            if (
+                category.source_family == "account_usage"
+                and not overlaps.empty
+                and overlaps.iloc[i] is not None
+                and pd.notna(overlaps.iloc[i])
+            ):
                 entry["overlap_minutes"] = int(overlaps.iloc[i])
             source_state[str(fqn)] = entry
 
@@ -554,9 +567,16 @@ def _reset_to_defaults(
 def _save_current_configuration(
     session,
     current_state: dict[str, object],
+    grouped: dict[str, list[DiscoveredSource]],
 ) -> None:
     """Persist pack and per-source state to _internal.config (single SQL)."""
     pairs: dict[str, str] = {}
+    overlap_supported_fqns = {
+        source.fqn
+        for category in CATEGORIES
+        if category.source_family == "account_usage"
+        for source in grouped.get(category.key, [])
+    }
     for cat_key, enabled in current_state["packs"].items():
         pairs[f"pack_enabled.{cat_key}"] = "true" if enabled else "false"
 
@@ -566,7 +586,7 @@ def _save_current_configuration(
         pairs[f"source.{slug}.poll"] = "true" if entry.get("poll") else "false"
         if "interval_seconds" in entry:
             pairs[f"source.{slug}.poll_interval_seconds"] = str(entry["interval_seconds"])
-        if "overlap_minutes" in entry:
+        if fqn in overlap_supported_fqns and "overlap_minutes" in entry:
             pairs[f"source.{slug}.overlap_minutes"] = str(entry["overlap_minutes"])
 
     save_config_batch(session, pairs)
@@ -875,7 +895,7 @@ def _render_footer(
             st.error("Snowflake session unavailable. Cannot save configuration.")
         else:
             try:
-                _save_current_configuration(session, current_state)
+                _save_current_configuration(session, current_state, grouped)
                 st.session_state[_SAVED_STATE_KEY] = current_state
                 st.session_state[_JUST_SAVED_KEY] = True
                 st.session_state[_POST_SAVE_RELOAD_KEY] = True
@@ -936,5 +956,7 @@ if _discovery_was_running and grouped is not None:
 if st.session_state.get(_DISCOVERY_ERROR_KEY):
     st.error(st.session_state[_DISCOVERY_ERROR_KEY])
 elif grouped is not None:
-    _load_saved_controls(session, grouped)
-    _interactive_content(session, grouped)
+    if _load_saved_controls(session, grouped):
+        _interactive_content(session, grouped)
+    elif st.session_state.get(_DISCOVERY_ERROR_KEY):
+        st.error(st.session_state[_DISCOVERY_ERROR_KEY])
