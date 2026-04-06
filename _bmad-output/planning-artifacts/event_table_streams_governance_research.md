@@ -1,7 +1,13 @@
 # Snowflake Event Table Streams & Data Governance -- Full Research Summary
 
-*Research conducted 2026-02-17 with live verification on Snowflake account (LFB71918)*
+*Research conducted 2026-02-17 with later architecture addendum from live validation on 2026-04-06 in Snowflake account `LFB71918`*
 *All tests executed via Snow CLI (connection: dev) and Snowflake MCP tools*
+
+> **Decision update (current project direction):**
+> - The app's default path is a **direct stream on the selected event table**.
+> - The app does **not** create or manage a dedicated governance/masking view layer.
+> - Consumers may still create their **own custom views over event tables** and point the app at those views if they want their own governance controls.
+> - `SNOWFLAKE.TELEMETRY.EVENTS_VIEW` is **not** our source path because live validation showed we cannot create a stream on it without inaccessible `CHANGE_TRACKING` privileges.
 
 ---
 
@@ -36,8 +42,7 @@ Snowflake includes a **default event table** named `SNOWFLAKE.TELEMETRY.EVENTS` 
 collects telemetry data (logs, traces, metrics) from procedures, UDFs, Streamlit apps,
 and Snowpark Container Services.
 
-Snowflake also provides a **predefined view** `SNOWFLAKE.TELEMETRY.EVENTS_VIEW` designed
-for more secure access to the event table data with row access policy support.
+Snowflake also provides a **predefined view** `SNOWFLAKE.TELEMETRY.EVENTS_VIEW` for controlled access patterns, but it is **not a viable direct stream source for this app** because live tests showed the app cannot enable the required `CHANGE_TRACKING` on that system-managed view.
 
 Both objects are owned by the `SNOWFLAKE` application and reside in the system-managed
 `SNOWFLAKE.TELEMETRY` schema.
@@ -73,8 +78,9 @@ CREATE [ OR REPLACE ] STREAM [IF NOT EXISTS]
 ```
 
 Note: The event table syntax does NOT support `AT | BEFORE` (Time Travel) or
-`SHOW_INITIAL_ROWS` options. `APPEND_ONLY = TRUE` is recommended since event tables
-primarily receive inserts.
+`SHOW_INITIAL_ROWS` options. The main syntax block also does not advertise `APPEND_ONLY`
+for `ON EVENT TABLE`, but live validation later showed `APPEND_ONLY = TRUE` is accepted
+and `SHOW STREAMS` reports `APPEND_ONLY` mode for event-table streams.
 
 ---
 
@@ -159,7 +165,8 @@ Insufficient privileges to operate on view 'EVENTS_VIEW'.
 ```
 
 **Root cause:** The view is owned by the `SNOWFLAKE` application. No user role can ALTER
-it. Without change tracking, streams on views are impossible.
+it. Without change tracking, streams on this specific system-managed view are impossible.
+This is **not** a general prohibition on streams over secure views or user-owned views.
 
 ---
 
@@ -470,9 +477,10 @@ SELECT/TRUNCATE/DELETE on the table and SELECT on the view.
 
 ## 7. Gaps & Limitations: View-Based Streams vs Direct Event Table Streams
 
-When choosing the custom view + stream approach (Pattern C) over direct event table
-streaming, there are important trade-offs and operational risks to understand. All items
-below are sourced from Snowflake's official documentation.
+When a consumer chooses a **custom view + stream** approach instead of direct event table
+streaming, there are important trade-offs and operational risks to understand. These are
+real constraints, which is why this project no longer recommends an app-managed governance
+view layer as the default architecture.
 
 ### 7.1 View Breakage -- CRITICAL RISK
 
@@ -716,7 +724,7 @@ reflect those changes.
 
 ## 8. Architecture Patterns
 
-### Pattern A: Direct Stream on Event Table (Simplest, Least Secure)
+### Pattern A: Direct Stream on Event Table (Preferred MVP Default)
 
 ```
 Event Table ──→ Stream (APPEND_ONLY) ──→ Task ──→ Splunk
@@ -726,7 +734,8 @@ Event Table ──→ Stream (APPEND_ONLY) ──→ Task ──→ Splunk
 - All raw data flows through (including sensitive content in VALUE, RECORD,
   RESOURCE_ATTRIBUTES)
 - Works for both default and user-created event tables
-- **Use when:** Data sensitivity is not a concern, simplest setup needed
+- Lowest operational fragility: no view breakage, no view SQL restrictions, no false-positive task triggers from filtered views
+- **Use when:** Default MVP path; consumer wants the simplest and most robust setup
 
 ### Pattern B: Event Table + RAP/Projection + Stream (Moderate Security)
 
@@ -738,33 +747,25 @@ Event Table (RAP + Projection Policies) ──→ Stream ──→ Task ──�
 - Column blocking via projection policy (e.g., hide VALUE column entirely)
 - **Cannot** redact values within semi-structured columns (masking policies blocked)
 - Only works on **user-created** event tables (cannot attach policies to default)
-- **Use when:** Row filtering and column blocking are sufficient; no value-level redaction
-  needed
+- **Use when:** The consumer uses their own user-created event table and row filtering / projection are sufficient
 
-### Pattern C: Custom View + Stream (Full Governance) -- RECOMMENDED
+### Pattern C: Consumer-Managed Custom View + Stream (Optional Escape Hatch)
 
 ```
-Event Table ──→ Custom View (RAP + Masking + Column Transformation) ──→ Stream ──→ Task ──→ Splunk
+Event Table ──→ Consumer Custom View ──→ Stream ──→ Task ──→ Splunk
 ```
 
-- Row-level filtering via RAP on the view
-- Value-level redaction via masking policies on RECORD, RECORD_ATTRIBUTES, and VALUE
-  (e.g., strip emails from log messages, remove sensitive JSON keys)
-- Column transformation (e.g., `OBJECT_DELETE(RESOURCE_ATTRIBUTES, 'snow.query.id')`)
-- Unused column exclusion via SELECT list (EXEMPLARS excluded — not needed by pipeline)
-- All pipeline-required columns **included** — VALUE is needed for LOG messages and
-  METRIC values; consumer attaches masking policies for privacy, not column exclusion
-- Works on **both** default and user-created event tables
-- Customer controls exactly what data leaves their Snowflake account
-- Mirrors Snowflake's own design intent behind EVENTS_VIEW
+- Works on **both** default and user-created event tables when the consumer owns the custom view
+- Lets the consumer apply their own governance policies and column transformations
+- Can support masking on the view, which event tables themselves do not support
+- Adds real operational constraints: `CREATE OR REPLACE VIEW` breakage, view SQL restrictions, false-positive task triggers, and potential secure-view retention caveats
+- **Use when:** The consumer explicitly wants a custom view and accepts the extra operational burden
 
-#### Example: Governed View for Splunk Export
+#### Example: Optional Consumer-Managed View for Splunk Export
 
 ```sql
--- Custom view with column transformation and governance policy hooks.
--- The view MUST include all columns the pipeline needs (VALUE is required
--- for LOG messages and METRIC values). Privacy on sensitive columns is
--- enforced via masking policies attached to the view, NOT by excluding columns.
+-- Optional consumer-managed custom view.
+-- Keep the view simple if a stream will be created on it.
 CREATE OR REPLACE VIEW SPLUNKDB.PUBLIC.SPLUNK_EVENTS_EXPORT AS
 SELECT
     TIMESTAMP,
@@ -774,93 +775,62 @@ SELECT
     RECORD_TYPE,
     RECORD,
     RECORD_ATTRIBUTES,
-    -- Remove known-sensitive infrastructure keys from RESOURCE_ATTRIBUTES
-    OBJECT_DELETE(
-      OBJECT_DELETE(RESOURCE_ATTRIBUTES, 'snow.query.id'),
-      'snow.compute_pool.node.id'
-    ) AS RESOURCE_ATTRIBUTES,
+    RESOURCE_ATTRIBUTES,
     SCOPE,
     SCOPE_ATTRIBUTES,
-    VALUE                 -- REQUIRED: LOG message text and METRIC values
-    -- EXEMPLARS excluded (not used by the export pipeline)
+    VALUE
 FROM SNOWFLAKE.TELEMETRY.EVENTS;
-
--- Add RAP to control which rows are exported
-ALTER VIEW SPLUNKDB.PUBLIC.SPLUNK_EVENTS_EXPORT
-  ADD ROW ACCESS POLICY rap_splunk_export ON (RESOURCE_ATTRIBUTES);
-
--- Add masking policy to redact sensitive patterns in RECORD (structured span/log fields)
-ALTER VIEW SPLUNKDB.PUBLIC.SPLUNK_EVENTS_EXPORT
-  ALTER COLUMN RECORD SET MASKING POLICY mask_record_content;
-
--- Add masking policy to redact PII in VALUE (log message text, metric payloads)
-ALTER VIEW SPLUNKDB.PUBLIC.SPLUNK_EVENTS_EXPORT
-  ALTER COLUMN VALUE SET MASKING POLICY mask_value_content;
 
 -- Create stream for CDC
 CREATE STREAM SPLUNKDB.PUBLIC.SPLUNK_EVENTS_STREAM
   ON VIEW SPLUNKDB.PUBLIC.SPLUNK_EVENTS_EXPORT APPEND_ONLY = TRUE;
-
--- Create triggered task to forward to Splunk
-CREATE TASK SPLUNKDB.PUBLIC.SPLUNK_EXPORT_TASK
-  WAREHOUSE = COMPUTE_WH
-  WHEN SYSTEM$STREAM_HAS_DATA('SPLUNKDB.PUBLIC.SPLUNK_EVENTS_STREAM')
-AS
-  -- Process stream data and send to Splunk via external function/API
-  ...;
 ```
+
+If the consumer wants RAP, masking, or extra transformations on the view, that remains
+their choice, but it is no longer the app's default or recommended architecture.
 
 ---
 
 ## 9. Recommendation for the Native App
 
-**Pattern C (Custom View + Stream)** is the recommended architecture because:
+**Current project recommendation:** use **Pattern A (direct stream on event table)** as the
+default architecture. Treat **Pattern C (consumer-managed custom view + stream)** as an
+optional source type the app can support, but not create or manage on the consumer's
+behalf.
 
-| Concern | Pattern A (Direct) | Pattern B (ET + Policies) | Pattern C (View + Stream) |
+| Concern | Pattern A (Direct) | Pattern B (ET + Policies) | Pattern C (Consumer View + Stream) |
 |---------|:---:|:---:|:---:|
-| Works with default event table | Yes | No (can't attach policies) | **Yes** |
-| Works with user-created event tables | Yes | Yes | **Yes** |
-| Row-level filtering (RAP) | No | Yes | **Yes** |
-| Column blocking (projection) | No | Yes | **Yes** |
-| Value-level redaction (masking) | No | No (blocked on ETs) | **Yes** (RECORD, VALUE, RECORD_ATTRIBUTES) |
-| Column transformation/exclusion | No | No | **Yes** (unused cols excluded; pipeline-required cols protected via masking) |
-| Customer controls data export | No | Partial | **Full** |
-| Compliance (GDPR/HIPAA) | Risk | Partial | **Enabled** |
-| Trust model | "Trust the app" | "Partial control" | **"You control it"** |
-| Snowflake design alignment | Bypass pattern | Partial | **Matches EVENTS_VIEW intent** |
-| `CREATE OR REPLACE` breakage risk | Low (only if ET recreated) | Low | **CRITICAL** (view or ET) |
-| View SQL restrictions | N/A | N/A | Must be simple projection/filter |
-| Triggered task false positives | No | No | Yes (fires on all ET changes) |
-| Secure view staleness risk | N/A | N/A | No auto-retention extension |
+| Works with default event table | **Yes** | No (can't attach policies) | Yes |
+| Works with user-created event tables | **Yes** | Yes | Yes |
+| Row-level filtering (RAP) | No | Yes | Yes |
+| Column blocking (projection) | No | Yes | Yes |
+| Value-level redaction (masking) | No | No (blocked on ETs) | Yes |
+| Operational fragility | **Lowest** | Low | Highest |
+| `CREATE OR REPLACE VIEW` breakage risk | **Low** | Low | **CRITICAL** |
+| View SQL restrictions | N/A | N/A | Yes |
+| Triggered task false positives | No | No | Yes |
+| Secure-view retention caveat | N/A | N/A | Possible |
+| App-managed complexity | **Lowest** | Medium | Highest |
 
-The custom view effectively becomes a **governed data contract** between the customer's
-Snowflake account and the Splunk native app. The app defines the view schema (including
-all columns the export pipeline requires — VALUE for log messages and metric values,
-RECORD for span/log structure, etc.) and the customer controls what data actually leaves
-their account by attaching **masking policies** and **row access policies** to the view
-using Snowflake's native governance tools they already know. The native app consumes
-whatever the policy-filtered, masked view exposes -- it never touches raw, unfiltered
-event data.
+Why Pattern A is now preferred:
+1. It works directly against `SNOWFLAKE.TELEMETRY.EVENTS` and other event tables without introducing view-stream fragility.
+2. It avoids maintaining an app-defined governance contract that the project ultimately decided not to own.
+3. It keeps source selection simple: either stream the event table directly, or let the consumer provide their own custom view if they need one.
+4. It aligns with the updated planning docs: the app supports consumer-created custom views, but it does not require or generate them.
 
-### Operational Best Practices for Pattern C
+### Operational Guidance
 
-1. **Never use `CREATE OR REPLACE VIEW`** on the custom view after streams are created.
-   Use `ALTER VIEW` for all policy changes (add/drop RAP, masking, tags).
-2. **Use `APPEND_ONLY = TRUE`** on all event table streams for performance.
-3. **Consume the stream frequently** (every 1-5 minutes) to avoid staleness, especially
-   with the default event table where retention can't be extended.
-4. **Avoid `CREATE SECURE VIEW`** unless strictly required, to benefit from auto-retention
-   extension.
-5. **Keep the view simple** -- only projections, filters, and system-defined scalar
-   functions. No GROUP BY, DISTINCT, LIMIT, or UDFs.
-6. **Use serverless triggered tasks** to minimize cost from "empty" task runs caused by
-   view filtering.
-7. **Avoid non-deterministic functions** (`CURRENT_DATE`, `CURRENT_USER`, `RANDOM()`) in
-   the view definition.
-8. **Document the view-breakage risk** prominently in customer-facing setup guides.
-9. **Monitor stream staleness** via `SHOW STREAMS` or the Streamlit management UI.
-10. **Schedule initial stream creation** during low-activity periods (one-time change
-    tracking lock on underlying event table).
+Default path:
+1. Use `APPEND_ONLY = TRUE` on event-table streams.
+2. Consume the stream frequently and monitor `STALE_AFTER`.
+3. Prefer direct event-table streams unless the consumer explicitly needs a custom view.
+
+If the consumer chooses a custom view:
+1. **Never use `CREATE OR REPLACE VIEW`** after streams exist. Use `ALTER VIEW` for view changes.
+2. Keep the view simple: projection/filter only, no `GROUP BY`, `DISTINCT`, `LIMIT`, or UDFs.
+3. Avoid non-deterministic functions in the view definition.
+4. Be aware that triggered tasks on view streams can fire on underlying-table changes even when the view filter later returns zero rows.
+5. Treat masking/redaction on the view as a consumer-managed choice, not an app-owned default.
 
 ---
 

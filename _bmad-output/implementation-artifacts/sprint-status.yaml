@@ -1,5 +1,5 @@
 # generated: 2026-03-15
-# last_updated: 2026-03-25
+# last_updated: 2026-04-06
 # project: snowflake-native-splunk-app
 # project_key: NOKEY
 # tracking_system: file-system
@@ -52,8 +52,8 @@
 #   the actual dependency order and removing forward-dependency workarounds.
 
 generated: 2026-03-15
-last_updated: 2026-04-02
-updated_by: epic-3 retrospective completed
+last_updated: 2026-04-06
+updated_by: story 4-1 done
 project: snowflake-native-splunk-app
 project_key: NOKEY
 tracking_system: file-system
@@ -151,7 +151,7 @@ sprints:
   # SPRINT 4: Splunk-compatible OTLP export foundation
   # ─────────────────────────────────────────────────────────────────────
   sprint-4:
-    status: planned
+    status: active
     goal: "Sam and Ravi can rely on a secure OTLP export foundation with correct telemetry contract and deterministic failure handling"
     deliverable: >
       A reusable OTLP export foundation exists with module-level exporter
@@ -172,9 +172,9 @@ sprints:
       epic-4:
         name: "Splunk-compatible OTLP export foundation"
         tags: [Backend, Integration, Contract]
-        status: backlog
+        status: in-progress
         stories:
-          4-1-secure-otlp-export-foundation: backlog
+          4-1-secure-otlp-export-foundation: done
           4-2-splunk-compatible-telemetry-contract: backlog
           4-3-deterministic-otlp-retry-and-terminal-failure-handling: backlog
         retrospective: optional

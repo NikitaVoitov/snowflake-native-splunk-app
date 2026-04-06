@@ -2395,7 +2395,7 @@ snowflake-native-splunk-app/              # Project root (git repo)
 ```
 
 **Key distinctions:**
-- **`app/environment.yml`** (Conda format) — runtime dependencies resolved by Snowflake's Anaconda channel. Pinned to exact versions. This is what runs inside Snowflake. Covers both stored procedures (Python 3.13) and Streamlit (Python 3.11).
+- **`app/environment.yml`** (Conda format) — Streamlit runtime dependencies resolved by Snowflake's Anaconda channel for Python 3.11. Stored procedures target Python 3.13 in `app/setup.sql` and resolve their packages from the procedure `PACKAGES` clause plus Snowflake package metadata, not from this file.
 - **`pyproject.toml`** (root) + **`uv.lock`** — primary local dev dependencies managed by `uv` (Python 3.13). Mirrors runtime packages for IDE autocompletion + adds linters (`ruff`), type checkers (`mypy`/`pyright`), test frameworks (`pytest`). These never leave the developer's machine.
 - **`app/pyproject.toml`** + **`app/uv.lock`** — lightweight Streamlit preview runner managed by `uv` (Python 3.11). Contains only `streamlit` + `plotly`. Not staged to Snowflake.
 - **`.venv/`** — primary dev venv (Python 3.13). Created with `uv sync` at root. Used for ALL code development, linting, testing, IDE autocompletion. Never committed.

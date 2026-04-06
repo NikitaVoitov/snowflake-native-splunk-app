@@ -52,6 +52,10 @@ entities:
         dest: python/cert_validate.py
       - src: app/python/secret_reader.py
         dest: python/secret_reader.py
+      - src: app/python/otlp_export.py
+        dest: python/otlp_export.py
+      - src: app/python/otlp_export_smoke_test.py
+        dest: python/otlp_export_smoke_test.py
     meta:
       post_deploy:
         - sql_script: scripts/shared_content.sql

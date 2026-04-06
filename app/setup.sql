@@ -101,6 +101,8 @@ GRANT USAGE ON PROCEDURE app_public.register_single_callback(STRING, STRING, STR
 -- ─────────────────────────────────────────────────────────────────
 -- OTLP gRPC egress: network rule, EAI, app specification, Python SPs
 -- Story 2.1 — dynamic host:port via provision_otlp_egress + test_otlp_connection
+-- Python stored procedures in this app target runtime 3.13.
+-- Use the latest Snowflake-supported snowflake-snowpark-python for 3.13.
 -- ─────────────────────────────────────────────────────────────────
 
 CREATE NETWORK RULE IF NOT EXISTS _internal.otlp_egress_rule
@@ -116,7 +118,7 @@ CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION otlp_egress_eai
 CREATE OR REPLACE PROCEDURE app_public.provision_otlp_egress(endpoint VARCHAR)
 RETURNS VARCHAR
 LANGUAGE PYTHON
-RUNTIME_VERSION = '3.11'
+RUNTIME_VERSION = '3.13'
 PACKAGES = ('snowflake-snowpark-python', 'validators')
 HANDLER = 'provision_egress.provision_egress'
 IMPORTS = ('/python/endpoint_parse.py', '/python/provision_egress.py')
@@ -125,7 +127,7 @@ EXECUTE AS OWNER;
 CREATE OR REPLACE PROCEDURE app_public.test_otlp_connection(endpoint VARCHAR, cert_pem VARCHAR)
 RETURNS VARCHAR
 LANGUAGE PYTHON
-RUNTIME_VERSION = '3.11'
+RUNTIME_VERSION = '3.13'
 PACKAGES = ('snowflake-snowpark-python', 'grpcio', 'validators', 'dnspython')
 HANDLER = 'connection_test.test_connection'
 IMPORTS = ('/python/endpoint_parse.py', '/python/connection_test.py')
@@ -135,7 +137,7 @@ EXECUTE AS OWNER;
 CREATE OR REPLACE PROCEDURE app_public.test_otlp_connection_with_secret(endpoint VARCHAR)
 RETURNS VARCHAR
 LANGUAGE PYTHON
-RUNTIME_VERSION = '3.11'
+RUNTIME_VERSION = '3.13'
 PACKAGES = ('snowflake-snowpark-python', 'grpcio', 'validators', 'dnspython')
 HANDLER = 'connection_test.test_connection_with_secret'
 IMPORTS = ('/python/endpoint_parse.py', '/python/connection_test.py')
@@ -186,7 +188,7 @@ $$;
 CREATE OR REPLACE PROCEDURE app_public.get_pem_secret()
 RETURNS VARCHAR
 LANGUAGE PYTHON
-RUNTIME_VERSION = '3.11'
+RUNTIME_VERSION = '3.13'
 PACKAGES = ('snowflake-snowpark-python')
 HANDLER = 'secret_reader.get_pem_secret'
 IMPORTS = ('/python/secret_reader.py')
@@ -202,6 +204,62 @@ GRANT USAGE ON PROCEDURE app_public.reset_onboarding_dev_state() TO APPLICATION 
 GRANT USAGE ON PROCEDURE app_public.get_pem_secret() TO APPLICATION ROLE app_admin;
 
 -- ─────────────────────────────────────────────────────────────────
+-- OTLP export diagnostic harness (Story 4.1)
+-- Smoke-tests the reusable OTLP export module from within the SP sandbox.
+-- Two variants: caller-provided PEM, and secret-bound PEM.
+-- ─────────────────────────────────────────────────────────────────
+
+CREATE OR REPLACE PROCEDURE app_public.test_otlp_export_runtime(
+    endpoint VARCHAR, cert_pem VARCHAR, test_id VARCHAR
+)
+RETURNS VARCHAR
+LANGUAGE PYTHON
+RUNTIME_VERSION = '3.13'
+PACKAGES = (
+    'snowflake-snowpark-python',
+    'opentelemetry-sdk',
+    'opentelemetry-exporter-otlp-proto-grpc',
+    'grpcio',
+    'validators'
+)
+HANDLER = 'otlp_export_smoke_test.test_otlp_export_runtime'
+IMPORTS = (
+    '/python/otlp_export_smoke_test.py',
+    '/python/otlp_export.py',
+    '/python/endpoint_parse.py'
+)
+EXTERNAL_ACCESS_INTEGRATIONS = (otlp_egress_eai)
+EXECUTE AS OWNER;
+
+CREATE OR REPLACE PROCEDURE app_public.test_otlp_export_runtime_with_secret(
+    endpoint VARCHAR, test_id VARCHAR
+)
+RETURNS VARCHAR
+LANGUAGE PYTHON
+RUNTIME_VERSION = '3.13'
+PACKAGES = (
+    'snowflake-snowpark-python',
+    'opentelemetry-sdk',
+    'opentelemetry-exporter-otlp-proto-grpc',
+    'grpcio',
+    'validators'
+)
+HANDLER = 'otlp_export_smoke_test.test_otlp_export_runtime_with_secret'
+IMPORTS = (
+    '/python/otlp_export_smoke_test.py',
+    '/python/otlp_export.py',
+    '/python/endpoint_parse.py'
+)
+EXTERNAL_ACCESS_INTEGRATIONS = (otlp_egress_eai)
+SECRETS = ('otlp_pem_cert' = _internal.otlp_pem_secret)
+EXECUTE AS OWNER;
+
+GRANT USAGE ON PROCEDURE app_public.test_otlp_export_runtime(VARCHAR, VARCHAR, VARCHAR)
+    TO APPLICATION ROLE app_admin;
+GRANT USAGE ON PROCEDURE app_public.test_otlp_export_runtime_with_secret(VARCHAR, VARCHAR)
+    TO APPLICATION ROLE app_admin;
+
+-- ─────────────────────────────────────────────────────────────────
 -- PEM certificate validation (Story 2.2)
 -- Parses a PEM-encoded X.509 certificate server-side, checks the
 -- validity window, and returns JSON with expiry/subject/fingerprint.
@@ -210,7 +268,7 @@ GRANT USAGE ON PROCEDURE app_public.get_pem_secret() TO APPLICATION ROLE app_adm
 CREATE OR REPLACE PROCEDURE app_public.validate_otlp_certificate_pem(cert_pem VARCHAR)
 RETURNS VARCHAR
 LANGUAGE PYTHON
-RUNTIME_VERSION = '3.11'
+RUNTIME_VERSION = '3.13'
 PACKAGES = ('snowflake-snowpark-python', 'cryptography')
 HANDLER = 'cert_validate.validate_pem'
 IMPORTS = ('/python/cert_validate.py')

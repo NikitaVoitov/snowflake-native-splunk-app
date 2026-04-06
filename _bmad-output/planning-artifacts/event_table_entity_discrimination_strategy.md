@@ -1,7 +1,7 @@
 # Event Table Entity Discrimination Strategy — MVP Filtering for SQL/Snowpark Compute
 
 **Date:** 2026-02-18
-**Context:** Splunk Observability Native App for Snowflake — How to isolate SQL/Snowpark compute telemetry in the shared event table, excluding SPCS, Streamlit, Openflow, Cortex, Iceberg, and future entity types. Supports incremental addition of service categories post-MVP.
+**Context:** Splunk Observability Native App for Snowflake — How to isolate SQL/Snowpark compute telemetry in the shared event table, excluding SPCS, Streamlit, Openflow, Cortex, Iceberg, and future entity types. The app's default source is a direct stream on the selected event table; consumer-created custom views over event tables remain optional when the consumer wants their own governance layer.
 
 ---
 
@@ -29,21 +29,33 @@ Snowflake's event table is a **shared telemetry sink**. Every service category w
 
 The `RESOURCE_ATTRIBUTES` column is set by Snowflake and **cannot be changed by user code**. The `snow.executable.type` attribute is the primary discriminator across entity types.
 
-### Documented Values of `snow.executable.type`
+### Documented and Live-Observed Values of `snow.executable.type`
 
-| Value | Service Category | MVP Scope |
-|---|---|---|
-| `procedure` | SQL/Snowpark — Stored Procedure | **IN SCOPE** |
-| `function` | SQL/Snowpark — UDF/UDTF | **IN SCOPE** |
-| `query` | SQL/Snowpark — SQL executed within a procedure | **IN SCOPE** |
-| `sql` | SQL/Snowpark — Single SQL query (Snowflake Scripting block) | **IN SCOPE** |
-| `spcs` | Snowpark Container Services | OUT OF SCOPE |
-| `streamlit` | Streamlit in Snowflake | OUT OF SCOPE |
+| Value | Source | Service Category | MVP Scope |
+|---|---|---|---|
+| `procedure` | Official docs + live | SQL/Snowpark — Stored Procedure | **IN SCOPE** |
+| `function` | Official docs | SQL/Snowpark — UDF/UDTF | **IN SCOPE** |
+| `query` | Official docs + live | SQL/Snowpark — SQL executed within a procedure | **IN SCOPE** |
+| `sql` | Official docs | SQL/Snowpark — Single SQL query / Snowflake Scripting context | **IN SCOPE** |
+| `STATEMENT` | Live account data | SQL/Snowpark-related traced statement bucket observed in `SNOWFLAKE.TELEMETRY.EVENTS` | **IN SCOPE** |
+| `TASK` | Live account data | Task telemetry | OUT OF SCOPE for MVP |
+| `spcs` | Official docs | Snowpark Container Services | OUT OF SCOPE |
+| `streamlit` | Official docs + live | Streamlit in Snowflake | OUT OF SCOPE |
 
 **Source:** [Event Table Columns — RESOURCE_ATTRIBUTES](https://docs.snowflake.com/en/developer-guide/logging-tracing/event-table-columns#resource-attributes-for-event-source)
 
 ### Key Insight
-`snow.executable.type` is sufficient as the sole filter for MVP scope. The four in-scope values (`procedure`, `function`, `query`, `sql`) cover all SQL/Snowpark compute telemetry.
+`snow.executable.type` remains the primary MVP discriminator, but the filter should be normalized and slightly broader than the original four-value list. The validated include list is:
+
+```sql
+UPPER(RESOURCE_ATTRIBUTES:"snow.executable.type"::STRING)
+  IN ('PROCEDURE', 'FUNCTION', 'QUERY', 'SQL', 'STATEMENT')
+```
+
+Why:
+- Official Snowflake docs still enumerate `procedure`, `function`, `query`, `sql`, `spcs`, and `streamlit`.
+- Live `SNOWFLAKE.TELEMETRY.EVENTS` data in account `LFB71918` also included `STATEMENT` and `TASK`.
+- `STATEMENT` should therefore be included **in addition to** `SQL`, not treated as a replacement for it.
 
 ---
 
@@ -158,8 +170,10 @@ Use `snow.executable.type` as a **positive include list**. This is the safest ap
 2. It naturally excludes ALL other entity types (SPCS, Streamlit, Openflow, Iceberg, Native Apps, future types)
 3. It is resilient to new entity types Snowflake may add in the future
 
-```
-Filter: RESOURCE_ATTRIBUTES:"snow.executable.type"::STRING IN ('procedure', 'function', 'query', 'sql')
+```sql
+Filter:
+  UPPER(RESOURCE_ATTRIBUTES:"snow.executable.type"::STRING)
+    IN ('PROCEDURE', 'FUNCTION', 'QUERY', 'SQL', 'STATEMENT')
 ```
 
 ### 5.2 Alternative: Negative Exclude List (NOT recommended for MVP)
@@ -172,34 +186,33 @@ Filter: RESOURCE_ATTRIBUTES:"snow.executable.type"::STRING NOT IN ('spcs', 'stre
 
 **Why not:** Fragile — new entity types added by Snowflake would leak through unless the exclude list is maintained. The positive include list is safer.
 
-### 5.3 Data Access Architecture: Custom Views + Streams
+### 5.3 Data Access Architecture: Direct Event Table Stream by Default; Consumer Custom View Optional
 
-The app does NOT read directly from customer event tables. Instead, it follows a **layered data access pattern**:
+The app **can read directly from the selected event table**. A custom view is optional, not mandatory:
 
 ```
-Customer Event Table(s)
+Selected Event Source
   │
-  ├─ Custom View (created by Native App on top of user-selected event tables)
-  │   ├─ Enables consumer-configured Row Access Policies
-  │   ├─ Enables consumer-configured Masking Policies
-  │   └─ Provides a governance-safe access layer
+  ├─ Option A (default): Event Table
+  │   └─ Stream created directly on the event table
   │
-  ├─ Stream (created on the Custom View, not the raw event table)
-  │   └─ Captures incremental changes for event-driven processing
-  │
-  └─ Snowpark DataFrame reads from the Stream
-      └─ Entity-type filter applied as Snowpark pushdown (first operation)
+  └─ Option B (consumer-managed): Custom View over Event Table
+      └─ Stream created on the consumer's view
 ```
 
-**Why Custom Views:** Snowflake consumers need to attach row access policies, masking policies, and other governance controls to the data the app reads. Creating a custom view on top of the user-selected event table(s) provides this intermediary governance layer — the consumer controls what the app can see.
+Decision update:
+- The app does **not** create or require its own governance view layer.
+- The preferred MVP path is a direct stream on the selected event table because it is simpler and avoids view-stream fragility.
+- If a consumer wants their own row access policy, masking, or projection behavior, they may create a **consumer-managed custom view** over the event table and point the app at that view instead.
+- `SNOWFLAKE.TELEMETRY.EVENTS_VIEW` is not our path for this because live validation showed the app cannot create a stream on that system view without unavailable `CHANGE_TRACKING` privileges.
 
-### 5.4 Snowpark-First Processing Philosophy
+### 5.4 Pushdown-First Processing Philosophy
 
-All filtering, sorting, and data preparation happens through **Snowpark DataFrame operations**, not raw SQL. This is a deliberate architectural choice:
+All filtering, sorting, and data preparation should push down into Snowflake SQL/Snowpark as early as possible:
 
-1. **Pushdown optimization** — Snowpark translates DataFrame operations into SQL that the Snowflake engine optimizes. The entity-type filter pushes down to the engine, minimizing data scanned from the Stream.
-2. **Avoids custom view SQL constraints** — Complex SQL queries against views can hit limitations; Snowpark DataFrame operations compose cleanly and avoid these pitfalls.
-3. **Separation of concerns** — Snowpark handles all relational work (filtering, projection, splitting by signal type). Python stored procedures only receive already-filtered, ready-to-convert DataFrames and handle the OTLP serialization + export.
+1. **Pushdown optimization** — the entity-type filter is the first relational predicate, minimizing rows scanned from the stream.
+2. **Avoids unnecessary source-layer complexity** — the app does not depend on a custom governance view to perform its own filtering. If a consumer supplies a custom view, keep that view simple and push the rest of the logic into Snowflake SQL/Snowpark.
+3. **Separation of concerns** — Snowflake handles relational work (filtering, projection, splitting by signal type). Python stored procedures receive already-filtered data and handle OTLP serialization + export.
 
 **Processing chain:**
 - **Snowpark layer:** Entity-type filter → signal-type split (SPAN/LOG/METRIC) → column projection → batching
@@ -208,23 +221,22 @@ All filtering, sorting, and data preparation happens through **Snowpark DataFram
 ### 5.5 Combined Filter Chain
 
 ```
-Customer Event Table(s)
+Selected Event Source (direct ET stream or consumer custom-view stream)
   │
-  └─ Custom View (governance layer: RAP, masking, etc.)
+  └─ Stream (incremental change capture)
       │
-      └─ Stream (incremental change capture)
+      └─ Snowflake SQL / Snowpark Processing
           │
-          └─ Snowpark DataFrame Processing
-              │
-              ├─ Filter 1: snow.executable.type IN ('procedure','function','query','sql')
-              │   → Excludes: SPCS, Streamlit, Openflow, Iceberg, Native Apps
-              │
-              ├─ Split by RECORD_TYPE (still Snowpark, still pushdown)
-              │   ├─ SPAN / SPAN_EVENT → enrichment → OTLP/gRPC
-              │   ├─ LOG               → formatting  → HEC HTTP
-              │   └─ METRIC            → enrichment → OTLP/gRPC
-              │
-              └─ (Future: additional entity type filters for other service categories)
+          ├─ Filter 1: UPPER(snow.executable.type) IN
+          │     ('PROCEDURE','FUNCTION','QUERY','SQL','STATEMENT')
+          │   → Excludes: SPCS, Streamlit, Openflow, Iceberg, Native Apps, TASK
+          │
+          ├─ Split by RECORD_TYPE
+          │   ├─ SPAN / SPAN_EVENT → enrichment → OTLP/gRPC
+          │   ├─ LOG               → formatting  → HEC HTTP
+          │   └─ METRIC            → enrichment → OTLP/gRPC
+          │
+          └─ (Future: additional entity type filters for other service categories)
 ```
 
 ---
@@ -239,10 +251,10 @@ Each service category is defined by three elements: a **filter predicate** (whic
 
 | Category | Filter Predicate | OTel Convention | Data Source | Status |
 |---|---|---|---|---|
-| **SQL/Snowpark** | `snow.executable.type` IN (`procedure`, `function`, `query`, `sql`) | `db.*` | Customer event table (via custom view + stream) | **MVP** |
-| SPCS | `snow.service.name` IS NOT NULL | `k8s.*` + `container.*` | Customer event table (via custom view + stream) | Post-MVP |
-| Streamlit | `snow.executable.type` = `streamlit` | `http.*` + custom | Customer event table (via custom view + stream) | Post-MVP |
-| Openflow | `RESOURCE_ATTRIBUTES:application` = `openflow` | `k8s.*` + `container.*` + custom pipeline | Customer event table (via custom view + stream) | Post-MVP |
+| **SQL/Snowpark** | `UPPER(snow.executable.type)` IN (`PROCEDURE`, `FUNCTION`, `QUERY`, `SQL`, `STATEMENT`) | `db.*` | Selected event-table stream source (direct ET stream by default; consumer view stream optional) | **MVP** |
+| SPCS | `snow.service.name` IS NOT NULL | `k8s.*` + `container.*` | Selected event-table stream source | Post-MVP |
+| Streamlit | `UPPER(snow.executable.type)` = `STREAMLIT` | `http.*` + custom | Selected event-table stream source | Post-MVP |
+| Openflow | `RESOURCE_ATTRIBUTES:application` = `openflow` | `k8s.*` + `container.*` + custom pipeline | Selected event-table stream source | Post-MVP |
 | Cortex AI | N/A (separate table) | `gen_ai.*` | `SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS` via `GET_AI_OBSERVABILITY_EVENTS()` | Post-MVP |
 
 ### 6.2 Adding a New Service Category Checklist
@@ -256,13 +268,14 @@ Each service category is defined by three elements: a **filter predicate** (whic
 
 ### 6.3 Filter Ordering and Mutual Exclusivity
 
-The filters are **mutually exclusive by design** because `snow.executable.type` values do not overlap across categories:
+The filters are **mostly mutually exclusive by design** because `snow.executable.type` values do not overlap across categories:
 
 | `snow.executable.type` | Category |
 |---|---|
-| `procedure`, `function`, `query`, `sql` | SQL/Snowpark (MVP) |
+| `PROCEDURE`, `FUNCTION`, `QUERY`, `SQL`, `STATEMENT` | SQL/Snowpark (MVP, normalized filter) |
 | `spcs` | SPCS |
 | `streamlit` | Streamlit |
+| `TASK` | Task telemetry (excluded from MVP) |
 
 For Openflow, the discriminator is different (`RESOURCE_ATTRIBUTES:application = "openflow"`), but Openflow records do NOT have `snow.executable.type` set, so there is no overlap.
 
@@ -307,13 +320,13 @@ SPCS platform events use `RECORD_TYPE = 'EVENT'` and `SCOPE:"name" = 'snow.spcs.
 
 ### 7.6 Volume and Cost Implications
 
-Filtering early via Snowpark pushdown through the custom view + stream means:
-- Only rows matching `snow.executable.type IN (...)` are scanned from the Stream
+Filtering early via Snowflake SQL/Snowpark pushdown on the selected stream source means:
+- Only rows matching the normalized SQL/Snowpark include list are scanned from the stream
 - SPCS telemetry (potentially very high volume — container metrics at up to 1 MB/s per node) is never read
 - Openflow telemetry (potentially high volume from pipeline metrics) is never read
 - Only SQL/Snowpark compute telemetry is processed and transformed
 
-This is critical for cost optimization — the customer pays for serverless task compute, and Snowpark pushdown minimizes data scanned. The custom view layer adds no materialization cost (it's a logical view), and the stream only tracks incremental changes since the last consumption.
+This is critical for cost optimization — the customer pays for task compute, and pushdown minimizes data scanned. If a consumer chooses to place a custom view in front of the stream, that remains a logical view with no materialization cost, but it is not required for the MVP path.
 
 ---
 
@@ -329,7 +342,7 @@ Filter accuracy should be validated during development and onboarding using Snow
 
 4. **Volume estimator integration** — The app's volume estimator (from vision doc `_internal.volume_estimator`) should run these profiling checks as Snowpark operations to project throughput for the customer's specific workload mix, without any raw SQL penalty.
 
-All profiling uses the same Snowpark-first approach as the production pipeline — DataFrame operations against the custom view, with full pushdown to the Snowflake engine.
+All profiling uses the same pushdown-first approach as the production pipeline — against the selected stream source, with full pushdown to the Snowflake engine.
 
 ---
 
@@ -352,14 +365,16 @@ All profiling uses the same Snowpark-first approach as the production pipeline �
 ├──────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
 │  DATA ACCESS PATH:                                                           │
-│    Customer Event Table → Custom View (RAP/masking) → Stream → Snowpark     │
+│    Selected Event Source → Stream → Snowflake SQL / Snowpark                │
+│    Default: direct event table stream                                        │
+│    Optional: consumer-created custom view stream                             │
 │                                                                              │
 │  PRIMARY FILTER (Snowpark pushdown, first operation):                        │
-│    RESOURCE_ATTRIBUTES:"snow.executable.type" IN                             │
-│      ('procedure', 'function', 'query', 'sql')                              │
+│    UPPER(RESOURCE_ATTRIBUTES:"snow.executable.type"::STRING) IN              │
+│      ('PROCEDURE', 'FUNCTION', 'QUERY', 'SQL', 'STATEMENT')                 │
 │                                                                              │
 │  PROCESSING MODEL:                                                           │
-│    Snowpark handles ALL filtering/projection/splitting (pushdown)            │
+│    Snowflake SQL / Snowpark handles filtering/projection/splitting           │
 │    Python SPs receive READY data → OTLP conversion → export to Splunk       │
 │                                                                              │
 │  WHAT THIS INCLUDES:                                                         │

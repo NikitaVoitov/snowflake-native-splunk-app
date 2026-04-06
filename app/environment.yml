@@ -1,9 +1,10 @@
 # ─────────────────────────────────────────────────────────────────
 # environment.yml — Snowflake Anaconda Channel runtime dependencies
 # All packages must be available on the Snowflake Anaconda Channel.
-# Versions pinned to latest available as of 2026-03-15.
-# Verified via: SELECT PACKAGE_NAME, MAX(VERSION) FROM INFORMATION_SCHEMA.PACKAGES
-#               WHERE LANGUAGE = 'python' AND PACKAGE_NAME IN (...) GROUP BY 1;
+# This file is used by the Streamlit runtime, which stays on Python 3.11.
+# Stored procedures target Python 3.13 in app/setup.sql and should use the
+# latest package versions available for the 3.13 runtime there.
+# Verified against SNOWFLAKE.INFORMATION_SCHEMA.PACKAGES on 2026-04-03.
 # ─────────────────────────────────────────────────────────────────
 
 name: sf_env
@@ -12,6 +13,8 @@ channels:
 dependencies:
   # Core Application Framework
   - streamlit=1.52.2
+  # Streamlit on 3.11 currently exposes snowflake-snowpark-python 1.9.0.
+  # Stored procedures use Python 3.13 and currently resolve 1.48.0 there.
   - snowflake-snowpark-python=1.9.0
   - snowflake-native-apps-permission=0.1.9
 
