@@ -260,6 +260,56 @@ GRANT USAGE ON PROCEDURE app_public.test_otlp_export_runtime_with_secret(VARCHAR
     TO APPLICATION ROLE app_admin;
 
 -- ─────────────────────────────────────────────────────────────────
+-- Telemetry test signal generators (Story 4.2)
+-- Stored procedures and UDF that produce controlled, verifiable
+-- telemetry rows in the Event Table for integration testing.
+-- ─────────────────────────────────────────────────────────────────
+
+CREATE OR REPLACE PROCEDURE app_public.generate_test_spans(test_id VARCHAR)
+RETURNS VARCHAR
+LANGUAGE PYTHON
+RUNTIME_VERSION = '3.13'
+PACKAGES = ('snowflake-snowpark-python', 'snowflake-telemetry-python')
+HANDLER = 'telemetry_test_generators.generate_test_spans'
+IMPORTS = ('/python/telemetry_test_generators.py')
+EXECUTE AS OWNER;
+
+CREATE OR REPLACE PROCEDURE app_public.generate_test_logs(test_id VARCHAR)
+RETURNS VARCHAR
+LANGUAGE PYTHON
+RUNTIME_VERSION = '3.13'
+PACKAGES = ('snowflake-snowpark-python', 'snowflake-telemetry-python')
+HANDLER = 'telemetry_test_generators.generate_test_logs'
+IMPORTS = ('/python/telemetry_test_generators.py')
+EXECUTE AS OWNER;
+
+CREATE OR REPLACE PROCEDURE app_public.generate_test_exception(test_id VARCHAR)
+RETURNS VARCHAR
+LANGUAGE PYTHON
+RUNTIME_VERSION = '3.13'
+PACKAGES = ('snowflake-snowpark-python', 'snowflake-telemetry-python')
+HANDLER = 'telemetry_test_generators.generate_test_exception'
+IMPORTS = ('/python/telemetry_test_generators.py')
+EXECUTE AS OWNER;
+
+CREATE OR REPLACE FUNCTION app_public.generate_test_udf_telemetry(x NUMBER, test_id VARCHAR)
+RETURNS NUMBER
+LANGUAGE PYTHON
+RUNTIME_VERSION = '3.13'
+PACKAGES = ('snowflake-telemetry-python')
+HANDLER = 'telemetry_test_generators.generate_test_udf_telemetry'
+IMPORTS = ('/python/telemetry_test_generators.py');
+
+GRANT USAGE ON PROCEDURE app_public.generate_test_spans(VARCHAR)
+    TO APPLICATION ROLE app_admin;
+GRANT USAGE ON PROCEDURE app_public.generate_test_logs(VARCHAR)
+    TO APPLICATION ROLE app_admin;
+GRANT USAGE ON PROCEDURE app_public.generate_test_exception(VARCHAR)
+    TO APPLICATION ROLE app_admin;
+GRANT USAGE ON FUNCTION app_public.generate_test_udf_telemetry(NUMBER, VARCHAR)
+    TO APPLICATION ROLE app_admin;
+
+-- ─────────────────────────────────────────────────────────────────
 -- PEM certificate validation (Story 2.2)
 -- Parses a PEM-encoded X.509 certificate server-side, checks the
 -- validity window, and returns JSON with expiry/subject/fingerprint.

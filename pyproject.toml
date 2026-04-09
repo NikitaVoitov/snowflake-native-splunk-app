@@ -176,5 +176,12 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "-v --tb=short"
+addopts = "-v --tb=short -m 'not integration'"
 pythonpath = ["app/python"]
+markers = [
+    "integration: marks tests as integration tests requiring live Snowflake + OTel collector",
+    "integration_foundation: fast mapper/export integration checks against Snowflake and the OTLP export foundation",
+    "integration_collector: medium downstream verification checks that rely on collector or search visibility",
+    "integration_o11y: slow live Splunk Observability verification checks",
+    "slow: marks tests with long live polling windows",
+]
