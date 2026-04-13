@@ -45,7 +45,7 @@ FR22a: Maya can adjust the overlap window for each ACCOUNT_USAGE source to contr
 FR23: Sam can deliver all enabled Event Table and ACCOUNT_USAGE telemetry through the configured OTLP destination for downstream use in Splunk.
 FR24: Ravi can analyze exported Event Table spans in Splunk using query or executable identity, database and schema context, warehouse context, and trace correlation fields.
 FR25: Ravi can rely on original Event Table attributes remaining intact in exported telemetry, with any app-added attributes added without renaming or removing source attributes.
-FR26: Sam can rely on retryable OTLP delivery failures being retried automatically and on non-retryable failures being recorded as terminal batch failures without endless retry.
+FR26: Sam can rely on the built-in Python OTLP/gRPC exporter retry behavior for retryable delivery failures and on non-retryable failures being recorded as terminal batch failures without endless retry.
 FR27: Sam can view a health summary that shows destination status, source freshness, export throughput, failures, and recent operational issues.
 FR28: Sam can inspect each telemetry source to see current status, freshness, recent runs, current errors, and its editable configuration.
 FR29: Sam can access structured app operational events in the consumer's Snowflake event table via Snowsight.
@@ -79,7 +79,7 @@ NFR14: >= 99.5% of batches complete successfully after retry handling over a rol
 NFR15: In induced single-source failure tests, 100% of unaffected sources still start and complete within their next scheduled interval.
 NFR16: 100% of induced stale stream conditions are detected and export resumes within 10 minutes or 2 scheduled executions, whichever is longer, without manual action.
 NFR17: Zero missing or duplicate records in controlled upgrade reconciliation; 100% retention of configuration and source progress across supported upgrade paths.
-NFR18: Zero permanently lost batches for induced destination outages lasting up to 60 seconds.
+NFR18 (Post-MVP, out of MVP scope): Zero permanently lost batches for induced destination outages lasting up to 60 seconds. MVP does not promise this outcome and relies only on the built-in Python OTLP/gRPC exporter retry window.
 NFR19: A triggered execution completes with 1,000,000 representative Event Table rows without timeout or unrecoverable memory failure.
 NFR20: With 10 enabled sources, >= 99% of scheduled runs start within one interval and complete successfully.
 NFR21: Doubling supported task compute yields at least 1.7x throughput until destination saturation or the NFR19 workload ceiling is reached.
@@ -409,23 +409,24 @@ So that I can search and troubleshoot Snowflake activity in Splunk with the righ
 ### Story 4.3: Deterministic OTLP retry and terminal failure handling
 
 As an operator (Sam),
-I want retryable OTLP errors to be retried automatically and non-retryable errors to be recorded as terminal without endless retry,
+I want the built-in Python OTLP exporter to retry retryable OTLP errors automatically and to record terminal outcomes without endless retry,
 So that transient failures recover while permanent failures remain visible and bounded.
 
 **Acceptance Criteria:**
 
 **Given** the OTLP export foundation is sending a batch  
-**When** a retryable transport or protocol error occurs  
-**Then** the configured retry policy retries automatically and records the final outcome deterministically  
-**When** retries are exhausted or a non-retryable error occurs  
+**When** the upstream Python OTLP/gRPC exporter encounters a retryable transport or protocol error  
+**Then** the exporter retries automatically within its configured timeout window and records the final outcome deterministically  
+**When** retries are exhausted, the public exporter returns `FAILURE`, or a non-retryable gRPC status is surfaced  
 **Then** the failure is logged through Native App event definitions and recorded as a terminal batch failure in `_metrics.pipeline_health` within the expected observability window  
+**And** the outcome uses raw upstream exporter or gRPC code names such as `FAILURE` or `UNAVAILABLE` rather than app-defined OTLP alias codes  
 **And** the caller receives an explicit terminal result so the surrounding pipeline can advance or record the failure without entering an endless resend loop
 
 **Implementation Tasks:**
 
-- Classify retryable versus non-retryable OTLP failures consistently.
+- Classify retryable versus non-retryable OTLP failures using the raw upstream exporter and `grpc.StatusCode` names only.
 - Surface retry exhaustion as an explicit terminal outcome to caller code.
-- Record terminal failures in structured logs and pipeline-health tables without leaking secrets.
+- Record terminal failures in structured logs and pipeline-health tables without leaking secrets and without adding any application-level retry loop.
 
 ---
 

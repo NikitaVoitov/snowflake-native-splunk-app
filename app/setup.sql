@@ -226,6 +226,8 @@ HANDLER = 'otlp_export_smoke_test.test_otlp_export_runtime'
 IMPORTS = (
     '/python/otlp_export_smoke_test.py',
     '/python/otlp_export.py',
+    '/python/export_result.py',
+    '/python/pipeline_telemetry.py',
     '/python/endpoint_parse.py'
 )
 EXTERNAL_ACCESS_INTEGRATIONS = (otlp_egress_eai)
@@ -248,6 +250,8 @@ HANDLER = 'otlp_export_smoke_test.test_otlp_export_runtime_with_secret'
 IMPORTS = (
     '/python/otlp_export_smoke_test.py',
     '/python/otlp_export.py',
+    '/python/export_result.py',
+    '/python/pipeline_telemetry.py',
     '/python/endpoint_parse.py'
 )
 EXTERNAL_ACCESS_INTEGRATIONS = (otlp_egress_eai)
@@ -257,6 +261,60 @@ EXECUTE AS OWNER;
 GRANT USAGE ON PROCEDURE app_public.test_otlp_export_runtime(VARCHAR, VARCHAR, VARCHAR)
     TO APPLICATION ROLE app_admin;
 GRANT USAGE ON PROCEDURE app_public.test_otlp_export_runtime_with_secret(VARCHAR, VARCHAR)
+    TO APPLICATION ROLE app_admin;
+
+CREATE OR REPLACE PROCEDURE app_public.test_otlp_export_observability(
+    endpoint VARCHAR, cert_pem VARCHAR, test_id VARCHAR
+)
+RETURNS VARCHAR
+LANGUAGE PYTHON
+RUNTIME_VERSION = '3.13'
+PACKAGES = (
+    'snowflake-snowpark-python',
+    'opentelemetry-sdk',
+    'opentelemetry-exporter-otlp-proto-grpc',
+    'grpcio',
+    'validators'
+)
+HANDLER = 'otlp_export_smoke_test.test_otlp_export_observability'
+IMPORTS = (
+    '/python/otlp_export_smoke_test.py',
+    '/python/otlp_export.py',
+    '/python/export_result.py',
+    '/python/pipeline_telemetry.py',
+    '/python/endpoint_parse.py'
+)
+EXTERNAL_ACCESS_INTEGRATIONS = (otlp_egress_eai)
+EXECUTE AS OWNER;
+
+CREATE OR REPLACE PROCEDURE app_public.test_otlp_export_observability_with_secret(
+    endpoint VARCHAR, test_id VARCHAR
+)
+RETURNS VARCHAR
+LANGUAGE PYTHON
+RUNTIME_VERSION = '3.13'
+PACKAGES = (
+    'snowflake-snowpark-python',
+    'opentelemetry-sdk',
+    'opentelemetry-exporter-otlp-proto-grpc',
+    'grpcio',
+    'validators'
+)
+HANDLER = 'otlp_export_smoke_test.test_otlp_export_observability_with_secret'
+IMPORTS = (
+    '/python/otlp_export_smoke_test.py',
+    '/python/otlp_export.py',
+    '/python/export_result.py',
+    '/python/pipeline_telemetry.py',
+    '/python/endpoint_parse.py'
+)
+EXTERNAL_ACCESS_INTEGRATIONS = (otlp_egress_eai)
+SECRETS = ('otlp_pem_cert' = _internal.otlp_pem_secret)
+EXECUTE AS OWNER;
+
+GRANT USAGE ON PROCEDURE app_public.test_otlp_export_observability(VARCHAR, VARCHAR, VARCHAR)
+    TO APPLICATION ROLE app_admin;
+GRANT USAGE ON PROCEDURE app_public.test_otlp_export_observability_with_secret(VARCHAR, VARCHAR)
     TO APPLICATION ROLE app_admin;
 
 -- ─────────────────────────────────────────────────────────────────

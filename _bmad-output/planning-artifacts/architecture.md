@@ -225,7 +225,7 @@ Multi-package promotion: dev (`INTERNAL`) → scan (`EXTERNAL`, security scan) �
 | V9 | Network client lifecycle | Module-level OTLP exporter initialization — gRPC channel persists across task invocations via Snowflake module caching | Vision §7.12 BP-2, BP-3 |
 | V10 | Event Table entity filtering | Positive include-list on `RESOURCE_ATTRIBUTES:"snow.executable.type"` — values: `procedure`, `function`, `query`, `sql` | Vision §7B, Entity Discrimination Strategy |
 | V11 | OTel semantic conventions | Layered: `db.*` (Database Client, stable) + `snowflake.*` (custom namespace) + convention-transparent relay of original attributes | Vision §7B, OTel Conventions Research |
-| V12 | Failure handling (MVP) | Transport-level retry only (OTel SDK built-in gRPC retry ~6 attempts over ~63s); on exhaustion: log failure + advance pipeline | Vision §7.2 |
+| V12 | Failure handling (MVP) | Transport-level retry only via the built-in Python OTLP/gRPC exporter retry logic; retry is additionally bounded by the configured exporter timeout (`_EXPORT_TIMEOUT_S = 10` in this project). No application-level retry loop in MVP; on exhaustion: log failure + advance pipeline | Vision §7.2 |
 | V13 | Operational logging | Native App event definitions — structured logs to consumer's account-level event table; queryable via Snowsight | Vision §3.5, PRD §3.5 |
 | V14 | RBAC model | Single role: `app_admin` — KISS principle; admin shares dashboards via Splunk, not in-app viewer roles | Vision §1, PRD §1.2 |
 
@@ -563,16 +563,27 @@ logger.info("Pipeline run complete", extra={
 | `rows_exported` | int | On success | Rows successfully exported |
 | `rows_failed` | int | On failure | Rows that failed export |
 | `duration_ms` | int | Yes | Total run duration |
-| `error_code` | string | On error | Machine-readable error classification |
+| `error_code` | string | On error | For OTLP export events, the raw upstream exporter or gRPC code name when available (for example `FAILURE`, `UNAVAILABLE`, `PERMISSION_DENIED`) |
 | `error_message` | string | On error | Human-readable error detail |
 
-**Error Code Taxonomy:**
+For OTLP export operational events, build the structured log payload in one caller-side helper and emit it through Python `logging`. The low-level exporter wrapper should return structured outcomes and avoid duplicating `pipeline` / `source` / `run_id` logging that only callers know.
+
+**Operational Code Taxonomy:**
+
+**OTLP Export Status Codes (use raw upstream names; do not invent aliases):**
+
+| Surface | Code(s) | Meaning |
+|---|---|---|
+| Public exporter result enum | `SUCCESS`, `FAILURE` | The only result codes guaranteed by the Python OTLP exporter public API |
+| Directly observed gRPC status | `OK`, `CANCELLED`, `UNKNOWN`, `INVALID_ARGUMENT`, `DEADLINE_EXCEEDED`, `NOT_FOUND`, `ALREADY_EXISTS`, `PERMISSION_DENIED`, `RESOURCE_EXHAUSTED`, `FAILED_PRECONDITION`, `ABORTED`, `OUT_OF_RANGE`, `UNIMPLEMENTED`, `INTERNAL`, `UNAVAILABLE`, `DATA_LOSS`, `UNAUTHENTICATED` | Use `grpc.RpcError.code().name` verbatim only when surfaced to app code |
+| Upstream retryable direct gRPC status subset | `CANCELLED`, `DEADLINE_EXCEEDED`, `RESOURCE_EXHAUSTED`, `ABORTED`, `OUT_OF_RANGE`, `UNAVAILABLE`, `DATA_LOSS` | Mirrors `_RETRYABLE_ERROR_CODES` in the upstream exporter |
+
+For OTLP export operational logs and `_metrics.pipeline_health` metadata, store the raw upstream code string in `error_code` when available. If no upstream code is exposed, leave `error_code` null and rely on a sanitized `error_message`.
+
+**Non-OTLP Pipeline / Configuration Codes:**
 
 | Code | Category | Example |
 |---|---|---|
-| `OTLP_CONNECT_FAILED` | Transport | gRPC connection refused |
-| `OTLP_TIMEOUT` | Transport | gRPC deadline exceeded after all retries |
-| `OTLP_TLS_FAILED` | Transport | TLS handshake failure |
 | `STREAM_STALE` | Pipeline | Stream became stale; auto-recovery triggered |
 | `STREAM_BROKEN` | Pipeline | Stream on view broken (view recreated) |
 | `SOURCE_UNAVAILABLE` | Pipeline | ACCOUNT_USAGE view query failed |

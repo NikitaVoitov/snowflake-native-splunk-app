@@ -85,13 +85,16 @@ def _export_live_telemetry(
     close_exporters()
     init_exporters(endpoint, pem_text)
     try:
+        span_outcome = export_spans(spans)
+        log_outcome = export_logs(logs)
         results: dict[str, bool | None] = {
-            "span_export": export_spans(spans),
-            "log_export": export_logs(logs),
+            "span_export": span_outcome.success,
+            "log_export": log_outcome.success,
             "metric_export": None,
         }
         if metrics.resource_metrics:
-            results["metric_export"] = export_metrics(metrics)
+            metric_outcome = export_metrics(metrics)
+            results["metric_export"] = metric_outcome.success
         return results
     finally:
         close_exporters()
@@ -137,8 +140,8 @@ def rich_trace_export_summary(
 ) -> dict[str, Any]:
     """Export the rich trace scenario and verify it in collector + O11y."""
     del o11y_access
-    assert rich_live_export_results["span_export"] is True
-    assert rich_live_export_results["log_export"] is True
+    assert rich_live_export_results["span_export"]
+    assert rich_live_export_results["log_export"]
 
     snowflake_ids = {
         _normalize_hex_id(str(value))
@@ -386,19 +389,19 @@ class TestLiveOtlpExport:
     def test_span_export_succeeds(
         self, live_export_results: dict[str, bool | None]
     ) -> None:
-        assert live_export_results["span_export"] is True
+        assert live_export_results["span_export"]
 
     def test_log_export_succeeds(
         self, live_export_results: dict[str, bool | None]
     ) -> None:
-        assert live_export_results["log_export"] is True
+        assert live_export_results["log_export"]
 
     def test_metric_export_succeeds_when_metrics_present(
         self, live_export_results: dict[str, bool | None]
     ) -> None:
         if live_export_results["metric_export"] is None:
             pytest.skip("No METRIC rows were available for export verification")
-        assert live_export_results["metric_export"] is True
+        assert live_export_results["metric_export"]
 
 
 @pytest.mark.integration_collector

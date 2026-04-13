@@ -15,6 +15,11 @@ configuration:
   log_level: INFO
   trace_level: ALWAYS
   metric_level: ALL
+  telemetry_event_definitions:
+    - type: ERRORS_AND_WARNINGS
+      sharing: MANDATORY
+    - type: DEBUG_LOGS
+      sharing: OPTIONAL
 
 privileges:
   - "IMPORTED PRIVILEGES ON SNOWFLAKE DB":

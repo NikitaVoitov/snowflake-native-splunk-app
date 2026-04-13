@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import otlp_export
 import pytest
+from export_result import ExportOutcome
 from opentelemetry.sdk._logs.export import LogExportResult
 from opentelemetry.sdk.metrics.export import MetricExportResult
 from opentelemetry.sdk.trace.export import SpanExportResult
@@ -80,6 +81,16 @@ class TestCredentialConstruction:
         mock_ssl.assert_called_once_with()
 
 
+def _mock_metrics_data(n_data_points: int = 1) -> MagicMock:
+    """Build a mock MetricsData with countable data points."""
+    data_points = [MagicMock() for _ in range(n_data_points)]
+    data = MagicMock(data_points=data_points)
+    metric = MagicMock(data=data)
+    scope = MagicMock(metrics=[metric])
+    rm = MagicMock(scope_metrics=[scope])
+    return MagicMock(resource_metrics=[rm])
+
+
 def _init_with_mocks(
     mock_cred: MagicMock,
     mock_span: MagicMock,
@@ -110,7 +121,7 @@ def _init_with_mocks(
 
 
 class TestExportResults:
-    """Export returns explicit success/failure (AC 4)."""
+    """Export returns ExportOutcome with correct success/failure and backward compat (AC 4)."""
 
     def setup_method(self) -> None:
         _reset_module()
@@ -127,7 +138,14 @@ class TestExportResults:
         mock_log: MagicMock,
     ) -> None:
         _init_with_mocks(mock_cred, mock_span, mock_metric, mock_log)
-        assert otlp_export.export_spans([MagicMock()]) is True
+        outcome = otlp_export.export_spans([MagicMock()])
+        assert isinstance(outcome, ExportOutcome)
+        assert outcome  # backward compat: truthy on success
+        assert outcome.success is True
+        assert outcome.terminal is False
+        assert outcome.signal_type == "spans"
+        assert outcome.batch_size == 1
+        assert outcome.duration_ms >= 0
 
     @patch("otlp_export._build_log_exporter")
     @patch("otlp_export._build_metric_exporter")
@@ -147,7 +165,11 @@ class TestExportResults:
             mock_log,
             span_result=SpanExportResult.FAILURE,
         )
-        assert otlp_export.export_spans([MagicMock()]) is False
+        outcome = otlp_export.export_spans([MagicMock()])
+        assert not outcome  # backward compat: falsy on failure
+        assert outcome.success is False
+        assert outcome.terminal is True
+        assert outcome.error_code == "FAILURE"
 
     @patch("otlp_export._build_log_exporter")
     @patch("otlp_export._build_metric_exporter")
@@ -161,7 +183,9 @@ class TestExportResults:
         mock_log: MagicMock,
     ) -> None:
         _init_with_mocks(mock_cred, mock_span, mock_metric, mock_log)
-        assert otlp_export.export_logs([MagicMock()]) is True
+        outcome = otlp_export.export_logs([MagicMock()])
+        assert outcome
+        assert outcome.success is True
 
     @patch("otlp_export._build_log_exporter")
     @patch("otlp_export._build_metric_exporter")
@@ -181,7 +205,9 @@ class TestExportResults:
             mock_log,
             log_result=LogExportResult.FAILURE,
         )
-        assert otlp_export.export_logs([MagicMock()]) is False
+        outcome = otlp_export.export_logs([MagicMock()])
+        assert not outcome
+        assert outcome.terminal is True
 
     @patch("otlp_export._build_log_exporter")
     @patch("otlp_export._build_metric_exporter")
@@ -202,7 +228,9 @@ class TestExportResults:
             mock_log,
             log_result=compat_success,
         )
-        assert otlp_export.export_logs([MagicMock()]) is True
+        outcome = otlp_export.export_logs([MagicMock()])
+        assert outcome
+        assert outcome.success is True
 
     @patch("otlp_export._build_log_exporter")
     @patch("otlp_export._build_metric_exporter")
@@ -216,7 +244,9 @@ class TestExportResults:
         mock_log: MagicMock,
     ) -> None:
         _init_with_mocks(mock_cred, mock_span, mock_metric, mock_log)
-        assert otlp_export.export_metrics(MagicMock()) is True
+        outcome = otlp_export.export_metrics(_mock_metrics_data())
+        assert outcome
+        assert outcome.success is True
 
     @patch("otlp_export._build_log_exporter")
     @patch("otlp_export._build_metric_exporter")
@@ -236,22 +266,31 @@ class TestExportResults:
             mock_log,
             metric_result=MetricExportResult.FAILURE,
         )
-        assert otlp_export.export_metrics(MagicMock()) is False
+        outcome = otlp_export.export_metrics(_mock_metrics_data())
+        assert not outcome
+        assert outcome.terminal is True
 
     def test_export_spans_before_init(self) -> None:
-        assert otlp_export.export_spans([MagicMock()]) is False
+        outcome = otlp_export.export_spans([MagicMock()])
+        assert not outcome
+        assert outcome.terminal is True
+        assert "not initialized" in (outcome.error_message or "").lower()
 
     def test_export_logs_before_init(self) -> None:
-        assert otlp_export.export_logs([MagicMock()]) is False
+        outcome = otlp_export.export_logs([MagicMock()])
+        assert not outcome
+        assert outcome.terminal is True
 
     def test_export_metrics_before_init(self) -> None:
-        assert otlp_export.export_metrics(MagicMock()) is False
+        outcome = otlp_export.export_metrics(_mock_metrics_data())
+        assert not outcome
+        assert outcome.terminal is True
 
     @patch("otlp_export._build_log_exporter")
     @patch("otlp_export._build_metric_exporter")
     @patch("otlp_export._build_span_exporter")
     @patch("otlp_export._build_credentials")
-    def test_export_spans_exception_returns_false(
+    def test_export_spans_exception_returns_terminal(
         self,
         mock_cred: MagicMock,
         mock_span: MagicMock,
@@ -265,13 +304,83 @@ class TestExportResults:
             mock_log,
         )
         span_exp.export.side_effect = RuntimeError("gRPC unavailable")
-        assert otlp_export.export_spans([MagicMock()]) is False
+        outcome = otlp_export.export_spans([MagicMock()])
+        assert not outcome
+        assert outcome.terminal is True
+        assert "RuntimeError" in (outcome.error_message or "")
+
+    @patch("otlp_export.log")
+    @patch("otlp_export._build_log_exporter")
+    @patch("otlp_export._build_metric_exporter")
+    @patch("otlp_export._build_span_exporter")
+    @patch("otlp_export._build_credentials")
+    def test_export_spans_exception_logs_sanitized_summary(
+        self,
+        mock_cred: MagicMock,
+        mock_span: MagicMock,
+        mock_metric: MagicMock,
+        mock_log_exporter: MagicMock,
+        mock_log: MagicMock,
+    ) -> None:
+        span_exp, _, _ = _init_with_mocks(
+            mock_cred,
+            mock_span,
+            mock_metric,
+            mock_log_exporter,
+        )
+        span_exp.export.side_effect = RuntimeError(
+            "failed connecting to https://secret.example.com:4317/v1/traces",
+        )
+
+        outcome = otlp_export.export_spans([MagicMock()])
+
+        assert not outcome
+        mock_log.warning.assert_called_once()
+        logged_summary = mock_log.warning.call_args[0][2]
+        assert "https://secret.example.com" not in logged_summary
+        assert "[URL-REDACTED]" in logged_summary
+        assert mock_log.warning.call_args[1]["extra"]["signal_type"] == "spans"
+        assert mock_log.warning.call_args[1]["extra"]["error_code"] == "RuntimeError"
+        assert "[URL-REDACTED]" in mock_log.warning.call_args[1]["extra"]["error_message"]
+
+    @patch("otlp_export.log")
+    @patch("otlp_export._build_log_exporter")
+    @patch("otlp_export._build_metric_exporter")
+    @patch("otlp_export._build_span_exporter")
+    @patch("otlp_export._build_credentials")
+    def test_export_spans_hidden_status_typeerror_normalized_to_failure(
+        self,
+        mock_cred: MagicMock,
+        mock_span: MagicMock,
+        mock_metric: MagicMock,
+        mock_log_exporter: MagicMock,
+        mock_log: MagicMock,
+    ) -> None:
+        span_exp, _, _ = _init_with_mocks(
+            mock_cred,
+            mock_span,
+            mock_metric,
+            mock_log_exporter,
+        )
+        span_exp.export.side_effect = TypeError(
+            "cannot unpack non-iterable bool object",
+        )
+
+        outcome = otlp_export.export_spans([MagicMock()])
+
+        assert not outcome
+        assert outcome.error_code == "FAILURE"
+        assert "underlying gRPC status code" in (outcome.error_message or "")
+        assert "TypeError" in (outcome.error_message or "")
+        mock_log.warning.assert_called_once()
+        assert mock_log.warning.call_args[1]["extra"]["signal_type"] == "spans"
+        assert mock_log.warning.call_args[1]["extra"]["error_code"] == "FAILURE"
 
     @patch("otlp_export._build_log_exporter")
     @patch("otlp_export._build_metric_exporter")
     @patch("otlp_export._build_span_exporter")
     @patch("otlp_export._build_credentials")
-    def test_export_logs_exception_returns_false(
+    def test_export_logs_exception_returns_terminal(
         self,
         mock_cred: MagicMock,
         mock_span: MagicMock,
@@ -285,13 +394,15 @@ class TestExportResults:
             mock_log,
         )
         log_exp.export.side_effect = RuntimeError("gRPC unavailable")
-        assert otlp_export.export_logs([MagicMock()]) is False
+        outcome = otlp_export.export_logs([MagicMock()])
+        assert not outcome
+        assert outcome.terminal is True
 
     @patch("otlp_export._build_log_exporter")
     @patch("otlp_export._build_metric_exporter")
     @patch("otlp_export._build_span_exporter")
     @patch("otlp_export._build_credentials")
-    def test_export_metrics_exception_returns_false(
+    def test_export_metrics_exception_returns_terminal(
         self,
         mock_cred: MagicMock,
         mock_span: MagicMock,
@@ -305,7 +416,25 @@ class TestExportResults:
             mock_log,
         )
         metric_exp.export.side_effect = RuntimeError("gRPC unavailable")
-        assert otlp_export.export_metrics(MagicMock()) is False
+        outcome = otlp_export.export_metrics(_mock_metrics_data())
+        assert not outcome
+        assert outcome.terminal is True
+
+    def test_export_spans_empty_batch_is_noop(self) -> None:
+        outcome = otlp_export.export_spans([])
+        assert outcome
+        assert outcome.batch_size == 0
+        assert outcome.signal_type == "spans"
+
+    def test_export_spans_none_batch_is_noop(self) -> None:
+        outcome = otlp_export.export_spans(None)
+        assert outcome
+        assert outcome.batch_size == 0
+
+    def test_export_logs_empty_batch_is_noop(self) -> None:
+        outcome = otlp_export.export_logs([])
+        assert outcome
+        assert outcome.batch_size == 0
 
 
 class TestCloseExporters:
@@ -464,9 +593,9 @@ class TestIdleTimeoutEviction:
         log_exp.export.return_value = LogExportResult.SUCCESS
         mock_log.return_value = log_exp
 
-        mock_time.side_effect = [1000.0, 1056.0, 1057.0, 1058.0]
+        mock_time.side_effect = [1000.0, 1056.0, 1057.0, 1057.0, 1058.0, 1058.0]
         otlp_export.init_exporters("https://collector.example.com:4317")
-        assert otlp_export.export_spans([MagicMock()]) is True
+        assert otlp_export.export_spans([MagicMock()])  # truthy ExportOutcome
 
         gen_before = otlp_export._generation
         otlp_export.init_exporters("https://collector.example.com:4317")
@@ -590,7 +719,7 @@ class TestConcurrentReinitDuringExport:
         ):
             otlp_export.init_exporters("https://collector.example.com:4317")
             old_exporter = span_exporters[0]
-            export_result: dict[str, bool] = {}
+            export_result: dict[str, object] = {}
 
             def do_export() -> None:
                 export_result["value"] = otlp_export.export_spans([MagicMock()])
@@ -611,7 +740,7 @@ class TestConcurrentReinitDuringExport:
             export_thread.join(timeout=5.0)
             reinit_thread.join(timeout=5.0)
 
-            assert export_result["value"] is True
+            assert export_result["value"]  # truthy ExportOutcome
             assert not old_exporter.shutdown_during_export
             assert old_exporter.shutdown_called is True
             assert otlp_export._generation == 2

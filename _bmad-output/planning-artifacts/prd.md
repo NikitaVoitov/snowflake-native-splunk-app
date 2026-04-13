@@ -710,7 +710,7 @@ Detailed UX behavior plus integration, processing, and release implementation me
 - **FR23:** Sam can deliver all enabled Event Table and `ACCOUNT_USAGE` telemetry through the configured OTLP destination for downstream use in Splunk.
 - **FR24:** Ravi can analyze exported Event Table spans in Splunk using query or executable identity, database and schema context, warehouse context, and trace correlation fields.
 - **FR25:** Ravi can rely on original Event Table attributes remaining intact in exported telemetry, with any app-added attributes added without renaming or removing source attributes.
-- **FR26:** Sam can rely on retryable OTLP delivery failures being retried automatically and on non-retryable failures being recorded as terminal batch failures without endless retry.
+- **FR26:** Sam can rely on the built-in Python OTLP/gRPC exporter retry behavior for retryable delivery failures and on non-retryable failures being recorded as terminal batch failures without endless retry.
 
 ### Pipeline Operations & Health
 
@@ -758,7 +758,7 @@ Detailed UX behavior plus integration, processing, and release implementation me
 - **NFR15:** Criterion: A single source failure stays isolated. Metric: in induced single-source failure tests, `100%` of unaffected sources still start and complete within their next scheduled interval. Method: fault-injection test with multiple enabled sources. Context: at least two sources enabled.
 - **NFR16:** Criterion: Stale Event Table stream conditions recover autonomously. Metric: `100%` of induced stale stream conditions are detected and export resumes within `10 minutes` or `2 scheduled executions`, whichever is longer, without manual action. Method: controlled stale-stream recovery test. Context: Event Table collection.
 - **NFR17:** Criterion: Supported upgrades preserve data continuity. Metric: `0` missing or duplicate records in controlled upgrade reconciliation and `100%` retention of configuration and source progress across supported upgrade paths. Method: before-and-after reconciliation test. Context: version-to-version upgrades supported for release.
-- **NFR18:** Criterion: Brief OTLP destination outages do not cause data loss. Metric: `0` permanently lost batches for induced destination outages lasting up to `60 seconds`. Method: outage injection and batch reconciliation. Context: destination outage only, with Snowflake services otherwise healthy.
+- **NFR18 (Post-MVP, out of MVP scope):** Criterion: Brief OTLP destination outages do not cause data loss. Metric: `0` permanently lost batches for induced destination outages lasting up to `60 seconds`. Method: outage injection and batch reconciliation. Context: destination outage only, with Snowflake services otherwise healthy. MVP does **not** promise this outcome; MVP relies only on the built-in Python OTLP/gRPC exporter retry window and records terminal failures after that window is exhausted.
 
 ### Scalability
 

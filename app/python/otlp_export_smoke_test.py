@@ -13,6 +13,7 @@ import time
 import uuid
 
 import otlp_export
+from export_result import ExportOutcome
 from opentelemetry.sdk.metrics.export import (
     Gauge,
     Metric,
@@ -26,6 +27,13 @@ from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.util.instrumentation import InstrumentationScope
 from opentelemetry.trace import SpanContext, SpanKind, TraceFlags
 from opentelemetry.trace.status import Status, StatusCode
+from pipeline_telemetry import (
+    ExportContext,
+    log_export_success,
+    log_terminal_failure,
+    record_batch_failure,
+    record_export_success,
+)
 from snowflake.snowpark import Session
 
 # This diagnostic harness is imported in both the Snowflake 1.38 runtime and the
@@ -43,6 +51,8 @@ except ImportError:
     _LOG_BATCH_STYLE = "log_data"
 
 _SCOPE = InstrumentationScope("otlp_export_smoke_test")
+_DEFAULT_OBSERVABILITY_PIPELINE = "otlp_export_observability_smoke"
+_DEFAULT_OBSERVABILITY_SOURCE = "app_public.test_otlp_export_observability"
 
 
 def _make_test_span(test_id: str, resource: Resource) -> ReadableSpan:
@@ -126,19 +136,17 @@ def _make_test_metrics(test_id: str, resource: Resource) -> MetricsData:
     return MetricsData(resource_metrics=[resource_metrics])
 
 
-def run_smoke_test(
+def _run_smoke_exports(
     endpoint: str,
     pem_cert: str | None = None,
     test_id: str | None = None,
-) -> dict:
-    """Execute OTLP export smoke test -- callable locally and from SP sandbox.
-
-    Returns a dict with per-signal results and debug metadata.
-    """
+) -> tuple[dict[str, object], dict[str, ExportOutcome]]:
+    """Execute the OTLP smoke exports and return JSON-ready results + outcomes."""
     if not test_id:
         test_id = f"smoke_{int(time.time())}"
 
     result: dict[str, object] = {"test_id": test_id, "endpoint": endpoint}
+    outcomes: dict[str, ExportOutcome] = {}
 
     try:
         snap_before = otlp_export.debug_snapshot()
@@ -152,22 +160,108 @@ def run_smoke_test(
         result["log_exporter_id"] = snap_after["log_exporter_id"]
     except Exception as exc:
         result["init_error"] = str(exc)
-        return result
+        return result, outcomes
 
     resource = Resource.create(
         {"service.name": "otlp_export_smoke_test", "test.id": test_id},
     )
 
     span = _make_test_span(test_id, resource)
-    result["span_export"] = otlp_export.export_spans([span])
+    span_outcome = otlp_export.export_spans([span])
+    outcomes["spans"] = span_outcome
+    result["span_export"] = span_outcome.success
+    result["span_outcome"] = span_outcome.to_dict()
 
     log_record = _make_test_log(test_id, resource)
-    result["log_export"] = otlp_export.export_logs([log_record])
+    log_outcome = otlp_export.export_logs([log_record])
+    outcomes["logs"] = log_outcome
+    result["log_export"] = log_outcome.success
+    result["log_outcome"] = log_outcome.to_dict()
 
     metrics_data = _make_test_metrics(test_id, resource)
-    result["metric_export"] = otlp_export.export_metrics(metrics_data)
+    metric_outcome = otlp_export.export_metrics(metrics_data)
+    outcomes["metrics"] = metric_outcome
+    result["metric_export"] = metric_outcome.success
+    result["metric_outcome"] = metric_outcome.to_dict()
 
     result["debug_snapshot"] = otlp_export.debug_snapshot()
+    return result, outcomes
+
+
+def run_smoke_test(
+    endpoint: str,
+    pem_cert: str | None = None,
+    test_id: str | None = None,
+) -> dict:
+    """Execute OTLP export smoke test -- callable locally and from SP sandbox.
+
+    Returns a dict with per-signal results and debug metadata.
+    """
+    result, _ = _run_smoke_exports(endpoint, pem_cert, test_id)
+    return result
+
+
+def _emit_observability(
+    session: Session,
+    outcomes: dict[str, ExportOutcome],
+    *,
+    pipeline_name: str,
+    source_name: str,
+) -> ExportContext:
+    """Emit structured logs and pipeline-health rows for the export outcomes."""
+    context = ExportContext(
+        pipeline_name=pipeline_name,
+        source_name=source_name,
+        run_id=str(uuid.uuid4()),
+    )
+    for outcome in outcomes.values():
+        if outcome.success:
+            log_export_success(context, outcome)
+            record_export_success(
+                session,
+                context.pipeline_name,
+                context.source_name,
+                outcome.signal_type,
+                outcome.batch_size,
+                context.run_id,
+            )
+            continue
+        if outcome.terminal:
+            log_terminal_failure(context, outcome)
+            record_batch_failure(
+                session,
+                context.pipeline_name,
+                context.source_name,
+                outcome,
+                context.run_id,
+            )
+    return context
+
+
+def run_observability_smoke_test(
+    session: Session,
+    endpoint: str,
+    pem_cert: str | None = None,
+    test_id: str | None = None,
+    *,
+    pipeline_name: str = _DEFAULT_OBSERVABILITY_PIPELINE,
+    source_name: str = _DEFAULT_OBSERVABILITY_SOURCE,
+) -> dict:
+    """Execute the smoke test and emit observability side effects for each outcome."""
+    result, outcomes = _run_smoke_exports(endpoint, pem_cert, test_id)
+    if "init_error" in result:
+        return result
+
+    context = _emit_observability(
+        session,
+        outcomes,
+        pipeline_name=pipeline_name,
+        source_name=source_name,
+    )
+    result["run_id"] = context.run_id
+    result["pipeline_name"] = context.pipeline_name
+    result["source_name"] = context.source_name
+    result["observability_emitted"] = True
     return result
 
 
@@ -193,4 +287,29 @@ def test_otlp_export_runtime_with_secret(
 
     pem = _snowflake.get_generic_secret_string("otlp_pem_cert")
     result = run_smoke_test(endpoint, pem or None, test_id)
+    return json.dumps(result, default=str)
+
+
+def test_otlp_export_observability(
+    session: Session,
+    endpoint: str,
+    cert_pem: str,
+    test_id: str,
+) -> str:
+    """Snowflake SP entrypoint: smoke test + event-table/health observability."""
+    pem = cert_pem.strip() if cert_pem else None
+    result = run_observability_smoke_test(session, endpoint, pem, test_id)
+    return json.dumps(result, default=str)
+
+
+def test_otlp_export_observability_with_secret(
+    session: Session,
+    endpoint: str,
+    test_id: str,
+) -> str:
+    """Snowflake SP entrypoint: observability smoke test reading PEM from secret."""
+    import _snowflake  # pyright: ignore[reportMissingImports]
+
+    pem = _snowflake.get_generic_secret_string("otlp_pem_cert")
+    result = run_observability_smoke_test(session, endpoint, pem or None, test_id)
     return json.dumps(result, default=str)

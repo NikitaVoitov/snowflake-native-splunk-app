@@ -16,6 +16,16 @@ from typing import Any
 
 import grpc
 from endpoint_parse import host_port_string, parse_endpoint
+from export_result import (
+    ExportOutcome,
+    classify_export_failure_without_status,
+    classify_export_failure_without_status_exception,
+    classify_grpc_status,
+    classify_unexpected_exception,
+    count_metric_data_points,
+    count_sequence_batch,
+    sanitize_error_message,
+)
 from opentelemetry.exporter.otlp.proto.grpc._log_exporter import OTLPLogExporter
 from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import (
     OTLPMetricExporter,
@@ -183,6 +193,30 @@ def _release_exporter_after_export() -> None:
             _state_cond.notify_all()
 
 
+def _log_export_exception(
+    signal_name: str,
+    signal_type: str,
+    exc: Exception,
+    *,
+    error_code: str | None = None,
+    error_message: str | None = None,
+) -> None:
+    """Log a sanitized export failure summary with structured troubleshooting fields."""
+    summary = error_message or sanitize_error_message(
+        f"{type(exc).__name__}: {exc}",
+    ) or type(exc).__name__
+    log.warning(
+        "%s failed: %s",
+        signal_name,
+        summary,
+        extra={
+            "signal_type": signal_type,
+            "error_code": error_code or type(exc).__name__,
+            "error_message": summary,
+        },
+    )
+
+
 def init_exporters(endpoint: str, pem_cert: str | None = None) -> None:
     """Initialize or reinitialize exporters for the given endpoint.
 
@@ -237,60 +271,193 @@ def init_exporters(endpoint: str, pem_cert: str | None = None) -> None:
             _state_cond.notify_all()
 
 
-def export_spans(batch: Sequence[ReadableSpan]) -> bool:
-    """Export a batch of spans.  Returns True on success, False on failure."""
+def export_spans(batch: Sequence[ReadableSpan] | None) -> ExportOutcome:
+    """Export a batch of spans.  Returns an ``ExportOutcome``.
+
+    ``ExportOutcome.__bool__`` returns ``self.success`` so existing callers
+    that use ``if export_spans(batch):`` continue to work.
+    """
+    signal = "spans"
+    batch_size = count_sequence_batch(batch)
+    if batch_size == 0:
+        return ExportOutcome.noop_result(signal)
+
     with _state_cond:
         exporter = _acquire_exporter_for_export_unlocked(_span_exporter, "export_spans")
     if exporter is None:
-        return False
+        return ExportOutcome.not_initialized(signal)
+
+    t0 = time.monotonic()
     try:
         result = exporter.export(batch)
-    except Exception:
-        log.exception("export_spans failed")
-        return False
-    finally:
+    except grpc.RpcError as rpc_err:
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        _log_export_exception(
+            "export_spans",
+            signal,
+            rpc_err,
+            error_code=rpc_err.code().name,
+            error_message=sanitize_error_message(
+                f"gRPC {rpc_err.code().name}: {rpc_err.details()}",
+            ),
+        )
         _release_exporter_after_export()
-    return result == SpanExportResult.SUCCESS
+        return classify_grpc_status(
+            rpc_err.code(), str(rpc_err.details()), signal, batch_size, duration_ms,
+        )
+    except Exception as exc:
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        normalized_outcome = classify_export_failure_without_status_exception(
+            exc,
+            signal,
+            batch_size,
+            duration_ms,
+        )
+        if normalized_outcome is not None:
+            _log_export_exception(
+                "export_spans",
+                signal,
+                exc,
+                error_code=normalized_outcome.error_code,
+                error_message=normalized_outcome.error_message,
+            )
+            _release_exporter_after_export()
+            return normalized_outcome
+        _log_export_exception("export_spans", signal, exc)
+        _release_exporter_after_export()
+        return classify_unexpected_exception(exc, signal, batch_size, duration_ms)
+    else:
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        _release_exporter_after_export()
+        if result == SpanExportResult.SUCCESS:
+            return ExportOutcome.success_result(signal, batch_size, duration_ms)
+        return classify_export_failure_without_status(signal, batch_size, duration_ms)
 
 
-def export_metrics(batch: MetricsData) -> bool:
-    """Export a metrics batch.  Returns True on success, False on failure."""
+def export_metrics(batch: MetricsData | None) -> ExportOutcome:
+    """Export a metrics batch.  Returns an ``ExportOutcome``."""
+    signal = "metrics"
+    batch_size = count_metric_data_points(batch) if batch is not None else 0
+    if batch_size == 0:
+        return ExportOutcome.noop_result(signal)
+
     with _state_cond:
         exporter = _acquire_exporter_for_export_unlocked(
             _metric_exporter,
             "export_metrics",
         )
     if exporter is None:
-        return False
+        return ExportOutcome.not_initialized(signal)
+
+    t0 = time.monotonic()
     try:
         result = exporter.export(batch)
-    except Exception:
-        log.exception("export_metrics failed")
-        return False
-    finally:
+    except grpc.RpcError as rpc_err:
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        _log_export_exception(
+            "export_metrics",
+            signal,
+            rpc_err,
+            error_code=rpc_err.code().name,
+            error_message=sanitize_error_message(
+                f"gRPC {rpc_err.code().name}: {rpc_err.details()}",
+            ),
+        )
         _release_exporter_after_export()
-    return result == MetricExportResult.SUCCESS
+        return classify_grpc_status(
+            rpc_err.code(), str(rpc_err.details()), signal, batch_size, duration_ms,
+        )
+    except Exception as exc:
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        normalized_outcome = classify_export_failure_without_status_exception(
+            exc,
+            signal,
+            batch_size,
+            duration_ms,
+        )
+        if normalized_outcome is not None:
+            _log_export_exception(
+                "export_metrics",
+                signal,
+                exc,
+                error_code=normalized_outcome.error_code,
+                error_message=normalized_outcome.error_message,
+            )
+            _release_exporter_after_export()
+            return normalized_outcome
+        _log_export_exception("export_metrics", signal, exc)
+        _release_exporter_after_export()
+        return classify_unexpected_exception(exc, signal, batch_size, duration_ms)
+    else:
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        _release_exporter_after_export()
+        if result == MetricExportResult.SUCCESS:
+            return ExportOutcome.success_result(signal, batch_size, duration_ms)
+        return classify_export_failure_without_status(signal, batch_size, duration_ms)
 
 
-def export_logs(batch: Sequence[Any]) -> bool:
-    """Export a batch of log records.  Returns True on success, False on failure.
+def export_logs(batch: Sequence[Any] | None) -> ExportOutcome:
+    """Export a batch of log records.  Returns an ``ExportOutcome``.
 
-    Snowflake's pinned OTel 1.38 runtime supplies `LogData` items here.
+    Snowflake's pinned OTel 1.38 runtime supplies ``LogData`` items here.
     """
+    signal = "logs"
+    batch_size = count_sequence_batch(batch)
+    if batch_size == 0:
+        return ExportOutcome.noop_result(signal)
+
     with _state_cond:
         exporter = _acquire_exporter_for_export_unlocked(_log_exporter, "export_logs")
     if exporter is None:
-        return False
+        return ExportOutcome.not_initialized(signal)
+
+    t0 = time.monotonic()
     try:
         result = exporter.export(batch)
-    except Exception:
-        log.exception("export_logs failed")
-        return False
-    finally:
+    except grpc.RpcError as rpc_err:
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        _log_export_exception(
+            "export_logs",
+            signal,
+            rpc_err,
+            error_code=rpc_err.code().name,
+            error_message=sanitize_error_message(
+                f"gRPC {rpc_err.code().name}: {rpc_err.details()}",
+            ),
+        )
         _release_exporter_after_export()
-    # Keep Snowflake's 1.38 import surface fixed, but compare by enum name so the
-    # local smoke harness can still recognize SUCCESS on newer OTel versions.
-    return getattr(result, "name", None) == LogExportResult.SUCCESS.name
+        return classify_grpc_status(
+            rpc_err.code(), str(rpc_err.details()), signal, batch_size, duration_ms,
+        )
+    except Exception as exc:
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        normalized_outcome = classify_export_failure_without_status_exception(
+            exc,
+            signal,
+            batch_size,
+            duration_ms,
+        )
+        if normalized_outcome is not None:
+            _log_export_exception(
+                "export_logs",
+                signal,
+                exc,
+                error_code=normalized_outcome.error_code,
+                error_message=normalized_outcome.error_message,
+            )
+            _release_exporter_after_export()
+            return normalized_outcome
+        _log_export_exception("export_logs", signal, exc)
+        _release_exporter_after_export()
+        return classify_unexpected_exception(exc, signal, batch_size, duration_ms)
+    else:
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        _release_exporter_after_export()
+        # Keep Snowflake's 1.38 import surface fixed, but compare by enum name so the
+        # local smoke harness can still recognize SUCCESS on newer OTel versions.
+        if getattr(result, "name", None) == LogExportResult.SUCCESS.name:
+            return ExportOutcome.success_result(signal, batch_size, duration_ms)
+        return classify_export_failure_without_status(signal, batch_size, duration_ms)
 
 
 def debug_snapshot() -> dict[str, object]:

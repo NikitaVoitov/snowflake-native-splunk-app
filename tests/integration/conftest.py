@@ -829,8 +829,8 @@ def collector_journal_excerpt(
     live_export_results: dict[str, bool | None],
 ) -> str:
     """Poll the live collector journal until the exported ``test_id`` appears."""
-    assert live_export_results["span_export"] is True
-    assert live_export_results["log_export"] is True
+    assert live_export_results["span_export"]
+    assert live_export_results["log_export"]
     return _poll_until_result(
         lambda: _collector_journal_excerpt(wait_for_event_table),
         timeout_s=90,
@@ -856,7 +856,7 @@ def splunk_search_results_fixture(
     live_export_results: dict[str, bool | None],
 ) -> list[dict[str, Any]]:
     """Poll Splunk Enterprise REST until exported logs are searchable."""
-    assert live_export_results["log_export"] is True
+    assert live_export_results["log_export"]
 
     password = os.environ.get("SPLUNK_ENTERPRISE_PASSWORD")
     if not password:
