@@ -77,10 +77,10 @@ NFR12: Zero open P1 or P2 defects and zero Critical or High unresolved third-par
 NFR13: Scheduled availability is >= 99.9% per source over a rolling 30-day window.
 NFR14: >= 99.5% of batches complete successfully after retry handling over a rolling 7-day window.
 NFR15: In induced single-source failure tests, 100% of unaffected sources still start and complete within their next scheduled interval.
-NFR16: 100% of induced stale stream conditions are detected and export resumes within 10 minutes or 2 scheduled executions, whichever is longer, without manual action.
+NFR16: 100% of induced Event Table watermark-expiry / time-travel-expiry conditions are detected and export resumes within 10 minutes or 2 scheduled executions, whichever is longer, without manual action.
 NFR17: Zero missing or duplicate records in controlled upgrade reconciliation; 100% retention of configuration and source progress across supported upgrade paths.
 NFR18 (Post-MVP, out of MVP scope): Zero permanently lost batches for induced destination outages lasting up to 60 seconds. MVP does not promise this outcome and relies only on the built-in Python OTLP/gRPC exporter retry window.
-NFR19: A triggered execution completes with 1,000,000 representative Event Table rows without timeout or unrecoverable memory failure.
+NFR19: A scheduled Event Table execution completes with 1,000,000 representative Event Table rows without timeout or unrecoverable memory failure.
 NFR20: With 10 enabled sources, >= 99% of scheduled runs start within one interval and complete successfully.
 NFR21: Doubling supported task compute yields at least 1.7x throughput until destination saturation or the NFR19 workload ceiling is reached.
 NFR22: 100% of sampled spans include the database and Snowflake context required by the telemetry contract, pass OTLP schema validation, and are searchable as traces in Splunk APM.
@@ -94,11 +94,11 @@ NFR24: 100% of retryable OTLP errors trigger automatic retry; 100% of non-retrya
 - Schema topology: app_public (versioned), _internal, _staging, _metrics (stateful with CREATE SCHEMA IF NOT EXISTS).
 - OTLP exporter topology: 3 separate exporters (Span, Metric, Log) per Event Table collector; module-level init; TLS-only MVP (optional custom PEM via Snowflake Secret).
 - Streamlit state: st.session_state as cache; _internal.config as durable store; explicit Save pattern; unsaved changes indicator.
-- Independent serverless scheduled tasks per ACCOUNT_USAGE source; one triggered task for Event Table pipeline; stream on user-selected source (view or event table).
+- Independent serverless scheduled tasks per enabled source for both Event Table and `ACCOUNT_USAGE` pipelines; Event Table uses `CHANGES` + self-managed watermark, `ACCOUNT_USAGE` uses watermark + overlap + dedup.
 - Entity discrimination: positive include-list on RESOURCE_ATTRIBUTES:"snow.executable.type" (procedure, function, query, sql).
 - OTel conventions: db.* (Database Client) + snowflake.* (custom); convention-transparent relay of original Event Table attributes.
 - Pipeline health: _metrics.pipeline_health per-run metrics; Native App event definitions for structured operational logs.
-- Stale stream recovery: detect via DESCRIBE STREAM; DROP and CREATE STREAM on selected source; record data gap.
+- Event Table self-heal: detect `WATERMARK_EXPIRED` / time-travel-expiry on `CHANGES` reads, reset the watermark to a safe buffer behind `CURRENT_TIMESTAMP()`, and record the recovery/data-gap event.
 - Naming: Snowflake objects (snake_case, _prefix for internal schemas); config keys (otlp.*, pack_enabled.*, source.<name>.*); Python PEP 8 + ruff.
 - Testing: unit mocks + integration against dev schema + E2E via Cursor agents (Playwright for Snowsight, SSH for collector verification).
 - Multi-package strategy: dev (INTERNAL) → scan (EXTERNAL) → test (INTERNAL) → prod (EXTERNAL) for Marketplace.
@@ -114,7 +114,7 @@ UX-DR6: Implement Telemetry sources page with st.data_editor: category headers (
 UX-DR7: Implement Observability health page helicopter view: Row 1 — Destination health card (OTLP status, endpoint, last export); Row 2 — Four st.metric KPIs (Sources OK, Rows exported 24h, Failed batches 24h, Avg freshness); Row 3 — Export Throughput chart (24h/7d toggle, rows exported + failed batches); Row 4 — Category Health Summary table (one row per pack, View → drill-down to Telemetry sources); Row 5 — Recent Errors (conditional, with "View all in Snowsight" link).
 UX-DR8: Implement Empty State on Observability health when no pipelines configured: st.info or st.warning with message "Complete Getting started to see pipeline health" and optional link/button to Getting started.
 UX-DR9: Implement Data governance page: read-only st.dataframe with enabled sources only; five columns — Status, View name, Source type, Governance (per-row message), Sensitive columns (per-row list); same category headers as Telemetry sources (status dot, no toggle); "Agree" button to record governance acknowledgement.
-UX-DR10: Implement Activate Export modal (st.dialog): header "Activate Telemetry Export", info box "What will happen", bullet list of created objects (tasks, streams, network rules, secrets), Cancel and "Enable Auto-Export" (primary) buttons; in-progress spinner; success close + toast.
+UX-DR10: Implement Activate Export modal (st.dialog): header "Activate Telemetry Export", info box "What will happen", bullet list of created objects and state changes (tasks, OTLP egress objects, network rules, secrets, app-managed watermark/config state as applicable), Cancel and "Enable Auto-Export" (primary) buttons; in-progress spinner; success close + toast.
 UX-DR11: Use native Streamlit components only (no external CSS/fonts/scripts); inline HTML/CSS/JS only when necessary via st.markdown(unsafe_allow_html=True) or st.html(); design tokens from Snowsight light theme; st.metric, st.dataframe with column_config, st.plotly_chart or st.altair_chart for charts.
 UX-DR12: Health and KPIs computed on page load or manual refresh only; no live polling or auto-refresh.
 UX-DR13: All form inputs use descriptive label parameters; status communicated via text and icon, not color alone; accessibility for callouts and tables.
@@ -186,11 +186,11 @@ Sam can rely on Snowflake-native collection pipelines to read only new telemetry
 **FRs covered:** FR19, FR20, FR21
 
 ### Epic 6: Data governance review and export activation
-Maya can review governance implications per enabled source, acknowledge required disclosure, and activate export end-to-end so the app provisions Snowflake streams, tasks, and OTLP egress objects using the already-delivered export and collection foundations; once activation succeeds, onboarding completes cleanly and telemetry begins flowing to Splunk.
+Maya can review governance implications per enabled source, acknowledge required disclosure, and activate export end-to-end so the app provisions scheduled tasks and OTLP egress objects using the already-delivered export and collection foundations; once activation succeeds, onboarding completes cleanly and telemetry begins flowing to Splunk.
 **FRs covered:** FR13, FR14, FR15, FR16, FR17, FR18, FR23
 
 ### Epic 7: Pipeline operations and observability health
-Sam can view a health summary (destination status, source freshness, export throughput, failures, recent issues), inspect each telemetry source for status, freshness, recent runs, errors, and editable configuration, access structured app operational events in the consumer’s Snowflake event table via Snowsight, and benefit from automatic Event Table stream recovery and per-source auto-suspend; Observability health page provides destination card, KPI metrics, throughput chart, category summary with drill-down, and conditional recent errors; empty state when no pipelines are configured.
+Sam can view a health summary (destination status, source freshness, export throughput, failures, recent issues), inspect each telemetry source for status, freshness, recent runs, errors, and editable configuration, access structured app operational events in the consumer’s Snowflake event table via Snowsight, and benefit from automatic Event Table watermark-expiry recovery and per-source auto-suspend; Observability health page provides destination card, KPI metrics, throughput chart, category summary with drill-down, and conditional recent errors; empty state when no pipelines are configured.
 **FRs covered:** FR27, FR28, FR29, FR30, FR31, FR32, FR33, FR34
 
 ### Epic 8: App lifecycle and Marketplace release
@@ -232,14 +232,14 @@ So that setup choices, health history, and pipeline progress survive reruns and 
 **When** the app or pipeline code writes to _internal.config (key/value) or _internal.export_watermarks or _metrics.pipeline_health  
 **Then** the tables exist and accept inserts/updates  
 **And** config keys follow the convention (otlp.*, pack_enabled.*, source.<name>.*)  
-**And** _staging.stream_offset_log exists (empty, for zero-row INSERT pattern)
+**And** no separate stream-offset tracking table is required because incremental progress is stored in _internal.export_watermarks
 
 **Implementation Tasks:**
 
 - Create `_internal.config` for durable app settings.
 - Create `_internal.export_watermarks` for per-source incremental progress.
 - Create `_metrics.pipeline_health` for operational metrics history.
-- Create `_staging.stream_offset_log` for the zero-row INSERT stream-advancement pattern.
+- Do not add a separate stream-offset log table; `_internal.export_watermarks` is the canonical incremental-progress store.
 
 ### Story 1.3: Streamlit shell and navigation
 
@@ -443,21 +443,21 @@ So that only relevant new SQL and Snowpark compute telemetry is delivered withou
 **Acceptance Criteria:**
 
 **Given** the Event Table collector procedure is executed against a selected Event Table source  
-**When** the procedure runs from an integration harness or from the activated triggered task  
-**Then** it sets `session.sql_simplifier_enabled = True`, loads config from `_internal.config`, and opens an explicit `BEGIN/COMMIT` transaction  
-**And** it reads from the stream using a Snowpark DataFrame and applies the entity-discrimination include list (`procedure`, `function`, `query`, `sql`) as the first pushdown operation  
+**When** the procedure runs from an integration harness or from an activated scheduled task  
+**Then** it sets `session.sql_simplifier_enabled = True`, loads config from `_internal.config`, captures `batch_end` once at the start of the run, and reads the current source watermark from `_internal.export_watermarks`  
+**And** it reads the selected source via `CHANGES(INFORMATION => APPEND_ONLY) AT(TIMESTAMP => :watermark) END(TIMESTAMP => :batch_end)` using one query per signal type and applies the entity-discrimination include list as the first pushdown filter after `RECORD_TYPE`  
 **And** it uses `to_pandas_batches()` for bounded memory and hands each batch to the Epic 4 export foundation  
-**And** it advances the stream via zero-row `INSERT` into `_staging.stream_offset_log` within the same transaction  
+**And** it advances the watermark only after full export success and holds it unchanged on terminal export failure  
 **And** it records run metrics to `_metrics.pipeline_health` and emits structured Native App log events  
 **And** when the selected source is a governed custom view, exported data reflects Snowflake-enforced masking, row access, and projection outcomes  
 **And** if a field required for enrichment is missing or `NULL`, the pipeline continues and records a warning for that run
 
 **Implementation Tasks:**
 
-- Read Event Table stream data with Snowpark pushdown-first transformations.
+- Read Event Table data via `CHANGES` + self-managed watermark using Snowpark pushdown-first transformations.
 - Apply entity discrimination before non-filter processing.
 - Batch serialization via `to_pandas_batches()` and invoke the Epic 4 export foundation.
-- Advance stream offsets transactionally and record health/log outcomes.
+- Advance the watermark on full success, hold it on failure, and record health/log outcomes.
 
 ### Story 5.2: Incremental `ACCOUNT_USAGE` collection and export
 
@@ -550,15 +550,15 @@ So that tracing telemetry can start flowing without manual SQL.
 **Given** activation is confirmed and at least one Event Table source is enabled  
 **When** the app executes Event Table provisioning  
 **Then** it provisions or binds the OTLP egress objects required for the configured destination, including EAI and network-rule support and any optional secret references needed for certificate handling  
-**And** for each enabled Event Table source it creates an APPEND_ONLY stream on the selected source using the `_splunk_obs_stream_<source_name>` naming convention  
-**And** for each enabled Event Table source it creates a triggered task using the `_splunk_obs_task_<source_name>` naming convention that invokes the already-delivered Event Table collector from Epic 5  
+**And** for each enabled Event Table source it creates an independent serverless scheduled task using the `_splunk_obs_task_<source_name>` naming convention that invokes the already-delivered Event Table collector from Epic 5 on the saved cadence (default 1 minute)  
+**And** it does not create Snowflake streams for Event Table collection; incremental progress is handled inside the collector via `CHANGES` + `_internal.export_watermarks`  
 **And** provisioning success or failure is reported clearly to the user and logged for troubleshooting
 
 **Implementation Tasks:**
 
 - Provision shared OTLP egress dependencies required by activated pipelines.
-- Create Event Table streams on selected sources.
-- Create triggered tasks that call the Epic 5 Event Table collector.
+- Create scheduled Event Table tasks that call the Epic 5 Event Table collector.
+- Persist any required Event Table task cadence / source settings in app state.
 - Record provisioning results and recoverable failure details.
 
 ### Story 6.5: `ACCOUNT_USAGE` task provisioning
@@ -653,17 +653,17 @@ So that I can drill into which source is failing or lagging.
 **And** Category header status roll-up follows the defined rules (green/amber/red/gray)  
 **And** Optional "View log" or similar links to Snowsight for that task’s logs
 
-### Story 7.4: Stale stream recovery and auto-suspend
+### Story 7.4: Stale watermark recovery and auto-suspend
 
 As an operator (Sam),
-I want the Event Table pipeline to detect a stale stream, recreate it, and record a data gap; and failing tasks to auto-suspend after N failures,
-So that I do not have to manually fix streams and one bad source does not spin forever.
+I want the Event Table pipeline to detect an expired watermark window, reset it safely, and record a data gap; and failing tasks to auto-suspend after N failures,
+So that I do not have to manually recover stale Event Table polling state and one bad source does not spin forever.
 
 **Acceptance Criteria:**
 
-**Given** The Event Table stream has become stale (e.g. task suspended longer than stream retention)  
-**When** The triggered task runs  
-**Then** The collector detects staleness (e.g. via DESCRIBE STREAM), drops and recreates the stream on the user-selected source, records the data gap (source and time window) in _metrics.pipeline_health, and logs the recovery event  
+**Given** The Event Table watermark has fallen outside the source’s time-travel retention window  
+**When** The scheduled task runs  
+**Then** The collector detects the `WATERMARK_EXPIRED` / time-travel-expiry condition, resets the watermark to a safe buffer behind current time, records the recovery and data gap in _metrics.pipeline_health, and logs the recovery event  
 **And** Export resumes for new data within 10 minutes or 2 scheduled executions (whichever is longer) without manual action  
 **Given** An ACCOUNT_USAGE (or Event Table) task fails repeatedly  
 **When** Failures exceed the configured threshold (e.g. SUSPEND_TASK_AFTER_NUM_FAILURES)  
@@ -715,7 +715,7 @@ So that I do not have to reconfigure and operators can verify upgrade success.
 
 **Given** I have configured the app and run pipelines  
 **When** I upgrade to a supported new version  
-**Then** _internal.config and _internal.export_watermarks are unchanged; tasks and streams are recreated from config where needed  
+**Then** _internal.config and _internal.export_watermarks are unchanged; tasks are recreated from config where needed and no separate stream state must be rebuilt  
 **And** In-flight scheduled work completes or resumes with at most one missed run per source  
 **And** Upgrade progress or completion is written to the Snowflake event table (e.g. via Native App event definitions) so Sam can query it in Snowsight
 

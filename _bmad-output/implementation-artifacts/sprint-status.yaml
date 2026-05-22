@@ -52,8 +52,8 @@
 #   the actual dependency order and removing forward-dependency workarounds.
 
 generated: 2026-03-15
-last_updated: 2026-04-13
-updated_by: epic-4 retrospective completed
+last_updated: 2026-04-20
+updated_by: story 5-1 validation fixes applied (metric-name canonicalization, account_name threading, initial_seed_buffer_seconds default 60, span_mapper composite-key refactor details, packages cleanup, MVP risk note)
 project: snowflake-native-splunk-app
 project_key: NOKEY
 tracking_system: file-system
@@ -209,7 +209,7 @@ sprints:
         tags: [Backend, Data Pipeline]
         status: backlog
         stories:
-          5-1-incremental-event-table-collection-and-export: backlog
+          5-1-incremental-event-table-collection-and-export: ready-for-dev
           5-2-incremental-account-usage-collection-and-export: backlog
         retrospective: optional
 

@@ -3,7 +3,9 @@
 > **Audience:** Engineers implementing Snowflake-side data preparation for OTLP export stored procedures.
 > **Status:** Verified from live Snowflake metadata (account `LFB71918`, 2026-04-05) and cross-referenced against official Snowflake documentation (13 pages scraped 2026-04-05).
 > **Scope:** Exact field schemas, data types, extraction patterns, limits, configuration dependencies, and pushdown rules for every telemetry source.
-> **Companion docs:** `grpc_research.md` (transport layer), `otel_semantic_conventions_snowflake_research.md` (convention mapping), `splunk_snowflake_native_app_vision.md` (architecture), `event_table_streams_governance_research.md` (stream creation & governance), `event_table_entity_discrimination_strategy.md` (entity filtering).
+> **Companion docs:** `grpc_research.md` (transport layer), `otel_semantic_conventions_snowflake_research.md` (convention mapping), `splunk_snowflake_native_app_vision.md` (architecture), `evt_architecture_adversarial_review.md` (incremental-read primitive decision — `CHANGES` + self-managed watermark), `event_table_entity_discrimination_strategy.md` (entity filtering).
+>
+> **Pipeline primitives (this document is aligned with):** Event Table and AI-observability sources are consumed via the Snowflake `CHANGES(INFORMATION => APPEND_ONLY)` clause with explicit `AT(TIMESTAMP => :watermark) END(TIMESTAMP => :batch_end)` bounds and a self-managed watermark in `_internal.export_watermarks`. ACCOUNT_USAGE sources do not support `CHANGES`, so they use watermark + overlap + `QUALIFY ROW_NUMBER()` deduplication. Both pipelines are driven by independent scheduled tasks (default 1 min cadence). No Snowflake streams are used anywhere in this design.
 
 ---
 
@@ -11,17 +13,19 @@
 
 | Source | Object | Pipeline | Access Pattern |
 |---|---|---|---|
-| Standard event table (base) | `SNOWFLAKE.TELEMETRY.EVENTS` | Event-driven | Stream on event table → Triggered task |
-| Standard event table (view) | `SNOWFLAKE.TELEMETRY.EVENTS_VIEW` | — | Not a supported direct source for this app; live `CREATE STREAM` probe failed because `CHANGE_TRACKING` is not enabled and the app cannot enable it on the system view |
-| Consumer custom view over ET | Consumer-created view over any ET | Event-driven | Stream on view (`APPEND_ONLY = TRUE`) → Triggered task |
-| AI observability | `SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS` | Event-driven | Stream on event table → Triggered task |
-| Query performance | `SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY` | Poll-based | Watermark + overlap + dedup (scheduled task) |
-| Authentication | `SNOWFLAKE.ACCOUNT_USAGE.LOGIN_HISTORY` | Poll-based | Watermark + overlap + dedup (scheduled task) |
-| Data access governance | `SNOWFLAKE.ACCOUNT_USAGE.ACCESS_HISTORY` | Poll-based | Watermark + overlap + dedup (scheduled task) |
+| Standard event table (base) | `SNOWFLAKE.TELEMETRY.EVENTS` | Event Table pipeline | `CHANGES(INFORMATION => APPEND_ONLY) AT(TIMESTAMP => :watermark) END(TIMESTAMP => :batch_end)` driven by scheduled task (default 1 min) |
+| Standard event table (view) | `SNOWFLAKE.TELEMETRY.EVENTS_VIEW` | — | Not a supported direct source for this app; `CHANGES` requires `CHANGE_TRACKING = TRUE` on the target object, and the app cannot enable it on this system view |
+| Consumer custom view over ET | Consumer-created view over any ET | Event Table pipeline | `CHANGES(INFORMATION => APPEND_ONLY) AT(...) END(...)` driven by scheduled task. Requires consumer to set `CHANGE_TRACKING = TRUE` on the view (owner operation — cannot be performed by the app) |
+| AI observability | `SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS` | Event Table pipeline | `CHANGES(INFORMATION => APPEND_ONLY) AT(...) END(...)` driven by scheduled task |
+| Query performance | `SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY` | ACCOUNT_USAGE pipeline | Watermark + overlap window + `QUALIFY ROW_NUMBER()` dedup (scheduled task) — `CHANGES` is not supported on ACCOUNT_USAGE views |
+| Authentication | `SNOWFLAKE.ACCOUNT_USAGE.LOGIN_HISTORY` | ACCOUNT_USAGE pipeline | Watermark + overlap + dedup (scheduled task) |
+| Data access governance | `SNOWFLAKE.ACCOUNT_USAGE.ACCESS_HISTORY` | ACCOUNT_USAGE pipeline | Watermark + overlap + dedup (scheduled task) |
 
 ---
 
-**Source-selection note:** Snowflake documentation supports streams on views, including secure views, in general. Our exclusion of `SNOWFLAKE.TELEMETRY.EVENTS_VIEW` is narrower: live metadata shows `CHANGE_TRACKING = OFF` for this system view, and a 2026-04-06 live probe failed with `Insufficient privileges to operate on stream source without CHANGE_TRACKING enabled 'EVENTS_VIEW'`.
+**Source-selection note:** Snowflake supports `CHANGES` reads on both event tables and views, provided `CHANGE_TRACKING = TRUE`. Our exclusion of `SNOWFLAKE.TELEMETRY.EVENTS_VIEW` is narrower: live metadata shows `CHANGE_TRACKING = OFF` for this system view and the app does not have privileges to enable it. For consumer-owned custom views over an Event Table, the consumer must run `ALTER VIEW <view> SET CHANGE_TRACKING = TRUE` before the app can read that source. The app detects the missing flag and surfaces the `CHANGE_TRACKING_DISABLED` diagnostic in the health dashboard.
+
+**Time-travel window dependency:** `CHANGES` relies on Snowflake time travel. Standard and Enterprise Edition accounts provide a minimum 1-day window, which the app's default 1-minute scheduled cadence stays well inside. If a task is suspended long enough for the watermark to fall outside the time-travel window (for example, during a lengthy app upgrade), the collector catches the resulting `Time travel data is not available` error, resets the watermark to `CURRENT_TIMESTAMP() - event_table.watermark_reset_buffer_seconds`, records `WATERMARK_EXPIRED` in `_metrics.pipeline_health`, and resumes on the next scheduled run. See Section 10 for the full lifecycle.
 
 ## 2. Event Table Schema (Both Sources)
 
@@ -479,22 +483,26 @@ Additional keys when the app emits its own OTel telemetry:
 
 ## 7. Pushdown Preparation Rules
 
-This project uses a **dual-pipeline architecture**. Rules are split by pipeline type because event table sources and ACCOUNT_USAGE sources have fundamentally different data access patterns:
+This project uses a **dual-pipeline architecture**. Rules are split by pipeline type because event table sources and ACCOUNT_USAGE sources have fundamentally different incremental-read primitives:
 
-- **Event Table sources** (standard ET, consumer custom views, AI observability): **Stream-based reads**. No time-range predicates, no dedup — the stream acts as the cursor and surfaces only unconsumed rows. For custom views, use `APPEND_ONLY = TRUE`. For event tables, live validation also showed `APPEND_ONLY` mode is accepted, although the main `CREATE STREAM` syntax block does not show that parameter for `ON EVENT TABLE`.
-- **ACCOUNT_USAGE sources** (QUERY_HISTORY, LOGIN_HISTORY, ACCESS_HISTORY): **Watermark-based polling** with overlap windows and `QUALIFY` dedup. Streams are not supported on ACCOUNT_USAGE views.
+- **Event Table sources** (standard ET, consumer custom views, AI observability): `CHANGES(INFORMATION => APPEND_ONLY) AT(TIMESTAMP => :watermark) END(TIMESTAMP => :batch_end)` with a self-managed watermark in `_internal.export_watermarks`. Both `watermark` and `batch_end` are exclusive/inclusive bounds resolved by Snowflake's time-travel engine; the collector captures `batch_end = CURRENT_TIMESTAMP()` once at the start of the run and uses the same value for every per-signal read in that run. Watermark advances only on full export success; on terminal failure it is held unchanged for exact retry on the next scheduled run.
+- **ACCOUNT_USAGE sources** (QUERY_HISTORY, LOGIN_HISTORY, ACCESS_HISTORY): `CHANGES` is not supported on ACCOUNT_USAGE views, so reads use a watermark + overlap window + `QUALIFY ROW_NUMBER()` deduplication pattern with the same advance-on-success semantics.
 
-### Event Table Pipeline Rules (Stream-Based)
+### Event Table Pipeline Rules (`CHANGES` + Self-Managed Watermark)
 
-#### Rule ET-1: Read from the Stream, Not the Source Table
+#### Rule ET-1: Read via `CHANGES(INFORMATION => APPEND_ONLY) AT/END`, Not the Source Table
 
-The collector reads from the stream object, which surfaces only rows inserted since the last consumption:
+The collector reads from the source object (event table or consumer-owned view with `CHANGE_TRACKING = TRUE`) through the `CHANGES` clause, which returns rows appended in the half-open interval `(watermark, batch_end]`:
 
 ```sql
-SELECT ... FROM <stream_name> WHERE RECORD_TYPE = 'SPAN'
+SELECT ... FROM <source>
+CHANGES(INFORMATION => APPEND_ONLY)
+  AT(TIMESTAMP => :watermark)
+  END(TIMESTAMP => :batch_end)
+WHERE RECORD_TYPE = 'SPAN'
 ```
 
-No `TIMESTAMP >= :watermark` predicates. The stream already scopes to rows inserted since last consumption. The only predicates are `RECORD_TYPE` and entity discrimination.
+Both `:watermark` and `:batch_end` are `TIMESTAMP_LTZ` bound parameters. `:batch_end` is captured once per run as `CURRENT_TIMESTAMP()` and reused across every per-signal read in the same run so that all signal queries see a consistent window.
 
 #### Rule ET-2: Entity Discrimination as First Filter
 
@@ -517,9 +525,7 @@ This pushes entity filtering to the Snowflake engine before any VARIANT extracti
 
 #### Rule ET-3: No Dedup Required
 
-Append-only streams on event tables guarantee each row appears exactly once. Do NOT add `QUALIFY ROW_NUMBER()` to event table extraction queries — it adds unnecessary window-function sort overhead with zero benefit.
-
-**Exception:** If future Snowflake behavior or a specific edge case produces duplicate rows in the stream (not observed as of 2026-04), add dedup as a defensive measure at that time.
+`CHANGES(INFORMATION => APPEND_ONLY) AT/END` is an append-only change set over an immutable time-travel snapshot — each row appears exactly once in the `(watermark, batch_end]` window, and the same row is not re-returned by subsequent runs because the watermark advances strictly monotonically on success. Do NOT add `QUALIFY ROW_NUMBER()` to Event Table extraction queries — it adds a window-function sort with zero benefit.
 
 #### Rule ET-4: Extract and Cast in SQL, Not Python
 
@@ -535,7 +541,10 @@ SELECT
     START_TIMESTAMP                       AS start_time,
     RECORD_ATTRIBUTES,
     RESOURCE_ATTRIBUTES
-FROM <stream_name>
+FROM <source>
+CHANGES(INFORMATION => APPEND_ONLY)
+  AT(TIMESTAMP => :watermark)
+  END(TIMESTAMP => :batch_end)
 WHERE RECORD_TYPE = 'SPAN'
   AND UPPER(RESOURCE_ATTRIBUTES:"snow.executable.type"::STRING)
       IN ('PROCEDURE', 'FUNCTION', 'QUERY', 'SQL', 'STATEMENT')
@@ -548,9 +557,9 @@ WHERE RECORD_TYPE = 'SPAN'
 
 Prefer lean mode for well-known signal types. Use relay mode for event-table sources only when preserving the full attribute bag is a requirement.
 
-#### Rule ET-5: One Query Per Signal Type
+#### Rule ET-5: One Query Per Signal Type, Same `[watermark, batch_end]` Window
 
-Do not mix `RECORD_TYPE` values in a single query. Each signal type has different RECORD/VALUE shapes. Issue separate queries per signal type against the same stream within the same transaction.
+Do not mix `RECORD_TYPE` values in a single query. Each signal type has different RECORD/VALUE shapes. Issue separate `CHANGES(...) AT/END` queries per signal type using the **same `:watermark` and `:batch_end` values** within the run — this guarantees the four per-signal queries see a mutually consistent snapshot and enables in-memory `(trace_id, span_id)` correlation between `SPAN` and `SPAN_EVENT` without a self-join.
 
 #### Rule ET-6: Materialize via `to_pandas_batches()` Only
 
@@ -562,43 +571,81 @@ for chunk in df.to_pandas_batches():
 
 Never use `collect()` for bulk export. Never use `to_pandas()` without bounding the result set.
 
-#### Rule ET-7: Snapshot and Consume the Stream Atomically; Export After Commit
+#### Rule ET-7: Advance Watermark Only on Full Export Success (Hold-on-Failure)
 
-Materialize the per-signal snapshot and advance the stream offset within the same explicit transaction. Perform OTLP export only **after** that transaction commits:
+The watermark is managed explicitly by the app in `_internal.export_watermarks`, not by any Snowflake-owned cursor:
 
-```sql
-BEGIN;
-  -- 1. Materialize per-signal temp batches from the stream
-  -- 2. Advance stream offset:
-  INSERT INTO _staging.stream_offset_log(_OFFSET_CONSUMED_AT)
-    SELECT CURRENT_TIMESTAMP() FROM <stream_name> WHERE 0 = 1;
-COMMIT;
+```python
+watermark  = read_watermark(session, source_name)
+batch_end  = session.sql("SELECT CURRENT_TIMESTAMP()").collect()[0][0]
 
--- 3. Export the materialized batches outside the transaction
+try:
+    per_signal_export(source_name, watermark, batch_end)  # all four signal reads + OTLP
+except SnowparkSQLException as e:
+    if _is_time_travel_expired(e):
+        # See Rule ET-8 — WATERMARK_EXPIRED self-heal.
+        reset_watermark(session, source_name,
+                        batch_end - timedelta(seconds=reset_buffer_seconds))
+        record_health(session, source_name, "watermark_reset", 1,
+                      {"error_code": "WATERMARK_EXPIRED"})
+        return "WATERMARK_RESET"
+    raise
+
+if all_signal_exports_succeeded:
+    # Advance atomically to the same batch_end used for every signal query.
+    session.sql("""
+        MERGE INTO _internal.export_watermarks t
+        USING (SELECT :source_name AS source_name, :batch_end AS watermark) s
+        ON t.source_name = s.source_name
+        WHEN MATCHED THEN UPDATE SET t.watermark = s.watermark
+        WHEN NOT MATCHED THEN INSERT (source_name, watermark)
+            VALUES (s.source_name, s.watermark)
+    """, params=[source_name, batch_end]).collect()
+else:
+    # Hold watermark unchanged — next scheduled run retries the exact same window.
+    pass
 ```
 
-The zero-row INSERT references the stream (advancing the offset on commit) but writes zero actual rows. `_staging.stream_offset_log` is permanently empty.
+**Guarantees:**
 
-**Transaction guarantees:**
+- **Atomic advance:** A single `MERGE` writes the new watermark only after every signal export in the run returned `ExportOutcome.SUCCESS`. Partial batches never advance the watermark.
+- **Exact retry:** On any terminal transport failure the watermark is held unchanged, so the next scheduled run reads the same `(watermark, batch_end_next]` window — where `batch_end_next > batch_end` — and replays the previously failed rows along with anything newly arrived.
+- **No transaction around OTLP:** The OTLP/gRPC call is deliberately performed **outside** of any Snowflake transaction. The watermark MERGE runs only after export success; the Event Table itself is read-only for this app, so there is nothing to "roll back" on failure.
 
-- **Atomicity**: Offset advances only on successful COMMIT. If the SP crashes before COMMIT, the transaction rolls back and the stream offset stays put — the same data reappears on the next invocation.
-- **Repeatable read**: Within the transaction, all queries to the same stream return identical data. The DataFrame reads and the zero-row INSERT see the same stream snapshot.
-- **Validated consume pattern**: On 2026-04-06, a live scratch test confirmed that `INSERT INTO <single-column-log-table> SELECT CURRENT_TIMESTAMP() FROM <stream> WHERE 0 = 1` advances the stream offset while inserting zero rows.
-- **Recommended OTLP interaction**: Keep blocking OTLP/gRPC I/O outside the stream transaction. This is an architectural recommendation based on Snowflake stream/task behavior and operational risk, not a documented Snowflake prohibition.
-- **Failure handling (MVP)**: If export fails **after** the transaction commits, the event-table batch is already consumed. Log the failed batch to `_metrics.pipeline_health` and treat Event Table export as best-effort.
+#### Rule ET-8: Handle `WATERMARK_EXPIRED` Automatically
 
-### ACCOUNT_USAGE Pipeline Rules (Watermark-Based)
+`CHANGES` uses Snowflake time travel. If the watermark is older than the available time-travel window (minimum 1 day on Standard / Enterprise Edition), Snowflake raises `Time travel data is not available for table ... The requested time is either too far in the past or before table creation`. The collector **must** catch this specific error, reset the watermark, and resume on the next scheduled run:
 
-#### Rule AU-1: Filter by Time with Overlap Window
+```python
+def _is_time_travel_expired(exc) -> bool:
+    msg = str(exc)
+    return "Time travel data is not available" in msg
 
-```sql
-WHERE START_TIME > :watermark - INTERVAL :overlap_minutes MINUTE
-  AND START_TIME <= CURRENT_TIMESTAMP() - INTERVAL :lag_buffer MINUTE
+# on catch:
+reset_watermark(session, source_name,
+                CURRENT_TIMESTAMP() - INTERVAL :reset_buffer_seconds SECOND)
+record_health(source_name, "watermark_reset", 1,
+              {"error_code": "WATERMARK_EXPIRED"})
 ```
 
-The overlap window re-scans past the watermark to catch late-arriving rows. The lag buffer prevents reading rows still materializing in Snowflake.
+`reset_buffer_seconds` (config key: `event_table.watermark_reset_buffer_seconds`, default `60`) keeps the new watermark a safe distance behind `CURRENT_TIMESTAMP()` so the next run's `CHANGES(...) AT/END` window lands inside the time-travel retention. The reset is recorded in `_metrics.pipeline_health` with `watermark_reset = 1` and a known, finite data gap is accepted for that recovery cycle.
 
-#### Rule AU-2: Dedup with QUALIFY Using Verified Natural Keys
+#### Rule ET-9: Diagnose `CHANGE_TRACKING_DISABLED` on Custom Views
+
+For consumer-owned custom views, `CHANGES` returns the error `Change tracking is not enabled on the object` if the consumer has not run `ALTER VIEW <view> SET CHANGE_TRACKING = TRUE`. The collector detects this, records `CHANGE_TRACKING_DISABLED` in `_metrics.pipeline_health`, and pauses the source until the consumer remediates. The Streamlit governance page surfaces the exact remediation command — the app never attempts to enable tracking itself because that requires ownership of the view and its underlying tables.
+
+### ACCOUNT_USAGE Pipeline Rules (Watermark + Overlap + `QUALIFY`)
+
+#### Rule AU-1: Filter by Time with Overlap Window and Explicit `batch_end`
+
+```sql
+WHERE <timestamp_col> > :watermark - INTERVAL :overlap_minutes MINUTE
+  AND <timestamp_col> <= :batch_end
+```
+
+`:batch_end` is captured once per run as `CURRENT_TIMESTAMP()` (optionally minus a small `lag_buffer` if the documented max latency requires it). The overlap window re-scans past the watermark to catch late-arriving rows that ACCOUNT_USAGE materializes asynchronously.
+
+#### Rule AU-2: Dedup with `QUALIFY` Using Verified Natural Keys
 
 ```sql
 QUALIFY ROW_NUMBER() OVER (
@@ -627,6 +674,10 @@ Same typed-extraction principle as ET-4. Each ACCOUNT_USAGE source is queried in
 
 Same as ET-6. Never use `collect()` for bulk export.
 
+#### Rule AU-6: Advance Watermark Only on Full Export Success (Hold-on-Failure)
+
+Same semantics as ET-7: on success, `MERGE` the new watermark (`= :batch_end`) into `_internal.export_watermarks`; on terminal transport failure, leave the watermark untouched so the next scheduled run repeats the same window plus any freshly materialized ACCOUNT_USAGE rows.
+
 ### Shared Rules (Both Pipelines)
 
 #### Rule S-1: Never Use `SELECT *` in Production Extraction Queries
@@ -637,17 +688,21 @@ Always project only the needed columns with explicit type casts.
 
 No Python-side filtering, deduplication, joins, or type casting. The Python layer only serializes and exports.
 
+#### Rule S-3: Unified Watermark State, Per-Source
+
+Both pipelines share the same `_internal.export_watermarks` table. Each `source_name` (e.g. `telemetry_events`, `ai_observability_events`, `query_history`) has exactly one watermark row. The only differences between the two pipelines are the incremental-read primitive used on the wire (`CHANGES` vs `WHERE + QUALIFY`) and the config-key family (`event_table.*` vs `source.<name>.overlap_minutes`).
+
 ---
 
 ## 8. Per-Signal Extraction Templates
 
-### Event Table Pipeline (Stream-Based)
+### Event Table Pipeline (`CHANGES` + Self-Managed Watermark)
 
 Unless otherwise noted, the templates below are shown in **relay mode** because they preserve full `RECORD_ATTRIBUTES` and `RESOURCE_ATTRIBUTES`. For production implementations where the exported attribute set is fully known, prefer a lean variant that omits those full `OBJECT` columns and exports only the typed scalar extracts.
 
-All event table templates read from the **stream object** (not the source table/view). No time-range predicates are needed. Entity discrimination (`snow.executable.type` filter) is applied to all queries using normalized comparisons. No `QUALIFY` dedup is required (append-only stream behavior guarantees uniqueness for this design).
+All event-table templates read from the source object (event table or consumer-owned view with `CHANGE_TRACKING = TRUE`) via `CHANGES(INFORMATION => APPEND_ONLY) AT(TIMESTAMP => :watermark) END(TIMESTAMP => :batch_end)`. No `TIMESTAMP >= ...` predicates are needed — `CHANGES` is the cursor. `:watermark` and `:batch_end` are identical across all per-signal queries in a single run. Entity discrimination (`snow.executable.type` filter) is applied to all queries using normalized comparisons. No `QUALIFY` dedup is required.
 
-#### 8.1 SPAN Extraction (Event Table Stream)
+#### 8.1 SPAN Extraction (Event Table `CHANGES`)
 
 ```sql
 SELECT
@@ -670,13 +725,16 @@ SELECT
     RESOURCE_ATTRIBUTES:"telemetry.sdk.language"::STRING AS sdk_language,
     RECORD_ATTRIBUTES,
     RESOURCE_ATTRIBUTES
-FROM <stream_name>
+FROM <source>
+CHANGES(INFORMATION => APPEND_ONLY)
+  AT(TIMESTAMP => :watermark)
+  END(TIMESTAMP => :batch_end)
 WHERE RECORD_TYPE = 'SPAN'
   AND UPPER(RESOURCE_ATTRIBUTES:"snow.executable.type"::STRING)
       IN ('PROCEDURE', 'FUNCTION', 'QUERY', 'SQL', 'STATEMENT')
 ```
 
-#### 8.2 SPAN_EVENT Extraction (Event Table Stream)
+#### 8.2 SPAN_EVENT Extraction (Event Table `CHANGES`)
 
 ```sql
 SELECT
@@ -690,15 +748,18 @@ SELECT
     RECORD_ATTRIBUTES:"exception.escaped"::BOOLEAN   AS exception_escaped,
     RECORD_ATTRIBUTES,
     RESOURCE_ATTRIBUTES
-FROM <stream_name>
+FROM <source>
+CHANGES(INFORMATION => APPEND_ONLY)
+  AT(TIMESTAMP => :watermark)
+  END(TIMESTAMP => :batch_end)
 WHERE RECORD_TYPE = 'SPAN_EVENT'
   AND UPPER(RESOURCE_ATTRIBUTES:"snow.executable.type"::STRING)
       IN ('PROCEDURE', 'FUNCTION', 'QUERY', 'SQL', 'STATEMENT')
 ```
 
-**Note:** SPAN_EVENT rows share the same entity discrimination attribute (`snow.executable.type`) as their parent SPAN, so the same filter applies.
+**Note:** SPAN_EVENT rows share the same entity discrimination attribute (`snow.executable.type`) as their parent SPAN, so the same filter applies. Because this query uses the same `:watermark` and `:batch_end` as the SPAN query, parent-event correlation can be done in-memory on `(trace_id, span_id)` without a Snowflake-side join.
 
-#### 8.3 LOG Extraction (Event Table Stream)
+#### 8.3 LOG Extraction (Event Table `CHANGES`)
 
 ```sql
 SELECT
@@ -720,13 +781,16 @@ SELECT
     RECORD_ATTRIBUTES:"exception.escaped"::BOOLEAN AS exception_escaped,
     RECORD_ATTRIBUTES,
     RESOURCE_ATTRIBUTES
-FROM <stream_name>
+FROM <source>
+CHANGES(INFORMATION => APPEND_ONLY)
+  AT(TIMESTAMP => :watermark)
+  END(TIMESTAMP => :batch_end)
 WHERE RECORD_TYPE = 'LOG'
   AND UPPER(RESOURCE_ATTRIBUTES:"snow.executable.type"::STRING)
       IN ('PROCEDURE', 'FUNCTION', 'QUERY', 'SQL', 'STATEMENT')
 ```
 
-#### 8.4 METRIC Extraction (Event Table Stream)
+#### 8.4 METRIC Extraction (Event Table `CHANGES`)
 
 ```sql
 SELECT
@@ -742,7 +806,10 @@ SELECT
     VALUE                                 AS metric_value,
     RECORD_ATTRIBUTES,
     RESOURCE_ATTRIBUTES
-FROM <stream_name>
+FROM <source>
+CHANGES(INFORMATION => APPEND_ONLY)
+  AT(TIMESTAMP => :watermark)
+  END(TIMESTAMP => :batch_end)
 WHERE RECORD_TYPE = 'METRIC'
   AND UPPER(RESOURCE_ATTRIBUTES:"snow.executable.type"::STRING)
       IN ('PROCEDURE', 'FUNCTION', 'QUERY', 'SQL', 'STATEMENT')
@@ -750,11 +817,11 @@ WHERE RECORD_TYPE = 'METRIC'
 
 Note: `VALUE` is kept as VARIANT because its concrete type depends on `metric_type` (DECIMAL for gauges, INTEGER for sums, OBJECT for histograms).
 
-### AI Observability Pipeline (Stream-Based)
+### AI Observability Pipeline (`CHANGES` + Self-Managed Watermark)
 
-AI observability events reside in a separate table (`SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS`) and do not require entity discrimination filtering (the entire table is AI-specific).
+AI observability events reside in a separate table (`SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS`) and do not require entity discrimination filtering (the entire table is AI-specific). The same `CHANGES(...) AT/END` primitive applies.
 
-#### 8.5 AI Observability SPAN Extraction (Stream)
+#### 8.5 AI Observability SPAN Extraction (`CHANGES`)
 
 ```sql
 SELECT
@@ -773,45 +840,60 @@ SELECT
     RECORD_ATTRIBUTES:"ai.observability.record_id"::STRING AS record_id,
     RECORD_ATTRIBUTES,
     RESOURCE_ATTRIBUTES
-FROM <ai_obs_stream_name>
+FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS
+CHANGES(INFORMATION => APPEND_ONLY)
+  AT(TIMESTAMP => :watermark)
+  END(TIMESTAMP => :batch_end)
 WHERE RECORD_TYPE = 'SPAN'
 ```
 
-### Stream Transaction Wrapper (Event Table + AI Obs)
+### Collector Run Structure (Event Table + AI Obs)
 
-All stream-based extraction queries execute within a single explicit transaction per pipeline invocation for **snapshot materialization + offset advancement**. OTLP export should occur after commit:
+A single scheduled run executes the per-signal `CHANGES(...) AT/END` queries, exports them via OTLP, and only **then** advances the watermark with a single `MERGE`. No Snowflake transaction is wrapped around the OTLP call — the Event Table is read-only for this app, and the watermark MERGE is the only state change. The `WATERMARK_EXPIRED` branch is the sole exception path:
 
 ```python
 # Collector SP pseudocode (event_table_collector)
-session.sql("BEGIN").collect()
+source_name = "telemetry_events"       # or "ai_observability_events" / custom view FQN
+watermark   = read_watermark(session, source_name)
+batch_end   = session.sql("SELECT CURRENT_TIMESTAMP()").collect()[0][0]
 
 try:
-    # Step 1: Snapshot each signal type into temp batches
-    session.sql("CREATE OR REPLACE TEMP TABLE tmp_spans   AS SELECT ... FROM <stream> WHERE RECORD_TYPE = 'SPAN' AND ...").collect()
-    session.sql("CREATE OR REPLACE TEMP TABLE tmp_events  AS SELECT ... FROM <stream> WHERE RECORD_TYPE = 'SPAN_EVENT' AND ...").collect()
-    session.sql("CREATE OR REPLACE TEMP TABLE tmp_logs    AS SELECT ... FROM <stream> WHERE RECORD_TYPE = 'LOG' AND ...").collect()
-    session.sql("CREATE OR REPLACE TEMP TABLE tmp_metrics AS SELECT ... FROM <stream> WHERE RECORD_TYPE = 'METRIC' AND ...").collect()
+    # One lazily-evaluated Snowpark DataFrame per signal type, all pinned to the
+    # same [watermark, batch_end] window.
+    spans_df   = session.sql(SPAN_SQL,       params=[watermark, batch_end])
+    events_df  = session.sql(SPAN_EVENT_SQL, params=[watermark, batch_end])
+    logs_df    = session.sql(LOG_SQL,        params=[watermark, batch_end])
+    metrics_df = session.sql(METRIC_SQL,     params=[watermark, batch_end])
 
-    # Step 2: Advance stream offset (Rule ET-7)
-    session.sql("""
-        INSERT INTO _staging.stream_offset_log(_OFFSET_CONSUMED_AT)
-        SELECT CURRENT_TIMESTAMP() FROM <stream> WHERE 0 = 1
-    """).collect()
+    outcomes = []
+    for df, mapper, exporter in (
+        (spans_df,   span_mapper,   span_exporter),
+        (events_df,  span_mapper,   span_exporter),   # merged into parent spans
+        (logs_df,    log_mapper,    log_exporter),
+        (metrics_df, metric_mapper, metric_exporter),
+    ):
+        for chunk in df.to_pandas_batches():
+            outcomes.append(exporter.export(mapper(chunk)))
 
-    session.sql("COMMIT").collect()
-
-except Exception:
-    session.sql("ROLLBACK").collect()
+except SnowparkSQLException as e:
+    if _is_time_travel_expired(e):
+        # Rule ET-8: WATERMARK_EXPIRED self-heal.
+        reset_watermark(session, source_name,
+                        batch_end - timedelta(seconds=reset_buffer_seconds))
+        record_health(session, source_name, "watermark_reset", 1,
+                      {"error_code": "WATERMARK_EXPIRED"})
+        return "WATERMARK_RESET"
     raise
 
-# Step 3: Export after commit
-for temp_name in ["tmp_spans", "tmp_events", "tmp_logs", "tmp_metrics"]:
-    for chunk in session.table(temp_name).to_pandas_batches():
-        serialize_and_export(chunk)
-# On export failure here: log to _metrics.pipeline_health; do not expect replay in MVP
+if all(o == ExportOutcome.SUCCESS for o in outcomes):
+    update_watermark(session, source_name, batch_end)   # MERGE to :batch_end
+else:
+    # Rule ET-7: hold watermark for exact retry on the next scheduled run.
+    record_health(session, source_name, "export_failed", 1,
+                  {"error_code": classify_grpc_status(outcomes)})
 ```
 
-**Repeatable-read guarantee:** Within the transaction, all four signal-type queries see the same stream snapshot. The zero-row INSERT at the end advances the offset past exactly the rows that were materialized into the temp batches.
+**Consistency guarantee:** Every per-signal query is a `CHANGES(...) AT(:watermark) END(:batch_end)` read against the same half-open time-travel window. Snowflake's time-travel engine returns a single consistent snapshot for that window, so the four per-signal result sets cover exactly the same set of underlying rows — enabling in-memory `(trace_id, span_id)` correlation between SPAN and SPAN_EVENT without a Snowflake-side join. Failed runs leave the watermark untouched, so the next run reads `(watermark, batch_end_next]` and replays anything that failed along with anything newly arrived.
 
 ---
 
@@ -823,7 +905,7 @@ This section is intentionally aligned with the project rules in `snowflake-sql-r
 
 Use `session.sql(...)` when the prep logic is one static relational statement:
 
-- stream read with signal-type filter + entity discrimination (event table pipeline)
+- `CHANGES(...) AT/END` read with signal-type filter + entity discrimination (Event Table pipeline)
 - watermark time-window read with overlap + dedup (ACCOUNT_USAGE pipeline)
 - explicit projection with semi-structured extraction and casting
 
@@ -831,10 +913,10 @@ This is the best fit for most production export queries in this project because:
 
 - the logic is single-step and relational
 - SQL path syntax is clearer than equivalent Snowpark expressions for `OBJECT` / `VARIANT` extracts
-- stream reads are simple `SELECT ... FROM <stream> WHERE ...` — no complex multi-step pipeline
+- `CHANGES(...) AT/END` is a SQL-native clause — the equivalent Snowpark expression adds no value for a single static read
 - `QUALIFY` (for ACCOUNT_USAGE dedup) is first-class in SQL and keeps dedup readable
 
-**Event Table stream example:**
+**Event Table `CHANGES` example:**
 
 ```sql
 session.sql("""
@@ -847,11 +929,14 @@ session.sql("""
         START_TIMESTAMP          AS start_time,
         RECORD_ATTRIBUTES,
         RESOURCE_ATTRIBUTES
-    FROM {stream_name}
+    FROM {source}
+    CHANGES(INFORMATION => APPEND_ONLY)
+      AT(TIMESTAMP => :watermark)
+      END(TIMESTAMP => :batch_end)
     WHERE RECORD_TYPE = 'SPAN'
       AND UPPER(RESOURCE_ATTRIBUTES:"snow.executable.type"::STRING)
           IN ('PROCEDURE', 'FUNCTION', 'QUERY', 'SQL', 'STATEMENT')
-""")
+""", params=[watermark, batch_end])
 ```
 
 **ACCOUNT_USAGE watermark example:**
@@ -860,10 +945,10 @@ session.sql("""
 session.sql("""
     SELECT QUERY_ID, QUERY_TYPE, START_TIME, END_TIME, ...
     FROM {source_name}
-    WHERE START_TIME > :watermark - INTERVAL :overlap MINUTE
-      AND START_TIME <= CURRENT_TIMESTAMP() - INTERVAL :lag MINUTE
+    WHERE START_TIME >  :watermark - INTERVAL :overlap MINUTE
+      AND START_TIME <= :batch_end
     QUALIFY ROW_NUMBER() OVER (PARTITION BY QUERY_ID ORDER BY START_TIME DESC) = 1
-""")
+""", params=[watermark, overlap, batch_end])
 ```
 
 ### 9.2 Use Snowpark DataFrames for Composed, Reusable Pipelines
@@ -871,7 +956,7 @@ session.sql("""
 Use Snowpark DataFrames only when composition improves maintainability without moving relational work into Python:
 
 - reusable upstream filters
-- programmatic source selection (switching between stream name and AU view name)
+- programmatic source selection (switching between configured Event Table / view FQN and an ACCOUNT_USAGE view name)
 - per-signal branches built from a common base DataFrame
 - reusable extraction helpers shared across collectors
 
@@ -883,12 +968,22 @@ When using Snowpark:
 - use a single terminal action at the boundary, typically `to_pandas_batches()`
 - do not call `collect()` on large export paths
 
-**Stream-based Snowpark example:**
+**`CHANGES`-based Snowpark example:**
+
+The `CHANGES` clause itself is still expressed in SQL (there is no first-class Snowpark DataFrame API for it); compose the per-signal projection and filter chain on top of that SQL base:
 
 ```python
 from snowflake.snowpark.functions import col, upper
 
-base_df = session.table(stream_name)
+base_sql = """
+    SELECT TRACE, RECORD, RECORD_TYPE, TIMESTAMP, START_TIMESTAMP,
+           RECORD_ATTRIBUTES, RESOURCE_ATTRIBUTES
+    FROM {source}
+    CHANGES(INFORMATION => APPEND_ONLY)
+      AT(TIMESTAMP => :watermark)
+      END(TIMESTAMP => :batch_end)
+"""
+base_df = session.sql(base_sql, params=[watermark, batch_end])
 
 spans_df = (
     base_df
@@ -913,24 +1008,26 @@ for chunk in spans_df.to_pandas_batches():
     export_spans(chunk)
 ```
 
-**Note:** This Snowpark example omits the transaction wrapper for brevity. In production, all stream reads must be wrapped in `BEGIN`/`COMMIT` per Rule ET-7.
+Prefer Snowpark only when the composition actually pays for itself (shared base DataFrame across all four signal types, reusable helpers). For a single per-signal query, plain SQL is simpler and equally efficient.
 
 ### 9.3 Hard Rules
 
 Regardless of whether prep is written as SQL or Snowpark:
 
 - never use `SELECT *` in production extraction queries
-- for event table sources: read from the stream, not the source table/view
-- for ACCOUNT_USAGE sources: filter by time first with overlap window
+- for Event Table sources: use `CHANGES(INFORMATION => APPEND_ONLY) AT(TIMESTAMP => :watermark) END(TIMESTAMP => :batch_end)`; do not `SELECT ... FROM <source> WHERE TIMESTAMP > :watermark`
+- for ACCOUNT_USAGE sources: use `WHERE <timestamp_col> > :watermark - INTERVAL :overlap MINUTE AND <timestamp_col> <= :batch_end` plus `QUALIFY ROW_NUMBER() ... = 1`
+- use the **same `:watermark` and `:batch_end`** across every per-signal query in the same run
+- advance the watermark only on full export success; hold it unchanged on terminal failure
 - push entity discrimination and `RECORD_TYPE` filtering down before materialization
 - cast hot-path semi-structured fields server-side
 - avoid Python-side filtering, deduplication, or joins
 - use `to_pandas_batches()` as the bulk materialization boundary
-- reserve `.collect()` for small control-flow queries only (config reads, watermark reads, `DESCRIBE STREAM`)
+- reserve `.collect()` for small control-flow queries only (config reads, watermark reads, `CURRENT_TIMESTAMP()`, `MERGE INTO _internal.export_watermarks`)
 
 ### 9.4 Where `QUALIFY` Lives
 
-`QUALIFY` is needed only for ACCOUNT_USAGE sources (overlap-based dedup). For those queries, prefer SQL via `session.sql(...)` since `QUALIFY` is first-class in SQL and keeps dedup readable. Event table stream reads do not need `QUALIFY`.
+`QUALIFY` is needed only for ACCOUNT_USAGE sources (overlap-based dedup). For those queries, prefer SQL via `session.sql(...)` since `QUALIFY` is first-class in SQL and keeps dedup readable. Event Table `CHANGES(...) AT/END` reads do not need `QUALIFY` — the append-only change set over an immutable time-travel snapshot already guarantees uniqueness.
 
 ---
 
@@ -940,26 +1037,36 @@ Regardless of whether prep is written as SQL or Snowpark:
 
 The current `app/python/otlp_export.py` caches exporters at module scope with idle eviction. Preparation queries must not assume cold starts. gRPC channels persist across task invocations on the same warehouse.
 
-### Stream Transaction Lifecycle
+### Collector Run Lifecycle (`CHANGES` + Self-Managed Watermark)
 
-Each triggered task invocation should use a single explicit transaction for the **stream snapshot phase**:
+Each scheduled task invocation runs a single pipeline function; no Snowflake transaction is wrapped around the OTLP network call (gRPC is not transactional). The ordering is:
 
-1. `BEGIN` — opens the transaction, locks the stream for repeatable read
-2. Snowpark/SQL reads from the stream (per signal type, with entity discrimination) and materializes temp batches
-3. Zero-row INSERT to advance stream offset
-4. `COMMIT` — atomically advances the stream offset
-5. `to_pandas_batches()` on the temp batches → serialize → export via OTLP/gRPC
+1. `read_watermark(source_name)` from `_internal.export_watermarks` (single-row `.collect()`).
+2. Compute `batch_end = SELECT CURRENT_TIMESTAMP()` (single-row `.collect()`).
+3. Build one lazy Snowpark DataFrame / SQL query per signal type, each pinned to the **same** `[watermark, batch_end]` window via `CHANGES(INFORMATION => APPEND_ONLY) AT(TIMESTAMP => :watermark) END(TIMESTAMP => :batch_end)`.
+4. Stream each per-signal query through `to_pandas_batches()` → mapper → `exporter.export(...)`.
+5. If **all** per-signal exports succeed, `MERGE INTO _internal.export_watermarks SET watermark = :batch_end`.
+6. If any per-signal export returns a terminal failure, leave the watermark unchanged (Rule ET-7 hold-on-failure) and record a `pipeline_health` entry. The next scheduled run will re-read the same `(watermark, batch_end_next]` window, replaying the failed rows together with anything newly arrived.
 
-If the SP crashes at any point before COMMIT, the transaction rolls back and the stream offset remains unchanged. The next task invocation sees the same data. If the crash happens after COMMIT but before export completes, the stream has already advanced; this is an accepted MVP best-effort tradeoff for Event Table telemetry.
+`CHANGES` provides Snowflake-side snapshot isolation for the half-open window: all per-signal queries see exactly the same set of underlying rows, even though they run outside a BEGIN/COMMIT envelope. This removes the need for a Snowflake transaction around export and eliminates the "COMMIT succeeded but export failed" data-loss window that a stream-based design would have.
 
-### Stream Staleness Prevention
+### Watermark Lifecycle and `WATERMARK_EXPIRED` Self-Heal
 
-The triggered task's `WHEN SYSTEM$STREAM_HAS_DATA()` condition serves a dual purpose:
+`CHANGES` relies on Snowflake time travel. The minimum guaranteed time-travel window on Standard and Enterprise accounts is **1 day**, which the default 1-minute task cadence stays well inside. The collector must still handle the edge case where the watermark has fallen outside the time-travel window (for example, during a prolonged app upgrade or task suspension):
 
-1. **Triggering**: fires the task when new data arrives in the stream
-2. **Staleness prevention**: when the stream is empty, `SYSTEM$STREAM_HAS_DATA()` returns `FALSE` and resets the staleness clock
+1. The `CHANGES(...) AT(:watermark)` query raises `SnowparkSQLException` with the substring `Time travel data is not available`.
+2. The collector catches this specific error (`_is_time_travel_expired(e)`), resets the watermark to `CURRENT_TIMESTAMP() - event_table.watermark_reset_buffer_seconds`, and records `WATERMARK_EXPIRED` / `watermark_reset` in `_metrics.pipeline_health`.
+3. The run exits cleanly (no export attempted). On the next scheduled run, the reset watermark is well inside the time-travel window and normal collection resumes — with a one-time, observable data gap.
 
-If the stream has accumulated data but is not being consumed (export failures, task suspension), `SYSTEM$STREAM_HAS_DATA()` returns `TRUE` but does NOT prevent staleness. The `STALE_AFTER` timestamp from `DESCRIBE STREAM` must be monitored.
+Because the watermark is an app-owned row in `_internal.export_watermarks`, there is no "stale stream" object to drop and recreate. `WATERMARK_EXPIRED` recovery is a value update, not a DDL operation.
+
+### Initial Seeding
+
+When a source is enabled for the first time, its watermark row is inserted with `watermark = CURRENT_TIMESTAMP() - event_table.initial_seed_buffer_seconds` (default: 60 seconds). This small backward offset guarantees the first `CHANGES(...) AT/END` window is non-empty even on a quiet account and avoids reading an unbounded historical backlog.
+
+### Custom View Change Tracking
+
+`CHANGES` requires `CHANGE_TRACKING = TRUE` on the target object. The app cannot enable this on consumer-owned custom views. When the flag is off, the `CHANGES` query returns `Change tracking is not enabled on the object`; the collector catches this, records `CHANGE_TRACKING_DISABLED` in `_metrics.pipeline_health`, and surfaces it in the health dashboard so the consumer can run `ALTER VIEW <view> SET CHANGE_TRACKING = TRUE`. The source stays paused (watermark held) until remediated.
 
 ### Package Availability (Verified Live)
 
@@ -1017,13 +1124,13 @@ These Snowflake parameters control what data appears in event tables. The export
 
 ## 13. Access Patterns and Correlation
 
-### SPAN ↔ SPAN_EVENT Correlation (Event Table Stream)
+### SPAN ↔ SPAN_EVENT Correlation (Event Table `CHANGES`)
 
 SPAN_EVENT rows share the same `trace_id` AND `span_id` as their parent SPAN.
 
-**For export:** do **not** join `SPAN` and `SPAN_EVENT` in SQL. Query them independently from the stream (per Rule ET-5), then correlate during Python serialization by matching `(trace_id, span_id)` in-memory. This avoids a self-join on the stream.
+**For export:** do **not** join `SPAN` and `SPAN_EVENT` in SQL. Query them independently via two `CHANGES(INFORMATION => APPEND_ONLY) AT(:watermark) END(:batch_end)` reads (per Rule ET-5), then correlate during Python serialization by matching `(trace_id, span_id)` in-memory. This avoids a self-join on the source object.
 
-Within a single transaction, the stream's repeatable-read isolation guarantees that both the SPAN and SPAN_EVENT queries see the same snapshot — no rows can appear in one but not the other.
+Because both queries use the **same** `:watermark` and `:batch_end` bounds, Snowflake's time-travel engine returns a single consistent snapshot over the same half-open window for both signal types — no rows can appear in one per-signal result set but not the other.
 
 ### trace_id Groups All Spans in a Query
 
@@ -1038,19 +1145,28 @@ All spans within a single query execution share the same `trace_id`. For export,
 
 Row access policies can be applied to EVENTS_VIEW via `SNOWFLAKE.TELEMETRY.ADD_ROW_ACCESS_POLICY_ON_EVENTS_VIEW()` (Enterprise Edition, requires EVENTS_ADMIN).
 
-### Stream Creation by Source Type
+### Incremental-Read Primitive by Source Type
 
-| User Selection | Stream DDL | Notes |
+The app does **not** create Snowflake streams on any source. All Event Table / view sources are read via `CHANGES(INFORMATION => APPEND_ONLY) AT/END`, and all ACCOUNT_USAGE sources are read via watermark + overlap + `QUALIFY`:
+
+| User Selection | Incremental-read primitive | Notes |
 |---|---|---|
-| Default Event Table (`SNOWFLAKE.TELEMETRY.EVENTS`) | `CREATE STREAM ... ON EVENT TABLE <ref> [APPEND_ONLY = TRUE]` | Live 2026-04-06 probe accepted `APPEND_ONLY = TRUE` and `SHOW STREAMS` reported `APPEND_ONLY` mode, even though the primary syntax block omits this parameter for event tables |
-| Consumer's custom view over Event Table | `CREATE STREAM ... ON VIEW <user_view_fqn> APPEND_ONLY = TRUE` | Valid when the view satisfies streams-on-views constraints. Creating the first stream can auto-enable change tracking only when the creator owns both the view and underlying tables; enabling it locks underlying objects |
-| `SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS` | `CREATE STREAM ... ON EVENT TABLE <ref> [APPEND_ONLY = TRUE]` | Live 2026-04-06 probe succeeded. Current live data in this account is `SPAN` + `LOG` only |
-| Default ACCOUNT_USAGE view | No stream — watermark-based polling | Streams not supported on ACCOUNT_USAGE views |
-| Consumer's custom view over ACCOUNT_USAGE | No stream — watermark-based polling | Streams not supported on ACCOUNT_USAGE views |
+| Default Event Table (`SNOWFLAKE.TELEMETRY.EVENTS`) | `CHANGES(INFORMATION => APPEND_ONLY) AT(TIMESTAMP => :watermark) END(TIMESTAMP => :batch_end)` | `CHANGE_TRACKING` is on by default for Snowflake-managed Event Tables. No DDL required from app or consumer. |
+| Consumer's custom view over Event Table | `CHANGES(INFORMATION => APPEND_ONLY) AT(TIMESTAMP => :watermark) END(TIMESTAMP => :batch_end)` | Consumer must run `ALTER VIEW <view> SET CHANGE_TRACKING = TRUE` first. If the flag is off, the collector records `CHANGE_TRACKING_DISABLED` in `_metrics.pipeline_health` and pauses the source. |
+| `SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS` | `CHANGES(INFORMATION => APPEND_ONLY) AT(TIMESTAMP => :watermark) END(TIMESTAMP => :batch_end)` | Treated as a standard Event Table source. Current live data in this account is `SPAN` + `LOG` only. |
+| Default ACCOUNT_USAGE view | `WHERE <ts_col> > :watermark - INTERVAL :overlap MINUTE AND <ts_col> <= :batch_end` + `QUALIFY ROW_NUMBER() OVER (PARTITION BY <natural_key> ORDER BY <ts_col> DESC) = 1` | `CHANGES` is not supported on ACCOUNT_USAGE views. |
+| Consumer's custom view over ACCOUNT_USAGE | Same watermark + overlap + `QUALIFY` pattern as above | `CHANGES` is not supported on ACCOUNT_USAGE views. |
 
-### Stream Naming Convention
+### Watermark Naming Convention
 
-Streams use namespaced names: `_splunk_obs_stream_<source_name>` (e.g., `_splunk_obs_stream_telemetry_events`). This avoids conflicts if the consumer has their own streams on the same Event Table.
+Watermarks live in `_internal.export_watermarks` keyed by `source_name`. Each enabled source has exactly one row. Suggested `source_name` values:
+
+- `telemetry_events` — default Event Table
+- `ai_observability_events` — `SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS`
+- `<fully_qualified_view_name>` — consumer's custom view (Event Table or ACCOUNT_USAGE)
+- `query_history`, `login_history`, `access_history` — default ACCOUNT_USAGE views
+
+There are no Snowflake stream objects to namespace, so there is no opportunity for the app to conflict with any consumer-owned stream on the same source.
 
 ### Custom Event Tables
 
@@ -1089,26 +1205,29 @@ An unhandled exception can produce entries in BOTH of these:
 
 The export pipeline should handle both without producing duplicate error reports. The recommended approach: export span events as part of the span, and export exception logs independently as log records.
 
-### Stream-Specific Behavioral Notes
+### `CHANGES` / Watermark Behavioral Notes
 
-**View-based stream false positives:** When the stream is created on a consumer's custom view over the event table, the triggered task fires on ANY insert to the underlying event table — regardless of the view's filter or the entity discrimination filter. Many task runs may read the stream, apply the `RECORD_TYPE` + entity discrimination filter, and find zero matching rows. This is expected behavior. The serverless task model minimizes cost for these empty runs.
+**Empty windows are the common case, not a failure mode:** A scheduled run that returns zero rows from every per-signal `CHANGES(...) AT/END` query is normal. The collector still advances the watermark to `:batch_end` because the empty set is a valid export outcome. On a quiet account, almost every 1-minute run is empty and cheap. There is no stream object that can fall behind during idle periods.
 
-**Stream consumption with zero matching rows:** If the stream has data but all rows are filtered out by `RECORD_TYPE` + entity discrimination (e.g., all new rows are SPCS telemetry, not SQL/Snowpark), the collector must still execute the zero-row INSERT + COMMIT to advance the stream offset. Otherwise, the same non-matching rows accumulate indefinitely and the stream never advances.
+**Zero matching rows after filtering:** If a source returns rows from `CHANGES` but all are filtered out by `RECORD_TYPE` + entity discrimination (for example, all new rows are SPCS telemetry, not SQL/Snowpark), the collector still advances the watermark to `:batch_end`. The watermark tracks window progress, not per-signal row counts; nothing accumulates between runs because `CHANGES` re-reads the next window from time travel, not from an offset cursor.
 
-**Stream staleness during prolonged outage:** If the OTLP destination is unreachable for an extended period, the collector continues to advance the stream offset (logging failures to `_metrics.pipeline_health`). The stream never stalls. However, if the **task itself** is suspended (e.g., during app upgrade), the stream is not consumed and will eventually become stale after the data retention + extension window. Monitor `STALE_AFTER` via `DESCRIBE STREAM`.
+**Prolonged export outage (OTLP unreachable, non-expired watermark):** While the watermark is still inside the time-travel window, the collector holds the watermark unchanged on each terminal failure (Rule ET-7) and records `export_failed` in `_metrics.pipeline_health`. The next scheduled run re-reads the same `(watermark, batch_end_next]` window and replays failed rows along with anything newly arrived. There is no unbounded backlog inside Snowflake — the retry window grows linearly with outage duration, which is a bounded cost because Event Table retention is finite.
 
-**View breakage:** If the consumer runs `CREATE OR REPLACE VIEW` on their custom view (instead of `ALTER VIEW`), all streams on that view become stale and unrecoverable. The app must detect this (via `SHOW STREAMS` stale flag or stream read failure), mark the source as broken in the health dashboard, and require the consumer to re-select the source to trigger stream recreation. This results in a one-time data gap. See `event_table_streams_governance_research.md` Section 7.1 for full details.
+**Prolonged task suspension (watermark falls outside time travel):** If the task is suspended (for example, during app upgrade) long enough for the watermark to fall outside the minimum 1-day time-travel window, the first `CHANGES(...) AT(:watermark)` query after resume raises `Time travel data is not available`. The collector self-heals per Rule ET-8: it resets the watermark to `CURRENT_TIMESTAMP() - event_table.watermark_reset_buffer_seconds`, records `WATERMARK_EXPIRED` / `watermark_reset` in `_metrics.pipeline_health`, and resumes on the next scheduled run with an observable, bounded data gap. No DDL is required to recover.
+
+**Custom view change tracking lost (`CREATE OR REPLACE VIEW`):** If the consumer runs `CREATE OR REPLACE VIEW` on their custom view, `CHANGE_TRACKING` may be cleared on the replacement view. The next `CHANGES(...) AT/END` query returns `Change tracking is not enabled on the object`. The collector records `CHANGE_TRACKING_DISABLED` in `_metrics.pipeline_health` and pauses that source; the health dashboard instructs the consumer to re-enable change tracking with `ALTER VIEW <view> SET CHANGE_TRACKING = TRUE`. Once re-enabled, collection resumes from the held watermark with no stream recreation required — the recovery is a single DDL statement on the consumer side, not a coordinated stream drop / recreate on the app side.
 
 ---
 
 ## 15. Implementation Checklist
 
 ### Schema & Extraction
-- [ ] Each event table signal type has a dedicated extraction query reading from the **stream**
-- [ ] Each ACCOUNT_USAGE source has a dedicated extraction query with watermark + overlap + dedup
-- [ ] Event table queries filter by `RECORD_TYPE` and entity discrimination (`snow.executable.type`)
-- [ ] Event table queries do NOT include time-range predicates or `QUALIFY` dedup
+- [ ] Each Event Table signal type has a dedicated extraction query using `CHANGES(INFORMATION => APPEND_ONLY) AT(TIMESTAMP => :watermark) END(TIMESTAMP => :batch_end)`
+- [ ] Each ACCOUNT_USAGE source has a dedicated extraction query with watermark + overlap + `QUALIFY` dedup
+- [ ] Event Table queries filter by `RECORD_TYPE` and entity discrimination (`snow.executable.type`)
+- [ ] Event Table queries do NOT include `TIMESTAMP > :watermark` predicates (the `CHANGES` clause is the cursor) and do NOT use `QUALIFY` dedup
 - [ ] ACCOUNT_USAGE queries filter by time with overlap window and use `QUALIFY ROW_NUMBER()` dedup
+- [ ] All per-signal queries in one collector run use the same `:watermark` and `:batch_end` bind values
 - [ ] All hot-path semi-structured fields use `:"key"::TYPE` extraction
 - [ ] `trace_id` and `span_id` are extracted from `TRACE`, not `RECORD`
 - [ ] `status` is extracted as `RECORD:"status":"code"::STRING` (nested OBJECT with optional `message`)
@@ -1119,19 +1238,20 @@ The export pipeline should handle both without producing duplicate error reports
 - [ ] Unhandled exception LOG `VALUE` = string `exception` (not the error message — that's in RECORD_ATTRIBUTES)
 - [ ] EVENT extraction handles task, container, and Native App lifecycle subtypes
 
-### Stream Lifecycle & Transaction
-- [ ] Stream created on the user-selected source; use normalized event-table/view guidance rather than assuming one syntax line applies everywhere
-- [ ] Stream uses namespaced naming: `_splunk_obs_stream_<source_name>`
-- [ ] Collector SP wraps stream snapshot materialization + offset advancement in explicit `BEGIN`/`COMMIT`; OTLP export runs after COMMIT
-- [ ] Zero-row INSERT (`SELECT ... FROM <stream> WHERE 0 = 1`) used for offset advancement
-- [ ] `_staging.stream_offset_log` table exists (permanently empty, used only as INSERT target)
-- [ ] Stream offset advances on both success AND failure (pipeline never stalls)
-- [ ] Zero-matching-row runs still advance stream offset via zero-row INSERT + COMMIT
-- [ ] `STALE_AFTER` timestamp monitored and surfaced in health dashboard
-- [ ] Stale stream auto-recovery: detect → drop → recreate → record data gap
+### Watermark Lifecycle (`CHANGES` + Self-Managed Watermark)
+- [ ] `_internal.export_watermarks` has exactly one row per enabled source (keyed by `source_name`)
+- [ ] Initial seed inserts `watermark = CURRENT_TIMESTAMP() - event_table.initial_seed_buffer_seconds` (default 60s)
+- [ ] Each collector run reads `watermark` and computes `batch_end = SELECT CURRENT_TIMESTAMP()` once, then pins every per-signal query to the same window
+- [ ] OTLP export runs **after** the lazy `CHANGES` queries materialize via `to_pandas_batches()` — no Snowflake transaction wraps the gRPC call
+- [ ] Watermark advances via `MERGE INTO _internal.export_watermarks SET watermark = :batch_end` only when every per-signal export returns `SUCCESS`
+- [ ] On terminal export failure, the watermark is held unchanged and a `pipeline_health` entry is recorded (Rule ET-7)
+- [ ] Collector catches `SnowparkSQLException` containing `Time travel data is not available`, resets the watermark to `CURRENT_TIMESTAMP() - event_table.watermark_reset_buffer_seconds`, and records `WATERMARK_EXPIRED` / `watermark_reset` (Rule ET-8)
+- [ ] Collector detects `Change tracking is not enabled on the object` and records `CHANGE_TRACKING_DISABLED` against the source (Rule ET-9); source stays paused until the consumer enables `CHANGE_TRACKING`
+- [ ] No Snowflake stream objects are created anywhere in the app
+- [ ] No `_staging.stream_offset_log` or equivalent offset table is used
 
 ### Sources & Access
-- [ ] AI observability uses `SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS` via separate stream
+- [ ] AI observability source (`SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS`) is read via its own watermark row and `CHANGES(...) AT/END`
 - [ ] ACCOUNT_USAGE views use source-specific lag buffers and overlap windows
 - [ ] SPAN ↔ SPAN_EVENT correlation uses `(trace_id, span_id)` matching during serialization
 - [ ] Custom spans (user OTel API) handled without assuming Snowflake naming patterns
@@ -1151,8 +1271,8 @@ The export pipeline should handle both without producing duplicate error reports
 - [ ] Streamlit UI documents required `TRACE_LEVEL`, `LOG_LEVEL`, `METRIC_LEVEL` settings
 - [ ] Streamlit UI documents `SQL_TRACE_QUERY_TEXT` opt-in for SQL text capture
 - [ ] Streamlit UI notes that SQL tracing is not supported within the Native App itself
-- [ ] Streamlit UI warns against `CREATE OR REPLACE VIEW` on custom views with active streams
-- [ ] Stream staleness monitoring explained in Observability health page
+- [ ] Streamlit UI instructs consumers to run `ALTER VIEW <view> SET CHANGE_TRACKING = TRUE` on any custom Event Table view selected as a source, and warns that `CREATE OR REPLACE VIEW` may clear the flag and require re-enabling it
+- [ ] `CHANGE_TRACKING_DISABLED` and `WATERMARK_EXPIRED` states are surfaced with remediation guidance on the Observability health page
 
 ---
 

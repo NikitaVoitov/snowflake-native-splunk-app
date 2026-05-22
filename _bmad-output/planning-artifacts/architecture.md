@@ -12,6 +12,7 @@ inputDocuments:
   - _bmad-output/planning-artifacts/otel_semantic_conventions_snowflake_research.md
   - _bmad-output/planning-artifacts/snowflake_data_governance_privacy_features.md
   - _bmad-output/planning-artifacts/event_table_entity_discrimination_strategy.md
+  - _bmad-output/planning-artifacts/evt_architecture_adversarial_review.md
   - _bmad-output/planning-artifacts/prd-validation-report.md
   - _bmad-output/planning-artifacts/Native_App_Approval_Process_Guide.md
 workflowType: 'architecture'
@@ -34,27 +35,27 @@ _This document builds collaboratively through step-by-step discovery. Sections a
 |---|---|---|
 | Installation & Setup (FR1–FR3) | Marketplace install, privilege approval, first-time setup | Native App framework, Python Permission SDK, idempotent setup.sql |
 | Source Configuration (FR4–FR11) | Pack management, intervals, OTLP destination, certs, connection test | Config state table, EAI provisioning, Snowflake Secrets, dynamic task management |
-| Data Governance & Privacy (FR12–FR18) | Custom/default source selection, governance disclosure, policy-respecting export | User-selected source model, stream creation on views or tables, NULL-tolerant pipelines |
-| Telemetry Collection (FR19–FR22) | Incremental export, entity scoping, independent schedules, per-source settings | Dual-pipeline (stream-triggered + scheduled), entity discrimination filter, watermark state |
+| Data Governance & Privacy (FR12–FR18) | Custom/default source selection, governance disclosure, policy-respecting export | User-selected source model, consumer-owned `CHANGE_TRACKING = TRUE` on custom Event Table views, NULL-tolerant pipelines |
+| Telemetry Collection (FR19–FR22) | Incremental export, entity scoping, independent schedules, per-source settings | Dual-pipeline (both scheduled-task-driven, unified self-managed watermark), entity discrimination filter, `CHANGES` clause for Event Tables, watermark + overlap + `QUALIFY` for ACCOUNT_USAGE |
 | Telemetry Export (FR23–FR26) | OTLP delivery, Splunk-compatible spans, convention transparency, retry/failure | OTLP/gRPC client, OTel convention mapping, transport-level retry |
-| Pipeline Operations & Health (FR27–FR34) | Health summary, source inspection, operational events, auto-recovery, auto-suspend | Internal metrics table, Native App event definitions, stale stream detection/recovery |
+| Pipeline Operations & Health (FR27–FR34) | Health summary, source inspection, operational events, auto-recovery, auto-suspend | Internal metrics table, Native App event definitions, `WATERMARK_EXPIRED` self-heal, `CHANGE_TRACKING_DISABLED` diagnostic |
 | App Lifecycle (FR35–FR39) | Upgrades, config preservation, submission readiness | Versioned schemas, stateful object preservation, multi-package publish pipeline |
 
 **Non-Functional Requirements (24 NFRs across 5 domains):**
 
 | Domain | Key Targets | Architectural Driver |
 |---|---|---|
-| Performance | Event Table ≤60s e2e, AU ≤1 poll cycle, page render ≤5s, batch ≤30s | Triggered tasks (30s min interval), Snowpark pushdown, chunked processing |
+| Performance | Event Table ≤60s e2e, AU ≤1 poll cycle, page render ≤5s, batch ≤30s | Scheduled serverless tasks (default 1 min cadence), Snowpark pushdown, chunked processing |
 | Security | Secrets in Snowflake Secrets only, TLS-only OTLP, no governance bypass, security scan pass | EAI + Network Rules, secret references (not values) in config, policy-transparent reads |
-| Reliability | 99.9% per-source availability, 99.5% batch success, stale stream recovery ≤10min, fault isolation | Independent tasks, auto-retry per task, auto-suspend, stream staleness detection/recreation |
-| Scalability | 1M Event Table rows per triggered run, 10 concurrent AU sources, 1.7× throughput scaling | Serverless compute, to_pandas_batches() chunking, independent task architecture |
+| Reliability | 99.9% per-source availability, 99.5% batch success, watermark self-heal ≤10min, fault isolation | Independent scheduled tasks, advance-on-success / hold-on-failure watermark, auto-suspend, `WATERMARK_EXPIRED` reset-and-resume |
+| Scalability | 1M Event Table rows per scheduled run, 10 concurrent AU sources, 1.7× throughput scaling | Serverless compute, `to_pandas_batches()` chunking, independent scheduled-task architecture |
 | Integration | Splunk APM interop, mandatory routing fields, deterministic error handling | OTel DB Client conventions, resource attribute enrichment, retryable vs terminal classification |
 
 **Scale & Complexity:**
 
 - Primary domain: Cloud Infrastructure / Observability — Snowflake Native App (Marketplace-distributed)
 - Complexity level: **High**
-- Architectural component count: ~15 major components (2 pipelines, 2 collector SPs, OTLP export layer, config/watermark/metrics state, stream management, task lifecycle, Streamlit UI with 5+ pages, EAI/networking, secret management, operational logging, governance layer, upgrade machinery, Marketplace packaging)
+- Architectural component count: ~15 major components (2 pipelines, 2 collector SPs, OTLP export layer, config/watermark/metrics state, shared watermark helpers, scheduled-task lifecycle, Streamlit UI with 5+ pages, EAI/networking, secret management, operational logging, governance layer, upgrade machinery, Marketplace packaging)
 
 ### Technical Constraints & Dependencies
 
@@ -69,7 +70,9 @@ _This document builds collaboratively through step-by-step discovery. Sections a
 | Limited concurrent queries per session | SP default behavior | Independent tasks (not intra-procedure parallelism) for source concurrency |
 | Masking policies blocked on Event Tables | Snowflake platform | Custom view required for value-level redaction on Event Table telemetry |
 | Streamlit `QUERY_WAREHOUSE` does not support `reference()` | Snowflake Native App framework | Warehouse binding for Streamlit requires `ALTER STREAMLIT SET QUERY_WAREHOUSE`; tasks can use `reference()` directly |
-| ACCOUNT_USAGE views don't support Streams | Snowflake platform | Poll-based pipeline with watermark state required for AU sources |
+| ACCOUNT_USAGE views don't support the `CHANGES` clause | Snowflake platform | Watermark + configurable overlap window + `QUALIFY ROW_NUMBER()` dedup required for AU sources |
+| Event Table `CHANGES` requires 1-day time-travel window | Snowflake platform | Frequent scheduled polling (default 1 min) keeps watermark well inside the window; `WATERMARK_EXPIRED` error caught and watermark reset behind `CURRENT_TIMESTAMP()` for self-heal |
+| Custom views over Event Tables require `CHANGE_TRACKING = TRUE` | Snowflake platform | Consumer must set on their view; app cannot `ALTER VIEW` on consumer objects; collector detects the failure and emits `source_change_tracking_disabled` health event with remediation guidance |
 | Event Table shared multi-service sink | Snowflake telemetry model | Entity discrimination filter required (positive include-list on `snow.executable.type`) |
 | EAI + Network Rules for outbound connectivity | Snowflake networking model | Consumer must approve app specification for OTLP egress |
 | Snowflake Anaconda Channel packages only | SP/Streamlit runtime | All dependencies must be available on Anaconda Channel; version pinning critical |
@@ -83,18 +86,18 @@ _This document builds collaboratively through step-by-step discovery. Sections a
 | **Operational observability** | All pipelines, all sources | `_metrics.pipeline_health` table + Native App event definitions + Streamlit health page |
 | **Upgrade safety** | All stateful objects | `CREATE OR ALTER VERSIONED SCHEMA` for stateless; `CREATE IF NOT EXISTS` for stateful; idempotent setup.sql |
 | **Marketplace compliance** | Packaging, security, documentation | Tom's release-readiness workflow; security scan; functional review; enforced standards checklist |
-| **Error handling & data gaps** | Both pipelines | Transport-level retry (MVP); failure logging; data gap recording; pipeline advancement on failure |
+| **Error handling & data gaps** | Both pipelines | Transport-level retry (MVP); failure logging; watermark held unchanged on terminal failure for exact retry on next scheduled run; `WATERMARK_EXPIRED` triggers watermark reset (bounded data loss) with self-heal |
 | **Secret management** | OTLP endpoint, certificates | Snowflake Secrets only; reference names in config table, never values; rotatable without restart |
-| **Platform constraints** | SP environment, Native App sandbox | SimpleSpanProcessor, module-level init, independent tasks, NULL-tolerant policy handling |
+| **Platform constraints** | SP environment, Native App sandbox | SimpleSpanProcessor, module-level init, independent scheduled tasks, NULL-tolerant policy handling |
 
-### Key Architectural Decisions Already Made (from Vision)
+### Key Architectural Decisions
 
-The vision document pre-establishes 14 major architectural decisions that the architecture document will formalize, validate, and structure:
+The architecture is anchored by the following 14 major decisions:
 
-1. Dual-pipeline design (event-driven + poll-based)
+1. Dual-pipeline design — both scheduled-task-driven with unified self-managed watermark state
 2. User-selected sources (no app-created governed views)
-3. Independent serverless scheduled tasks per ACCOUNT_USAGE source
-4. Zero-row INSERT stream offset advancement
+3. Independent serverless scheduled tasks per source (Event Table and ACCOUNT_USAGE alike)
+4. Advance-on-success / hold-on-failure watermark semantics — single `MERGE INTO _internal.export_watermarks` only after every chunk of every signal exports successfully; watermark unchanged on any terminal failure (exact retry on next run); `WATERMARK_EXPIRED` self-heal resets the watermark behind `CURRENT_TIMESTAMP()` by a configurable buffer
 5. Single OTLP/gRPC endpoint (collector handles routing)
 6. Snowpark pushdown-first processing philosophy
 7. `to_pandas_batches()` for memory-bounded chunked processing
@@ -123,7 +126,7 @@ snowflake-native-splunk-app/
 ├── LICENSE
 ├── app/
 │   ├── manifest.yml                 # manifest_version: 2 (privileges, references, event defs)
-│   ├── setup.sql                    # Idempotent DDL (app_public, _internal, _staging, _metrics)
+│   ├── setup.sql                    # Idempotent DDL (app_public, _internal, _metrics)
 │   ├── README.md                    # Consumer-facing documentation
 │   ├── environment.yml              # Anaconda Channel deps (pinned)
 │   ├── pyproject.toml               # Streamlit 3.11 local preview venv (uv)
@@ -210,14 +213,14 @@ Multi-package promotion: dev (`INTERNAL`) → scan (`EXTERNAL`, security scan) �
 | D4 | Streamlit state management | **`st.session_state` as cache + config table as durable store** | Streamlit best practice; responsive UI; explicit save pattern; reduces DB round-trips |
 | D5 | Testing approach | **Hybrid** — unit mocks + integration against dev schema + fully automated E2E via Cursor agents | Playwright CLI for Snowsight automation and SSH for collector verification |
 
-**Pre-Established Decisions (from Vision — validated and formalized):**
+**Formalized Architectural Decisions:**
 
 | # | Decision | Choice | Source |
 |---|---|---|---|
-| V1 | Pipeline architecture | Dual-pipeline: event-driven (streams + triggered tasks) + poll-based (scheduled tasks + watermarks) | Vision §3, §6 |
+| V1 | Pipeline architecture | Dual-pipeline: both scheduled-task-driven with per-source self-managed watermark. Event Tables use `CHANGES(INFORMATION => APPEND_ONLY) AT(TIMESTAMP => :wm) END(TIMESTAMP => :batch_end)`. ACCOUNT_USAGE views use `WHERE ts > :wm - overlap AND ts <= :batch_end` + `QUALIFY ROW_NUMBER()` dedup | `evt_architecture_adversarial_review.md` Part 3 |
 | V2 | Data governance model | User-selected sources only — no app-created governed views | Vision §7A, PRD §2.2 |
-| V3 | ACCOUNT_USAGE task architecture | Independent serverless scheduled tasks — one per enabled source with source-specific schedule | Vision §7.6 |
-| V4 | Stream offset advancement | Zero-row INSERT pattern within explicit transaction — `INSERT INTO _staging.stream_offset_log(_OFFSET_CONSUMED_AT) SELECT CURRENT_TIMESTAMP() FROM <stream> WHERE 0 = 1` | Vision §8.0 |
+| V3 | Task architecture | Independent serverless scheduled tasks — one per enabled source (Event Table and ACCOUNT_USAGE alike), source-specific schedule, default 1 minute for Event Table sources | Vision §7.6, `evt_architecture_adversarial_review.md` Part 3 |
+| V4 | Watermark advancement | Advance-on-success / hold-on-failure — single atomic `MERGE INTO _internal.export_watermarks` only after every signal and chunk exports successfully; on any terminal failure the watermark is unchanged so the next scheduled invocation replays the exact same `[watermark, batch_end)` window; on time-travel `WATERMARK_EXPIRED` the watermark is reset to `CURRENT_TIMESTAMP() - event_table.watermark_reset_buffer_seconds` | `evt_architecture_adversarial_review.md` Part 3 |
 | V5 | OTLP transport | Single OTLP/gRPC endpoint — remote collector handles routing to Splunk backends | Vision §7.9, PRD §4.1 |
 | V6 | Data processing philosophy | Snowpark pushdown-first — all relational work (filter, project, dedup) pushed to Snowflake engine; Python only serializes | Vision §7.11, §7.12 |
 | V7 | Memory management | `to_pandas_batches()` for chunked processing — bounded memory, no global `collect()` | Vision §7.11 |
@@ -240,11 +243,14 @@ Multi-package promotion: dev (`INTERNAL`) → scan (`EXTERNAL`, security scan) �
 | EAI reference | Manifest reference (`SPLUNK_EAI`) | `REFERENCE('SPLUNK_EAI')` in SQL |
 | PEM cert Secret reference | Manifest reference (optional, `required_at_setup: false`) | Resolve Secret content via reference at runtime |
 | OTLP endpoint URL | `_internal.config` (key: `otlp.endpoint`) | Query config table at pipeline startup |
-| Per-source custom view FQNs | `_internal.config` (key: `source.<name>.view_fqn`) | Query config table; used in stream/task DDL |
+| Per-source custom view FQNs | `_internal.config` (key: `source.<name>.view_fqn`) | Query config table; used in collector SQL (resolved via `REFERENCE(...)`) and scheduled-task DDL |
 | Pack enablement flags | `_internal.config` (key: `pack_enabled.<pack_name>`) | Query config table; drives task create/drop |
 | Per-source batch size and interval | `_internal.config` (keys: `source.<name>.batch_size`, `source.<name>.poll_interval_seconds`) | Query config table; per-source operational settings for MVP |
-| Per-source overlap window | `_internal.config` (key: `source.<name>.overlap_minutes`) | Configurable overlap for AU watermark dedup; default = documented max latency × 1.1 |
-| Watermark state | `_internal.export_watermarks` (dedicated table) | Per-source watermark tracking |
+| Per-source overlap window (ACCOUNT_USAGE only) | `_internal.config` (key: `source.<name>.overlap_minutes`) | Configurable overlap for AU watermark dedup; default = documented max latency × 1.1 |
+| Event Table initial seed buffer | `_internal.config` (key: `event_table.initial_seed_buffer_seconds`) | Seconds behind `CURRENT_TIMESTAMP()` for the first-run watermark seed when no row exists yet for a source; default `60` to align with the 1-minute scheduled cadence so the first run captures exactly one cadence of preceding telemetry instead of a zero-width window |
+| Event Table watermark reset buffer | `_internal.config` (key: `event_table.watermark_reset_buffer_seconds`) | Seconds behind `CURRENT_TIMESTAMP()` the watermark is reset to on `WATERMARK_EXPIRED` recovery; default `60` |
+| Event Table SPAN_EVENT cap | `_internal.config` (key: `event_table.max_span_events_per_run`) | Soft cap on SPAN_EVENT rows indexed in memory per run for SPAN ↔ SPAN_EVENT correlation |
+| Watermark state (unified) | `_internal.export_watermarks` (dedicated table) | Per-source (`source_name`) watermark tracking for both Event Table and ACCOUNT_USAGE pipelines |
 | Pipeline health metrics | `_metrics.pipeline_health` (dedicated table) | Per-run operational metrics |
 
 **Schema Topology:**
@@ -252,8 +258,7 @@ Multi-package promotion: dev (`INTERNAL`) → scan (`EXTERNAL`, security scan) �
 | Schema | Type | Purpose | Upgrade Behavior |
 |---|---|---|---|
 | `app_public` | Versioned (`CREATE OR ALTER VERSIONED SCHEMA`) | Procedures, Streamlit, grants | Recreated on upgrade |
-| `_internal` | Stateful (`CREATE SCHEMA IF NOT EXISTS`) | Config, watermarks, collector SPs | Persists across upgrades |
-| `_staging` | Stateful | `stream_offset_log` (permanently empty) | Persists across upgrades |
+| `_internal` | Stateful (`CREATE SCHEMA IF NOT EXISTS`) | `config`, `export_watermarks`, collector SPs | Persists across upgrades |
 | `_metrics` | Stateful | `pipeline_health` operational metrics | Persists across upgrades |
 
 ### Authentication & Security
@@ -270,14 +275,30 @@ Multi-package promotion: dev (`INTERNAL`) → scan (`EXTERNAL`, security scan) �
 
 ### Pipeline Architecture
 
-**Stream DDL by Source Type:**
+**Incremental Read Primitive by Source Type:**
 
-| User Selection | Stream Creation DDL | Syntax Variant |
+| User Selection | Read Primitive | Notes |
 |---|---|---|
-| Default Event Table (`SNOWFLAKE.TELEMETRY.EVENTS`) | `CREATE STREAM IF NOT EXISTS <ns>_stream ON EVENT TABLE <ref> APPEND_ONLY = TRUE` | Event Table syntax (no AT/BEFORE, no SHOW_INITIAL_ROWS) |
-| Consumer's custom view over Event Table | `CREATE STREAM IF NOT EXISTS <ns>_stream ON VIEW <user_view_fqn> APPEND_ONLY = TRUE` | View syntax (change tracking auto-enabled on first stream) |
-| Default ACCOUNT_USAGE view | No stream — poll-based with watermark | N/A |
-| Consumer's custom view over ACCOUNT_USAGE | No stream — poll-based with watermark | N/A |
+| Default Event Table (`SNOWFLAKE.TELEMETRY.EVENTS`) | `SELECT <projection> FROM <source_fqn> CHANGES(INFORMATION => APPEND_ONLY) AT(TIMESTAMP => :watermark) END(TIMESTAMP => :batch_end) WHERE RECORD_TYPE = :signal AND UPPER(RESOURCE_ATTRIBUTES:"snow.executable.type"::STRING) IN (:include_list)` | Event Tables always have change tracking enabled |
+| Consumer's custom view over Event Table | Same `CHANGES` clause against the view FQN | Consumer must run `ALTER VIEW <fqn> SET CHANGE_TRACKING = TRUE`; the app detects the failure case and emits `source_change_tracking_disabled` health with remediation guidance (the app cannot `ALTER VIEW` on consumer-owned objects) |
+| Default ACCOUNT_USAGE view | `SELECT <projection> FROM <source_fqn> WHERE :timestamp_col > :watermark - INTERVAL :overlap_minutes AND :timestamp_col <= :batch_end QUALIFY ROW_NUMBER() OVER (PARTITION BY :natural_key ORDER BY :timestamp_col DESC) = 1 LIMIT :batch_size` | `CHANGES` is not supported on ACCOUNT_USAGE views; overlap re-scans absorb trailing ACCOUNT_USAGE latency; `QUALIFY` removes previously exported rows |
+| Consumer's custom view over ACCOUNT_USAGE | Same watermark + overlap + `QUALIFY` pattern | Requires consumer-provided natural key and timestamp column metadata in `_internal.config` |
+
+**Unified Watermark Orchestration:**
+
+```
+_internal.export_watermarks
+  (source_name, watermark_ts, last_success_at, last_failure_reason, last_run_id)
+       │
+       ├── Event Table pipelines ── CHANGES(...) AT/END(TIMESTAMP)
+       └── ACCOUNT_USAGE pipelines ── WHERE ts BETWEEN watermark-overlap AND batch_end + QUALIFY
+
+  On success of the run:  MERGE ... SET watermark_ts = batch_end
+  On terminal failure:    watermark unchanged  →  exact retry on next scheduled run
+  On WATERMARK_EXPIRED:   MERGE ... SET watermark_ts = CURRENT_TIMESTAMP() - buffer
+```
+
+Shared helpers live in `app/python/watermark.py` (`read_watermark`, `update_watermark`, `reset_watermark`) and are used by both collector SPs so advance-on-success / hold-on-failure semantics are identical across pipelines.
 
 **OTLP Exporter Topology (D3):**
 
@@ -332,7 +353,7 @@ ACCOUNT_USAGE Collector SP (module-level init):
 | Layer | Tool | Scope | Automation |
 |---|---|---|---|
 | **(a) Unit/mock** | pytest + Snowpark local testing | SP logic, data transforms, OTel mapping, config parsing | CI — every commit |
-| **(b) Integration** | pytest + `snow sql` against dev schema | SP execution, watermarks, stream behavior, task lifecycle | CI — pre-merge against dev account |
+| **(b) Integration** | pytest + `snow sql` against dev schema | SP execution, watermark advance/hold/reset, `CHANGES` behavior, task lifecycle | CI — pre-merge against dev account |
 | **(c) E2E — Snowflake side** | Cursor agent + Playwright CLI | `snow app run` → Snowsight UI automation: install, configure, activate, verify health page | Pre-release — fully automated via Cursor |
 | **(c) E2E — Splunk side** | Cursor agent + SSH to OTel collector | Connect to collector instance, query logs, verify exported telemetry format, OTel conventions, attribute completeness | Pre-release — fully automated via Cursor |
 
@@ -342,10 +363,10 @@ E2E is fully automated — Cursor agents drive Playwright CLI (minimizing token 
 
 **Implementation Sequence:**
 
-1. **D1 (Config storage)** → First: config table schema + reference callbacks must exist before any pipeline code
-2. **Stream DDL** → Second: stream creation logic depends on D1 (where user-selected source FQNs are stored)
+1. **D1 (Config storage)** → First: `_internal.config` and `_internal.export_watermarks` schemas + manifest reference callbacks must exist before any pipeline code
+2. **Watermark helpers** → Second: `app/python/watermark.py` (`read_watermark`, `update_watermark`, `reset_watermark`) — shared advance-on-success / hold-on-failure primitives used by both collectors
 3. **D3 (Exporter topology)** → Third: OTLP export module with 3 exporters, TLS setup from D2
-4. **V4, V6, V7, V8** → Fourth: collector SPs using Snowpark pushdown + to_pandas_batches + SimpleSpanProcessor
+4. **V6, V7, V8** → Fourth: collector SPs using Snowpark pushdown + `to_pandas_batches()` + `SimpleSpanProcessor`; Event Table collector uses `CHANGES`, ACCOUNT_USAGE collector uses watermark + overlap + `QUALIFY`
 5. **D4 (Streamlit state)** → Fifth: UI reads config via session_state pattern
 6. **D5 (Testing)** → Ongoing: unit tests from day 1, integration tests as SPs land, E2E at feature-complete
 
@@ -356,6 +377,7 @@ E2E is fully automated — Cursor agents drive Playwright CLI (minimizing token 
 | D1 (Config hybrid) | Manifest reference definitions | All pipelines (read config at startup), Streamlit UI (read/write config) |
 | D2 (TLS only) | D1 (PEM secret reference) | OTLP exporter initialization (D3) |
 | D3 (3 exporters) | D2 (TLS credentials) | Event Table collector, ACCOUNT_USAGE collector |
+| V4 (Watermark semantics) | D1 (`_internal.export_watermarks` schema) | Both collector SPs — shared `app/python/watermark.py` helpers |
 | D4 (Session state) | D1 (config table schema) | All Streamlit pages |
 | D5 (Testing) | All above | Release quality gates |
 
@@ -387,8 +409,7 @@ E2E is fully automated — Cursor agents drive Playwright CLI (minimizing token 
 | Schema | Type | DDL | Purpose |
 |---|---|---|---|
 | `app_public` | Versioned | `CREATE OR ALTER VERSIONED SCHEMA` | Procedures, Streamlit, grants — recreated on upgrade |
-| `_internal` | Stateful | `CREATE SCHEMA IF NOT EXISTS` | Config, watermarks, collector SPs — persists across upgrades |
-| `_staging` | Stateful | `CREATE SCHEMA IF NOT EXISTS` | `stream_offset_log` (permanently empty) — persists across upgrades |
+| `_internal` | Stateful | `CREATE SCHEMA IF NOT EXISTS` | `config`, `export_watermarks`, collector SPs — persists across upgrades |
 | `_metrics` | Stateful | `CREATE SCHEMA IF NOT EXISTS` | `pipeline_health` operational metrics — persists across upgrades |
 
 ### Naming Patterns
@@ -397,12 +418,11 @@ E2E is fully automated — Cursor agents drive Playwright CLI (minimizing token 
 
 | Object Type | Convention | Example | Anti-Pattern |
 |---|---|---|---|
-| Schemas (app-internal) | `_lowercase` prefix | `_internal`, `_staging`, `_metrics` | `Internal`, `INTERNAL` |
+| Schemas (app-internal) | `_lowercase` prefix | `_internal`, `_metrics` | `Internal`, `INTERNAL` |
 | Schemas (consumer-facing) | `snake_case` | `app_public` | `AppPublic` |
 | Tables | `snake_case` | `pipeline_health`, `export_watermarks` | `PipelineHealth` |
 | Columns | `UPPER_CASE` (Snowflake convention) | `CONFIG_KEY`, `METRIC_VALUE` | `config_key` in DDL |
 | Stored procedures | `snake_case` | `event_table_collector` | `EventTableCollector` |
-| Streams | `_splunk_obs_stream_<source_name>` | `_splunk_obs_stream_telemetry_events` | `stream_1` |
 | Tasks | `_splunk_obs_task_<source_name>` | `_splunk_obs_task_query_history` | `task_1` |
 | Application role | `snake_case` | `app_admin` | `APP_ADMIN` |
 
@@ -423,9 +443,10 @@ E2E is fully automated — Cursor agents drive Playwright CLI (minimizing token 
 | OTLP settings | `otlp.<setting>` | `otlp.endpoint`, `otlp.pem_secret_ref` |
 | Pack flags | `pack_enabled.<pack_name>` | `pack_enabled.distributed_tracing` |
 | Source settings | `source.<source_name>.<setting>` | `source.query_history.poll_interval_seconds` |
-| Source overlap window | `source.<source_name>.overlap_minutes` | `source.query_history.overlap_minutes` (default: 50) |
+| ACCOUNT_USAGE overlap window | `source.<source_name>.overlap_minutes` | `source.query_history.overlap_minutes` (default: 50) |
 | Source view FQNs | `source.<source_name>.view_fqn` | `source.query_history.view_fqn` |
 | Source type | `source.<source_name>.source_type` | Value: `default` or `custom` |
+| Event Table collector tuning | `event_table.<setting>` | `event_table.initial_seed_buffer_seconds` (default: `60`), `event_table.watermark_reset_buffer_seconds` (default: `60`), `event_table.max_span_events_per_run` (default: `50000`) |
 
 This dotted format is the canonical config-key convention for the project. Older mixed examples such as `otlp_endpoint`, `source:<name>:view_fqn`, `pack_enabled:<pack_name>`, or `export_batch_size` are deprecated planning-era artifacts and must not be used in new stories or implementation code.
 
@@ -440,31 +461,27 @@ This dotted format is the canonical config-key convention for the project. Older
 
 ### Structure Patterns
 
-**Python Module Organization:**
+**Python Module Organization (flat layout — `snowflake.yml` lists every file explicitly):**
 
 ```
 app/python/
-├── collectors/
-│   ├── __init__.py
-│   ├── event_table_collector.py
-│   └── account_usage_collector.py
-├── exporters/
-│   ├── __init__.py
-│   └── otlp_grpc.py
-├── transforms/
-│   ├── __init__.py
-│   ├── span_mapper.py
-│   ├── log_mapper.py
-│   ├── metric_mapper.py
-│   └── account_usage_mapper.py
-├── common/
-│   ├── __init__.py
-│   ├── config.py
-│   ├── health.py
-│   ├── stream_manager.py
-│   └── task_manager.py
-└── constants.py
+├── event_table_collector.py      # Event Table collector SP — CHANGES + watermark, per-signal SELECTs
+├── account_usage_collector.py    # ACCOUNT_USAGE collector SP — watermark + overlap + QUALIFY ROW_NUMBER()
+├── watermark.py                  # Shared: read_watermark / update_watermark / reset_watermark against _internal.export_watermarks
+├── otlp_export.py                # Module-level OTLP exporter singletons (Span / Metric / Log), TLS enforcement
+├── export_result.py              # ExportOutcome dataclass + gRPC status classification (retryable vs terminal)
+├── pipeline_telemetry.py         # Structured logging + _metrics.pipeline_health inserts
+├── span_mapper.py                # SPAN + SPAN_EVENT rows → OTel ReadableSpan (in-memory correlation)
+├── log_mapper.py                 # LOG row → OTel LogData
+├── metric_mapper.py              # METRIC row → OTel MetricsData
+├── account_usage_mapper.py       # ACCOUNT_USAGE row → OTel LogData
+├── telemetry_constants.py        # COL_* column-name constants + signal filters
+├── secret_reader.py              # PEM secret reader via manifest reference
+├── endpoint_parse.py             # OTLP endpoint validation/parsing
+└── config_reader.py              # _internal.config accessor with typed getters
 ```
+
+The flat layout is mandatory — Snowflake Native App stages do not auto-discover files; every module must have an explicit `src → dest` entry in `snowflake.yml` under `artifacts`. Adding or renaming any module requires updating `snowflake.yml` in the same change.
 
 **Streamlit Page Organization (from UX Design Specification — `st.navigation()` API):**
 
@@ -514,17 +531,24 @@ app/streamlit/
 ```
 tests/
 ├── unit/
-│   ├── test_span_mapper.py
-│   ├── test_log_mapper.py
-│   ├── test_config.py
-│   └── test_health.py
+│   ├── test_span_mapper.py                 # SPAN + SPAN_EVENT → ReadableSpan
+│   ├── test_log_mapper.py                  # LOG row → LogData
+│   ├── test_metric_mapper.py               # METRIC row → MetricsData
+│   ├── test_account_usage_mapper.py        # ACCOUNT_USAGE row → LogData
+│   ├── test_config_reader.py               # Typed _internal.config accessors
+│   ├── test_pipeline_telemetry.py          # Structured logs + _metrics.pipeline_health writes
+│   ├── test_export_result.py               # gRPC status classification (retryable vs terminal)
+│   ├── test_secret_reader.py               # PEM secret reference resolution
+│   └── test_endpoint_parse.py              # OTLP endpoint validation
 ├── integration/
-│   ├── test_event_table_collector.py
-│   ├── test_watermark_logic.py
-│   └── test_stream_lifecycle.py
+│   ├── test_event_table_collector.py       # CHANGES-based incremental reads, per-signal SELECTs
+│   ├── test_account_usage_collector.py     # Watermark + overlap + QUALIFY dedup
+│   ├── test_watermark.py                   # advance-on-success / hold-on-failure / WATERMARK_EXPIRED self-heal
+│   ├── test_scheduled_tasks.py             # Task lifecycle, schedule updates, suspend/resume
+│   └── test_otlp_export.py                 # Live OTLP/gRPC against dev collector
 └── e2e/
-    ├── test_install_configure.py       # Playwright MCP scripts
-    └── test_export_verification.py     # SSH to collector verification
+    ├── test_install_configure.py           # Playwright MCP — Snowsight install + Getting Started flow
+    └── test_export_verification.py         # SSH to collector + Splunk Obs Cloud REST verification
 ```
 
 ### Format Patterns
@@ -538,8 +562,9 @@ tests/
 | `rows_failed` | NUMBER | When transport retries exhaust |
 | `export_latency_ms` | NUMBER | Per-batch export duration |
 | `error_count` | NUMBER | Errors per run |
-| `source_lag_seconds` | NUMBER | Latest available minus latest exported |
-| `stream_stale_after` | TIMESTAMP_LTZ | From `DESCRIBE STREAM` |
+| `source_lag_seconds` | NUMBER | `CURRENT_TIMESTAMP()` minus watermark (exported high-water mark) |
+| `watermark_value` | TIMESTAMP_LTZ | Current value from `_internal.export_watermarks` after the run |
+| `watermark_reset` | NUMBER | `1` if this run reset the watermark due to `WATERMARK_EXPIRED`, else absent |
 
 **Structured Log Format (Native App Event Definitions):**
 
@@ -584,9 +609,9 @@ For OTLP export operational logs and `_metrics.pipeline_health` metadata, store 
 
 | Code | Category | Example |
 |---|---|---|
-| `STREAM_STALE` | Pipeline | Stream became stale; auto-recovery triggered |
-| `STREAM_BROKEN` | Pipeline | Stream on view broken (view recreated) |
-| `SOURCE_UNAVAILABLE` | Pipeline | ACCOUNT_USAGE view query failed |
+| `WATERMARK_EXPIRED` | Pipeline | `CHANGES` end-timestamp older than 1-day time-travel window; watermark reset to `CURRENT_TIMESTAMP() - event_table.watermark_reset_buffer_seconds` and run skipped for this cycle |
+| `CHANGE_TRACKING_DISABLED` | Pipeline | Custom Event Table view missing `CHANGE_TRACKING = TRUE`; `CHANGES` unsupported — source paused and diagnostic surfaced to consumer |
+| `SOURCE_UNAVAILABLE` | Pipeline | ACCOUNT_USAGE view query failed (latency, auth, or view missing) |
 | `CONFIG_MISSING` | Configuration | Required config key not found |
 | `REFERENCE_UNBOUND` | Configuration | Manifest reference not yet bound by consumer |
 
@@ -617,15 +642,30 @@ def record_run_metrics(session, pipeline_name, source_name, metrics: dict):
                      json.dumps(metadata)]).collect()
 ```
 
-**Stream Staleness Recovery:**
+**Watermark Expiry Self-Heal (Event Table collector):**
 
 ```
-detect → DESCRIBE STREAM → if stale:
-    log STREAM_STALE warning
-    DROP STREAM IF EXISTS
-    CREATE STREAM ON <selected_source> APPEND_ONLY = TRUE
-    record data_gap in pipeline_health
+try:
+    batch_end = CURRENT_TIMESTAMP()
+    df = session.sql(f"""
+        SELECT ... FROM <source>
+        CHANGES(INFORMATION => APPEND_ONLY)
+          AT(TIMESTAMP => '{watermark}'::TIMESTAMP_LTZ)
+          END(TIMESTAMP => '{batch_end}'::TIMESTAMP_LTZ)
+        WHERE <entity/signal filters>
+    """)
+except SnowparkSQLException as e:
+    if "Time travel data is not available" in str(e):
+        # 1-day time-travel window expired — reset watermark to safe buffer behind now,
+        # hold this run, record WATERMARK_EXPIRED, resume next scheduled run.
+        reset_watermark(session, source, CURRENT_TIMESTAMP() - INTERVAL reset_buffer_seconds)
+        record_health(session, source, "watermark_reset", 1,
+                      {"error_code": "WATERMARK_EXPIRED"})
+        return "WATERMARK_RESET"
+    raise
 ```
+
+Watermark advances only on full export success (see V4). On terminal transport failure the watermark is held unchanged so the next scheduled run retries the exact same `[watermark, batch_end]` window.
 
 ### Enforcement Guidelines
 
@@ -641,16 +681,19 @@ detect → DESCRIBE STREAM → if stale:
 
 **Additional mandatory patterns for this project:**
 
-1. Never create Snowflake views — only streams on user-selected sources
+1. Never create or own Snowflake views — the app reads directly from consumer-selected sources (default Event Table / ACCOUNT_USAGE views, or consumer-owned custom views with `CHANGE_TRACKING = TRUE`)
 2. Initialize OTLP exporters at module scope, never inside handler functions
 3. Use `session.sql_simplifier_enabled = True` at the start of every SP handler
-4. Use explicit `BEGIN`/`COMMIT` transactions for stream offset advancement
-5. Resolve manifest references via `REFERENCE('ref_name')` in SQL, not hardcoded object names
-6. Record pipeline health metrics at the end of every SP run (success or failure)
-7. Use structured logging with mandatory fields (pipeline, source, run_id, duration_ms)
-8. Use the config key naming convention (`otlp.*`, `pack_enabled.*`, `source.*.*`)
-9. Follow the Getting Started → Observability health → Telemetry sources → Splunk settings → Data governance sidebar order
-10. Use `st.navigation()` API for page routing (not `pages/` folder convention alone)
+4. Advance watermarks **only** on full export success via `MERGE INTO _internal.export_watermarks` — never advance on partial batches or terminal transport failures (hold watermark for exact retry on next scheduled run)
+5. For Event Tables, always use the `CHANGES(INFORMATION => APPEND_ONLY) AT(TIMESTAMP => :watermark) END(TIMESTAMP => :batch_end)` clause with an explicit `batch_end` captured at run start; for ACCOUNT_USAGE (which does not support `CHANGES`), use `WHERE timestamp_col > :watermark - INTERVAL :overlap AND timestamp_col <= :batch_end` plus `QUALIFY ROW_NUMBER() OVER (PARTITION BY natural_key ORDER BY timestamp_col DESC) = 1`
+6. Always wrap the Event Table `CHANGES` read in a `WATERMARK_EXPIRED` handler that resets the watermark to `CURRENT_TIMESTAMP() - event_table.watermark_reset_buffer_seconds` and records `watermark_reset=1` in `_metrics.pipeline_health`
+7. Resolve manifest references via `REFERENCE('ref_name')` in SQL, not hardcoded object names
+8. Record pipeline health metrics at the end of every SP run (success or failure), including `watermark_value` and `source_lag_seconds`
+9. Use structured logging with mandatory fields (pipeline, source, run_id, duration_ms); use raw upstream OTLP/gRPC code names in `error_code` — never invent aliases
+10. Use the config key naming convention (`otlp.*`, `pack_enabled.*`, `source.*.*`, `event_table.*`)
+11. Follow the Getting Started → Observability health → Telemetry sources → Splunk settings → Data governance sidebar order
+12. Use `st.navigation()` API for page routing (not `pages/` folder convention alone)
+13. Every new file under `app/python/` or `app/streamlit/utils/` must have an explicit `src → dest` entry in `snowflake.yml` in the same change — the Native App stage does not auto-discover files
 
 ## Project Structure & Boundaries
 
@@ -663,19 +706,21 @@ detect → DESCRIBE STREAM → if stale:
 │                                                                                      │
 │  ┌── Consumer Objects (user-selected sources) ──┐  ┌── App Objects ──────────────┐  │
 │  │ SNOWFLAKE.TELEMETRY.EVENTS (default ET)      │  │ app_public (versioned)      │  │
-│  │ consumer_db.schema.custom_view (custom)       │  │   main (Streamlit)          │  │
-│  │ SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY (AU)    │  │   register_single_callback  │  │
-│  │ consumer_db.schema.custom_au_view (custom)    │  │   collector SPs             │  │
-│  └───────────────────────────────────────────────┘  │                             │  │
-│            ↓ (SELECT via reference or FQN)           │ _internal                   │  │
-│                                                      │   config (KV settings)      │  │
-│  ┌── Manifest References ──────────────────────┐    │   export_watermarks          │  │
-│  │ CONSUMER_EVENT_TABLE → bound to ET/view      │    │   collector SPs (stateful)  │  │
-│  │ SPLUNK_EAI → bound to EAI                    │    │ _staging                    │  │
-│  │ PEM Secret ref → bound to Secret (optional)  │    │   stream_offset_log         │  │
-│  └──────────────────────────────────────────────┘    │ _metrics                    │  │
-│                                                      │   pipeline_health           │  │
-│                                                      └──────────────────────────────┘  │
+│  │ consumer_db.schema.custom_et_view            │  │   main (Streamlit)          │  │
+│  │   (CHANGE_TRACKING = TRUE required)          │  │   register_single_callback  │  │
+│  │ SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY (AU)    │  │   collector SPs             │  │
+│  │ consumer_db.schema.custom_au_view            │  │                             │  │
+│  └───────────────────────────────────────────────┘  │ _internal                   │  │
+│         ↓                                            │   config (KV settings)      │  │
+│    SELECT via REFERENCE(...) using                   │   export_watermarks         │  │
+│    CHANGES() for Event Tables,                       │     (unified high-water mark│  │
+│    watermark+overlap+QUALIFY for ACCOUNT_USAGE       │      per source)            │  │
+│                                                      │   scheduled tasks (per src) │  │
+│  ┌── Manifest References ──────────────────────┐    │                             │  │
+│  │ CONSUMER_EVENT_TABLE → bound to ET/view      │    │ _metrics                    │  │
+│  │ SPLUNK_EAI → bound to EAI                    │    │   pipeline_health           │  │
+│  │ PEM Secret ref → bound to Secret (optional)  │    │                             │  │
+│  └──────────────────────────────────────────────┘    └─────────────────────────────┘  │
 │                                                                   │                    │
 │                                                        ┌──────────┴──────────┐         │
 │                                                        │ EAI + Network Rules │         │
@@ -694,29 +739,41 @@ detect → DESCRIBE STREAM → if stale:
                                               (traces/metrics)  (logs)      (logs)
 ```
 
+Note: no `_staging` schema and no Snowflake streams are used — the app relies on the `CHANGES` clause for Event Tables and a self-managed watermark table (`_internal.export_watermarks`) for both pipelines.
+
 ### Data Flow
 
-**Event Table Pipeline (event-driven):**
+**Event Table Pipeline (scheduled `CHANGES` + self-managed watermark):**
 
 ```
-User-selected source (ET or view)
-  → Stream (APPEND_ONLY)
-    → Triggered task fires (SYSTEM$STREAM_HAS_DATA)
-      → event_table_collector SP:
-        1. session.sql_simplifier_enabled = True
-        2. load_config(session) → otlp_endpoint, batch settings
-        3. BEGIN TRANSACTION
-        4. Snowpark DataFrame: filter RECORD_TYPE + entity discrimination
-        5. Per-signal projection (span_mapper/log_mapper/metric_mapper)
-        6. to_pandas_batches() → OTel protobuf → otlp_grpc.export()
-        7. Zero-row INSERT into `_staging.stream_offset_log(_OFFSET_CONSUMED_AT)`
-           using `SELECT CURRENT_TIMESTAMP() FROM <stream> WHERE 0 = 1`
-           (stream consumed without coupling to stream column shape)
-        8. COMMIT
-        9. record_run_metrics()
+User-selected source (default SNOWFLAKE.TELEMETRY.EVENTS or
+                     consumer-owned view with CHANGE_TRACKING = TRUE)
+  → Independent scheduled task (default 1 min cadence)
+    → event_table_collector SP:
+      1. session.sql_simplifier_enabled = True
+      2. load_config(session) → otlp_endpoint, event_table.* tuning
+      3. watermark  = read_watermark(session, source)
+         batch_end = CURRENT_TIMESTAMP()       # captured once per run
+      4. Per-signal Snowpark SELECTs, each using:
+         SELECT ... FROM <source>
+           CHANGES(INFORMATION => APPEND_ONLY)
+             AT(TIMESTAMP => :watermark)
+             END(TIMESTAMP => :batch_end)
+         WHERE RECORD_TYPE IN (...)            # SPAN / SPAN_EVENT / LOG / METRIC
+           AND <entity discrimination filter>  # snow.executable.type etc.
+         On "Time travel data is not available" → record WATERMARK_EXPIRED,
+         reset watermark to batch_end - event_table.watermark_reset_buffer_seconds,
+         return WATERMARK_RESET (skip this run).
+      5. to_pandas_batches() → span_mapper / log_mapper / metric_mapper
+         → module-level OTLP exporters (.export(...))
+      6. If all signal exports succeed (ExportOutcome = SUCCESS) →
+         MERGE INTO _internal.export_watermarks SET watermark = :batch_end
+         Else → hold watermark unchanged (exact retry next scheduled run).
+      7. record_run_metrics()  # rows_*, export_latency_ms, watermark_value,
+                               # source_lag_seconds, error_code (raw gRPC name)
 ```
 
-**ACCOUNT_USAGE Pipeline (poll-based with configurable overlap):**
+**ACCOUNT_USAGE Pipeline (scheduled watermark + overlap + QUALIFY):**
 
 ```
 User-selected source (AU view or default)
@@ -724,17 +781,22 @@ User-selected source (AU view or default)
     → account_usage_collector SP:
       1. session.sql_simplifier_enabled = True
       2. load_config(session) → otlp_endpoint, source settings, overlap_minutes
-      3. Read watermark from _internal.export_watermarks
-      4. Snowpark DataFrame:
-         a. Overlap window:  WHERE START_TIME > watermark - INTERVAL overlap_minutes
-         b. Latency cutoff:  AND START_TIME <= NOW() - INTERVAL overlap_minutes
-         c. Dedup:           QUALIFY ROW_NUMBER() OVER (PARTITION BY natural_key
+      3. watermark  = read_watermark(session, source)
+         batch_end = CURRENT_TIMESTAMP()
+      4. Snowpark DataFrame (no CHANGES — unsupported on ACCOUNT_USAGE):
+         a. Overlap window:  WHERE timestamp_col >  :watermark - INTERVAL overlap_minutes
+         b. Batch bound:     AND   timestamp_col <= :batch_end
+         c. Dedup:           QUALIFY ROW_NUMBER() OVER
+                               (PARTITION BY <natural_key>
                                 ORDER BY timestamp_col DESC) = 1
          d. Batch limit:     LIMIT batch_size
-      5. to_pandas_batches() → account_usage_mapper → otlp_grpc.export()
-      6. Update watermark
+      5. to_pandas_batches() → account_usage_mapper → module-level OTLP exporter
+      6. If export SUCCESS → MERGE INTO _internal.export_watermarks SET watermark = :batch_end
+         Else → hold watermark unchanged.
       7. record_run_metrics()
 ```
+
+Both pipelines write the same structured shape into `_metrics.pipeline_health` and use the same `_internal.export_watermarks` table, differing only in the incremental-read primitive (`CHANGES` vs `WHERE + QUALIFY`).
 
 **Why overlap + dedup (corrected understanding):**
 
@@ -760,9 +822,9 @@ Defaults are set to `documented_max_latency × 1.1`. Admins can decrease to mini
 | **Installation & Setup** (FR1–3) | `app/manifest.yml`, `app/setup.sql` | `pages/getting_started.py`, `common/task_manager.py` |
 | **Source Configuration** (FR4–11) | `pages/telemetry_sources.py`, `pages/splunk_settings.py` | `components/source_table.py`, `components/connection_card.py`, `common/config.py` |
 | **Data Governance** (FR12–18) | `pages/data_governance.py` | `common/config.py` (source type: default vs custom) |
-| **Telemetry Collection** (FR19–22) | `collectors/event_table_collector.py`, `collectors/account_usage_collector.py` | `common/stream_manager.py`, `common/config.py`, `constants.py` |
-| **Telemetry Export** (FR23–26) | `exporters/otlp_grpc.py`, `transforms/*.py` | `constants.py` (OTel attribute names) |
-| **Pipeline Operations** (FR27–34) | `pages/observability_health.py`, `common/health.py` | `components/health_cards.py`, `common/stream_manager.py` |
+| **Telemetry Collection** (FR19–22) | `app/python/event_table_collector.py`, `app/python/account_usage_collector.py` | `app/python/watermark.py`, `app/python/config_reader.py`, `app/python/telemetry_constants.py` |
+| **Telemetry Export** (FR23–26) | `app/python/otlp_export.py`, `app/python/span_mapper.py`, `app/python/log_mapper.py`, `app/python/metric_mapper.py`, `app/python/account_usage_mapper.py` | `app/python/export_result.py`, `app/python/secret_reader.py`, `app/python/endpoint_parse.py` |
+| **Pipeline Operations** (FR27–34) | `pages/observability_health.py`, `app/python/pipeline_telemetry.py` | `components/health_cards.py`, `app/python/watermark.py` |
 | **App Lifecycle** (FR35–39) | `app/setup.sql`, `app/manifest.yml`, `snowflake.yml` | `scripts/shared_content.sql` |
 
 ### Development Workflow
@@ -784,7 +846,7 @@ Defaults are set to `documented_max_latency × 1.1`. Admins can decrease to mini
 
 ### Coherence
 
-All 5 new decisions (D1–D5) and 14 vision decisions (V1–V14) are internally consistent. D1 (Config hybrid) feeds D2 (TLS) which feeds D3 (exporters). The configurable overlap window integrates cleanly with watermark state and the config table. Naming conventions, patterns, and structure are aligned throughout.
+All 5 new decisions (D1–D5) and 14 vision decisions (V1–V14) are internally consistent. D1 (Config hybrid) feeds D2 (TLS) which feeds D3 (exporters). V1 (scheduled-task dual pipeline) and V4 (advance-on-success / hold-on-failure watermark with `WATERMARK_EXPIRED` self-heal) compose cleanly: both pipelines share `_internal.export_watermarks`, differing only in the incremental-read primitive (`CHANGES` for Event Tables, `WHERE + QUALIFY` for ACCOUNT_USAGE). The configurable ACCOUNT_USAGE overlap window and Event Table reset-buffer integrate cleanly with the unified watermark state and config table. Naming conventions, patterns, and structure are aligned throughout.
 
 ### Requirements Coverage
 
@@ -793,13 +855,13 @@ All 5 new decisions (D1–D5) and 14 vision decisions (V1–V14) are internally 
 | FR1–FR3 (Install & Setup) | 3 | ✅ `manifest.yml` v2, `setup.sql`, Permission SDK, Getting Started |
 | FR4–FR11 (Source Config) | 8 | ✅ Config table, `st.data_editor`, Connection Card, EAI/Secrets |
 | FR12–FR18 (Governance) | 7 | ✅ User-selected source model, governance page, per-source messages |
-| FR19–FR22a (Collection) | 5 | ✅ Dual-pipeline, entity discrimination, independent tasks, configurable overlap + dedup |
+| FR19–FR22a (Collection) | 5 | ✅ Dual-pipeline (both scheduled-task-driven), entity discrimination, `CHANGES` for Event Tables, watermark+overlap+QUALIFY for ACCOUNT_USAGE |
 | FR23–FR26 (Export) | 4 | ✅ OTLP/gRPC, OTel conventions, transport retry, terminal failure recording |
-| FR27–FR34 (Ops & Health) | 8 | ✅ `_metrics.pipeline_health`, Native App events, health page, auto-recovery, auto-suspend |
+| FR27–FR34 (Ops & Health) | 8 | ✅ `_metrics.pipeline_health`, Native App events, health page, `WATERMARK_EXPIRED` self-heal, auto-suspend |
 | FR35–FR39 (Lifecycle) | 5 | ✅ Versioned + stateful schemas, multi-package strategy, E2E testing |
-| NFR1–5 (Performance) | 5 | ✅ Triggered tasks, Snowpark pushdown, `to_pandas_batches()` |
+| NFR1–5 (Performance) | 5 | ✅ Scheduled serverless tasks (1 min default), Snowpark pushdown, `to_pandas_batches()` |
 | NFR6–12 (Security) | 7 | ✅ Snowflake Secrets, TLS gRPC, EAI scoping, Marketplace scan gate |
-| NFR13–18 (Reliability) | 6 | ✅ Independent tasks, auto-retry, stale stream recovery, upgrade continuity |
+| NFR13–18 (Reliability) | 6 | ✅ Independent scheduled tasks, advance-on-success watermark, `WATERMARK_EXPIRED` reset-and-resume, upgrade continuity |
 | NFR19–21 (Scalability) | 3 | ✅ Serverless compute, chunked processing |
 | NFR22–24 (Integration) | 3 | ✅ OTel DB Client conventions, routing fields, error classification |
 | **Total** | **64** | **All covered** |
@@ -812,7 +874,7 @@ All 5 new decisions (D1–D5) and 14 vision decisions (V1–V14) are internally 
 | Patterns comprehensive for AI agents (5 Cursor rules referenced) | ✅ |
 | Project structure complete with FR-to-file mapping | ✅ |
 | Component boundaries and data flow defined | ✅ |
-| Config loading, health recording, stream recovery examples provided | ✅ |
+| Config loading, health recording, and `WATERMARK_EXPIRED` self-heal examples provided | ✅ |
 
 ### Minor Observations (not blocking)
 
@@ -827,7 +889,11 @@ All 5 new decisions (D1–D5) and 14 vision decisions (V1–V14) are internally 
 **Status:** READY FOR IMPLEMENTATION
 
 **First Implementation Priority:**
-1. `setup.sql` — DDL for `_internal.config`, `_internal.export_watermarks`, `_metrics.pipeline_health`, `_staging.stream_offset_log`
-2. `app/python/common/config.py` — config table reader + manifest reference resolution
-3. `app/python/exporters/otlp_grpc.py` — module-level OTLP exporter initialization
-4. `app/streamlit/main.py` — `st.navigation()` router with sidebar structure
+1. `app/setup.sql` — DDL for `_internal.config`, `_internal.export_watermarks` (unified high-water mark per source), `_metrics.pipeline_health`
+2. `app/python/config_reader.py` — `_internal.config` typed getters + manifest reference resolution
+3. `app/python/watermark.py` — `read_watermark` / `update_watermark` / `reset_watermark` against `_internal.export_watermarks` (advance-on-success / hold-on-failure semantics)
+4. `app/python/otlp_export.py` — module-level OTLP exporter singletons (Span / Metric / Log) with TLS enforcement
+5. `app/python/event_table_collector.py` — `CHANGES(INFORMATION => APPEND_ONLY) AT/END` reader + per-signal mappers + `WATERMARK_EXPIRED` self-heal
+6. `app/python/account_usage_collector.py` — watermark + overlap + `QUALIFY ROW_NUMBER()` reader + mapper
+7. Scheduled-task DDL in `setup.sql` (default 1 min cadence per source) — independent tasks using `WAREHOUSE = REFERENCE('CONSUMER_WAREHOUSE')`
+8. `app/streamlit/main.py` — `st.navigation()` router with sidebar structure
